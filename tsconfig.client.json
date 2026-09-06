@@ -1,0 +1,12 @@
+{
+  "compilerOptions": {
+    "target": "ES2020",
+    "module": "ES2020",
+    "rootDir": "public",
+    "outDir": "public",
+    "skipLibCheck": true,
+    "lib": ["ES2020", "DOM"]
+  },
+  "include": ["public/app.ts"],
+  "exclude": ["public/app.js"]
+}
