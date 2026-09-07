@@ -995,7 +995,7 @@ function renderBuying() {
   <section class="block recent-purchases">
     <h2 class="block-title">Recent purchases</h2>
     ${tableOrEmpty(db.stock.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10), s => `<tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Staff">${esc(s.staff || '—')}</td><td data-label="Status">${statusPill(s.status)}</td>${isAdmin() ? `<td data-label="Actions">${adminEditButton('Inventory', s.id)}</td>` : ''}</tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Net weight', 'Payout', 'Staff', 'Status', ...(isAdmin() ? ['Actions'] : [])], 'No purchases recorded yet.')}
+      <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Staff">${esc(s.staff || '—')}</td><td data-label="Status">${statusPill(s.status)}</td><td data-label="Actions"><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId || s.id}')">Receipt</button>${adminEditButton('Inventory', s.id)}</div></td></tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Net weight', 'Payout', 'Staff', 'Status', 'Actions'], 'No purchases recorded yet.')}
   </section>
   `;
 }
@@ -1131,14 +1131,14 @@ function openPurchaseSummary() {
     <div class="summary-lines">${purchaseBatch.map((item, index) => `<div class="summary-line"><div><strong>${index + 1}. ${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))}</strong><span>${esc(item.itemType)} · ${fmtWeight(item.netWeight)} × ${fmtMoney(item.rate)}/g</span></div><strong>${fmtMoney(item.payout)}</strong></div>`).join('')}</div>
     <div class="summary-grand"><div><span>${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'} · ${fmtWeight(totalWeight)}</span><strong>Grand total</strong></div><div>${fmtMoney(total)}</div></div>
     <div class="summary-meta">${fmtDate(val('b_date') || todayStr())} · ${esc(val('b_pay'))}${val('b_staff').trim() ? ` · Staff: ${esc(val('b_staff').trim())}` : ''}</div>
-    <div class="form-actions"><button class="btn secondary" onclick="closePurchaseSummary()">Back to items</button><button class="btn" onclick="commitPurchaseBatch()">Confirm &amp; record payout</button></div>
+    <div class="form-actions"><button class="btn secondary" onclick="closePurchaseSummary()">Back to items</button><button class="btn secondary" onclick="commitPurchaseBatch(false)">Record only</button><button class="btn" onclick="commitPurchaseBatch(true)">Confirm &amp; view receipt</button></div>
   </div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
         closePurchaseSummary(); });
     document.body.appendChild(modal);
 }
 function closePurchaseSummary() { document.getElementById('purchase_summary_modal')?.remove(); }
-async function commitPurchaseBatch() {
+async function commitPurchaseBatch(printAfter = false) {
     if (!purchaseBatch.length)
         return;
     const customer = purchaseCustomer();
@@ -1158,7 +1158,66 @@ async function commitPurchaseBatch() {
     closePurchaseSummary();
     await saveDB();
     render();
+    if (printAfter)
+        openPurchaseReceipt(batchId);
     toast(`${count} items recorded · ${fmtMoney(total)}`);
+}
+function receiptNumber(value) {
+    return Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+}
+function purchaseReceiptMarkup(items) {
+    const first = items[0], total = roundMoney(items.reduce((sum, item) => sum + Number(item.payout), 0));
+    const itemLines = items.map(item => `<div class="receipt-item"><div class="receipt-item-name">${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</div><div class="receipt-calc">${receiptNumber(item.netWeight)}g × ${receiptNumber(item.rate)} = ${receiptNumber(item.payout)}</div></div>`).join('');
+    return `<header><div class="receipt-shop">ZP GOLD &amp; SILVER</div><div class="receipt-address">Barcelona St, Zone II<br>Zamboanga City</div></header><div class="receipt-rule"></div>
+    <div class="receipt-meta"><span>Date:</span><strong>${esc(fmtDate(first.date))}</strong><span>Client:</span><strong>${esc(first.customerName || 'Walk-in')}</strong></div><div class="receipt-rule"></div>
+    ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptNumber(total)}</span></div><div class="receipt-rule"></div>
+    <div class="receipt-meta"><span>Paid:</span><strong>${esc(first.paymentMethod || '—')}</strong>${first.staff ? `<span>Staff:</span><strong>${esc(first.staff)}</strong>` : ''}</div>
+    <div class="receipt-reference">Ref: ${esc(first.batchId || first.id)}</div><div class="receipt-thanks">Thank you.</div>`;
+}
+function cleanupThermalPrintState() {
+    document.body.classList.remove('printing-thermal-receipt');
+    document.getElementById('thermal_print_page_style')?.remove();
+}
+function closePurchaseReceipt() { cleanupThermalPrintState(); document.getElementById('purchase_receipt_modal')?.remove(); }
+function setReceiptPaperSize(value) {
+    const receipt = document.getElementById('receipt_preview_paper');
+    receipt?.classList.toggle('paper-80', String(value) === '80');
+}
+function openPurchaseReceipt(batchId) {
+    const items = db.stock.filter(item => (item.batchId || item.id) === batchId);
+    if (!items.length) {
+        toast('Receipt record not found');
+        return;
+    }
+    closePurchaseReceipt();
+    const modal = document.createElement('div');
+    modal.id = 'purchase_receipt_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="receipt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="receipt_preview_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Thermal receipt preview</div><h2 id="receipt_preview_title">Buying receipt</h2></div><button class="modal-close" onclick="closePurchaseReceipt()" aria-label="Close">×</button></div>
+    <div class="receipt-preview-stage"><div class="thermal-receipt" id="receipt_preview_paper">${purchaseReceiptMarkup(items)}</div></div>
+    <div class="receipt-preview-controls"><div class="field"><label for="receipt_paper_size">Thermal paper width</label><select id="receipt_paper_size" onchange="setReceiptPaperSize(this.value)"><option value="58">58 mm</option><option value="80">80 mm</option></select></div>
+    <div class="form-actions"><button class="btn secondary" onclick="closePurchaseReceipt()">Close</button><button class="btn" onclick="printPurchaseReceipt('${batchId}')">Print receipt</button></div></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closePurchaseReceipt(); });
+    document.body.appendChild(modal);
+}
+function printPurchaseReceipt(batchId) {
+    const items = db.stock.filter(item => (item.batchId || item.id) === batchId);
+    if (!items.length) {
+        toast('Receipt record not found');
+        return;
+    }
+    const paperWidth = Number(val('receipt_paper_size')) === 80 ? 80 : 58;
+    document.getElementById('thermal_print_page_style')?.remove();
+    const pageStyle = document.createElement('style');
+    pageStyle.id = 'thermal_print_page_style';
+    pageStyle.textContent = `@page{size:${paperWidth}mm auto;margin:2mm}`;
+    document.head.appendChild(pageStyle);
+    document.body.classList.add('printing-thermal-receipt');
+    window.addEventListener('afterprint', cleanupThermalPrintState, { once: true });
+    window.print();
 }
 /* ============================= INVENTORY ============================= */
 let invFilter = { metal: 'All', karat: 'All', type: 'All', status: 'All' };
