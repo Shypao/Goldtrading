@@ -4,6 +4,8 @@
 /* ============================= DATA LAYER ============================= */
 let db = { rates: [], customers: [], stock: [], liquidations: [], refiningBatches: [], retailSales: [] };
 let currentTab = 'dashboard';
+let currentUser = null;
+let userAccounts = [];
 const STORE_KEY = 'zpp_gold_db';
 const LEDGER_DB_NAME = 'zpp_gold_trading_ph';
 const LEDGER_DB_VERSION = 1;
@@ -74,6 +76,10 @@ async function saveDB() {
         ensureShape();
         if (location.protocol === 'http:' || location.protocol === 'https:') {
             const response = await fetch('/api/state', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(db) });
+            if (response.status === 401) {
+                showLogin();
+                throw new Error('Session expired');
+            }
             if (!response.ok)
                 throw new Error('Database server returned HTTP ' + response.status);
             return;
@@ -127,6 +133,10 @@ async function loadDB() {
     try {
         if (location.protocol === 'http:' || location.protocol === 'https:') {
             const response = await fetch('/api/state', { cache: 'no-store' });
+            if (response.status === 401) {
+                showLogin();
+                return;
+            }
             if (!response.ok)
                 throw new Error('Database server returned HTTP ' + response.status);
             const serverState = await response.json();
@@ -140,7 +150,7 @@ async function loadDB() {
                 await saveDB();
             }
             boot();
-            if (db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
+            if (isAdmin() && db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
                 refreshPhilippineRates(true);
             return;
         }
@@ -172,8 +182,74 @@ async function loadDB() {
         ensureShape();
     }
     boot();
-    if (db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
+    if (isAdmin() && db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
         refreshPhilippineRates(true);
+}
+function isAdmin() { return currentUser?.role === 'admin'; }
+function allowedTabs() { return TABS.filter(tab => isAdmin() || tab.staff); }
+function showLogin() {
+    currentUser = null;
+    document.getElementById('appShell')?.classList.add('is-hidden');
+    document.getElementById('loginScreen')?.classList.remove('is-hidden');
+}
+function showApp() {
+    document.getElementById('loginScreen')?.classList.add('is-hidden');
+    document.getElementById('appShell')?.classList.remove('is-hidden');
+    const userEl = document.getElementById('sessionUser');
+    if (userEl)
+        userEl.innerHTML = `${esc(currentUser.displayName)}<br><span class="session-role">${esc(currentUser.role)}</span>`;
+    const badge = document.getElementById('accessBadge');
+    if (badge) {
+        badge.className = `access-badge ${currentUser.role}`;
+        badge.textContent = `${currentUser.role.toUpperCase()} ACCESS`;
+        badge.title = `Signed in as ${currentUser.displayName} (${currentUser.role})`;
+    }
+}
+async function initializeAuth() {
+    try {
+        const response = await fetch('/api/session', { cache: 'no-store' });
+        if (!response.ok) {
+            showLogin();
+            return;
+        }
+        const result = await response.json();
+        currentUser = result.user;
+        showApp();
+        await loadDB();
+    }
+    catch (error) {
+        console.error('Session check failed', error);
+        showLogin();
+    }
+}
+async function signIn(event) {
+    event.preventDefault();
+    const errorEl = document.getElementById('login_error');
+    const username = val('login_username').trim(), password = val('login_password');
+    errorEl.textContent = 'Signing in…';
+    try {
+        const response = await fetch('/api/login', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ username, password }) });
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error || 'Sign-in failed');
+        currentUser = result.user;
+        currentTab = 'dashboard';
+        errorEl.textContent = '';
+        showApp();
+        await loadDB();
+    }
+    catch (error) {
+        errorEl.textContent = error.message || 'Sign-in failed';
+    }
+}
+async function signOut() {
+    try {
+        await fetch('/api/logout', { method: 'POST' });
+    }
+    catch (ignore) { }
+    db = { rates: [], customers: [], stock: [], liquidations: [], refiningBatches: [], retailSales: [] };
+    userAccounts = [];
+    showLogin();
 }
 async function resetDemo() {
     if (!confirm('This replaces all current data with the sample dataset. Continue?'))
@@ -275,19 +351,24 @@ const overrideEditors = new Set();
 const TROY_OUNCE_GRAMS = 31.1034768;
 async function fetchJson(url) {
     const response = await fetch(url, { cache: 'no-store' });
-    if (!response.ok)
-        throw new Error('Price service returned HTTP ' + response.status);
-    return response.json();
+    const payload = await response.json().catch(() => null);
+    if (!response.ok) {
+        if (response.status === 401 && String(url).startsWith('/api/'))
+            showLogin();
+        throw new Error(payload?.error || ('Price service returned HTTP ' + response.status));
+    }
+    return payload;
 }
 async function refreshPhilippineRates(silent) {
     if (pricingFetchBusy)
         return;
     pricingFetchBusy = true;
-    render();
+    if (!silent)
+        render();
     try {
         let proposal;
         if (location.protocol === 'http:' || location.protocol === 'https:') {
-            proposal = await fetchJson('/api/market?payoutPct=' + encodeURIComponent(db.pricing.auto.payoutPct));
+            proposal = await fetchJson('/api/market?apply=1&payoutPct=' + encodeURIComponent(db.pricing.auto.payoutPct));
         }
         else {
             const [gold, silver, platinum, fx] = await Promise.all([
@@ -304,29 +385,50 @@ async function refreshPhilippineRates(silent) {
         db.pricing.auto.lastFetchedAt = proposal.fetchedAt;
         db.pricing.auto.usdPhp = proposal.usdPhp;
         db.pricing.auto.spotUsd = proposal.spotUsd;
-        activateMarketRates(proposal.draft, silent ? 'Automatic daily internet update' : 'Manual internet refresh');
-        await saveDB();
+        activateMarketRates(proposal.draft, silent ? 'Automatic 5-second internet update' : 'Manual internet refresh', !silent);
+        if (isAdmin())
+            await saveDB();
         if (!silent)
             toast('Live internet prices refreshed and activated');
     }
     catch (e) {
         console.error('Automatic pricing failed', e);
         if (!silent)
-            toast('Live pricing unavailable — current rates are unchanged');
+            toast(`Live pricing unavailable — ${e.message || 'current rates are unchanged'}`);
     }
     finally {
         pricingFetchBusy = false;
-        render();
+        // Background market polling must never replace an in-progress form or
+        // clear selections on another page. Only the rate screen needs a redraw.
+        const editingRateField = currentTab === 'rates' && document.activeElement?.matches('input,select,textarea');
+        if (!silent || (currentTab === 'rates' && !editingRateField))
+            render();
     }
 }
-function activateMarketRates(d, enteredBy) {
+function activateMarketRates(d, enteredBy, recordHistory = true) {
     db.pricing.gold.base = d.gold;
     db.pricing.silver.base = d.silver;
     db.pricing.platinum.base = d.platinum;
     db.pricing.effectiveDate = d.effectiveDate;
     db.pricing.auto.lastAppliedDate = d.effectiveDate;
     db.pricing.auto.draft = null;
-    db.pricingHistory.push({ id: uid('rate'), ts: Date.now(), effectiveDate: d.effectiveDate, enteredBy, snapshot: JSON.parse(JSON.stringify(db.pricing)) });
+    const duplicate = db.pricingHistory.some(h => h.effectiveDate === d.effectiveDate && h.enteredBy === enteredBy &&
+        Number(h.snapshot?.gold?.base) === Number(d.gold) &&
+        Number(h.snapshot?.silver?.base) === Number(d.silver) &&
+        Number(h.snapshot?.platinum?.base) === Number(d.platinum));
+    if (recordHistory && !duplicate) {
+        db.pricingHistory.push({ id: uid('rate'), ts: Date.now(), effectiveDate: d.effectiveDate, enteredBy, snapshot: JSON.parse(JSON.stringify(db.pricing)) });
+    }
+}
+function visiblePricingHistory() {
+    const seen = new Set();
+    return db.pricingHistory.slice().sort((a, b) => b.ts - a.ts).filter(h => {
+        const key = [h.effectiveDate, h.enteredBy, h.snapshot?.gold?.base, h.snapshot?.silver?.base, h.snapshot?.platinum?.base].join('|');
+        if (seen.has(key))
+            return false;
+        seen.add(key);
+        return true;
+    });
 }
 function setAutoEnabled(checked) { db.pricing.auto.enabled = checked; saveDB(); render(); }
 function setPayoutPct(value) {
@@ -372,19 +474,22 @@ function savePricingSnapshot() {
 }
 /* ============================= NAV / BOOT ============================= */
 const TABS = [
-    { id: 'dashboard', label: 'Dashboard' },
-    { id: 'rates', label: 'Daily rate setup' },
-    { id: 'buying', label: 'Buying transactions' },
-    { id: 'inventory', label: 'Inventory' },
+    { id: 'dashboard', label: 'Dashboard', staff: true },
+    { id: 'rates', label: 'Daily rate setup', staff: true },
+    { id: 'buying', label: 'Buying transactions', staff: true },
+    { id: 'inventory', label: 'Inventory', staff: true },
     { id: 'liquidation', label: 'Selective liquidation' },
     { id: 'refining', label: 'Refining tracking' },
     { id: 'retail', label: 'Limited retail sales' },
-    { id: 'customers', label: 'Customer management' },
+    { id: 'customers', label: 'Customer management', staff: true },
     { id: 'reports', label: 'Reports & exports' },
+    { id: 'users', label: 'User accounts' },
 ];
 function boot() {
     const nav = document.getElementById('navTabs');
-    nav.innerHTML = TABS.map(t => `<button data-tab="${t.id}" class="${t.id === currentTab ? 'active' : ''}" onclick="goTab('${t.id}')"><span class="dot"></span>${t.label}</button>`).join('');
+    if (!allowedTabs().some(tab => tab.id === currentTab))
+        currentTab = 'dashboard';
+    nav.innerHTML = allowedTabs().map(t => `<button data-tab="${t.id}" class="${t.id === currentTab ? 'active' : ''}" onclick="goTab('${t.id}')"><span class="dot"></span>${t.label}</button>`).join('');
     document.getElementById('pageDate').textContent = fmtDate(todayStr());
     render();
     startAutomaticPricing();
@@ -394,18 +499,22 @@ function startAutomaticPricing() {
     if (automaticPricingTimer)
         return;
     automaticPricingTimer = setInterval(() => {
-        if (db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
+        if (currentUser && db.pricing.auto.enabled && !document.hidden)
             refreshPhilippineRates(true);
-    }, 15 * 60 * 1000);
+    }, 5000);
     document.addEventListener('visibilitychange', () => {
-        if (!document.hidden && db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
+        if (currentUser && !document.hidden && db.pricing.auto.enabled)
             refreshPhilippineRates(true);
     });
 }
 function goTab(id) {
+    if (!allowedTabs().some(tab => tab.id === id))
+        return;
     currentTab = id;
     document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
     render();
+    if (id === 'users')
+        loadUserAccounts();
 }
 function render() {
     const titles = {
@@ -418,12 +527,14 @@ function render() {
         retail: ['Walk-in resale', 'Limited retail sales'],
         customers: ['Sellers on file', 'Customer management'],
         reports: ['Ledger views & exports', 'Reports & exports'],
+        users: ['Access control', 'User accounts'],
     };
     document.getElementById('pageEyebrow').textContent = titles[currentTab][0];
     document.getElementById('pageTitle').textContent = titles[currentTab][1];
     const el = document.getElementById('content');
     const fns = { dashboard: renderDashboard, rates: renderRates, buying: renderBuying, inventory: renderInventory,
-        liquidation: renderLiquidation, refining: renderRefining, retail: renderRetail, customers: renderCustomers, reports: renderReports };
+        liquidation: renderLiquidation, refining: renderRefining, retail: renderRetail, customers: renderCustomers, reports: renderReports,
+        users: renderUsers };
     el.innerHTML = fns[currentTab]();
 }
 /* ============================= DASHBOARD ============================= */
@@ -463,8 +574,8 @@ function renderDashboard() {
     <div class="stat-row">
       <div class="stat"><div class="label">Purchases today</div><div class="value">${pToday.length}</div><div class="sub">${fmtMoney(payoutToday)} paid out</div></div>
       <div class="stat"><div class="label">Purchases this month</div><div class="value">${pMonth.length}</div><div class="sub">${fmtMoney(payoutMonth)} paid out</div></div>
-      <div class="stat"><div class="label">Liquidation margin (month)</div><div class="value">${fmtMoney(liqMargin)}</div><div class="sub">${liqMonth.length} batch(es) released</div></div>
-      <div class="stat"><div class="label">Retail margin (month)</div><div class="value">${fmtMoney(retailMargin)}</div><div class="sub">${retailMonth.length} item(s) sold</div></div>
+      ${isAdmin() ? `<div class="stat"><div class="label">Liquidation margin (month)</div><div class="value">${fmtMoney(liqMargin)}</div><div class="sub">${liqMonth.length} batch(es) released</div></div>
+      <div class="stat"><div class="label">Retail margin (month)</div><div class="value">${fmtMoney(retailMargin)}</div><div class="sub">${retailMonth.length} item(s) sold</div></div>` : ''}
     </div>
   </section>
 
@@ -488,20 +599,20 @@ function renderDashboard() {
     </div>
   </section>
 
-  <section class="block">
+  ${isAdmin() ? `<section class="block">
     <h2 class="block-title">Independent release schedules</h2>
     <div class="stat-row">
       <div class="stat"><div class="label">Gold next recommended release</div><div class="value">${goldRelease.label}</div><div class="sub">${goldRelease.sub} · 2–3 day cadence</div></div>
       <div class="stat"><div class="label">Silver next recommended release</div><div class="value">${silverRelease.label}</div><div class="sub">${silverRelease.sub} · weekly cadence</div></div>
     </div>
-  </section>
+  </section>` : ''}
 
   <section class="block latest-purchases">
     <h2 class="block-title">Latest purchases</h2>
     ${tableOrEmpty(db.stock.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 8), s => `
       <tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td>
-      <td data-label="Status">${statusPill(s.status)}</td></tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Net weight', 'Payout', 'Status'], 'No purchases recorded yet — add one under Buying transactions.')}
+      <td data-label="Status">${statusPill(s.status)}</td>${isAdmin() ? `<td data-label="Actions">${adminEditButton('Inventory', s.id)}</td>` : ''}</tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Net weight', 'Payout', 'Status', ...(isAdmin() ? ['Actions'] : [])], 'No purchases recorded yet — add one under Buying transactions.')}
   </section>
   `;
 }
@@ -517,9 +628,11 @@ function tableOrEmpty(rows, rowFn, headers, emptyMsg) {
 }
 /* ============================= RATES ============================= */
 function renderRates() {
+    if (!isAdmin())
+        return renderStaffRates();
     const goldGrid = GOLD_GRADES.filter(g => g.key !== '24K');
     const auto = db.pricing.auto;
-    const fetched = auto.lastFetchedAt ? new Date(auto.lastFetchedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : 'Not fetched yet';
+    const fetched = auto.lastFetchedAt ? new Date(auto.lastFetchedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'medium' }) : 'Not fetched yet';
     return `
   <section class="auto-panel">
     <div class="auto-panel-head">
@@ -529,7 +642,7 @@ function renderRates() {
         <div class="auto-status">${pricingFetchBusy ? '<span class="spinner"></span>Updating market data…' : `Last checked: ${esc(fetched)}${auto.usdPhp ? ` · USD/PHP ${Number(auto.usdPhp).toFixed(4)}` : ''}`}</div>
       </div>
       <div class="auto-controls">
-        <label class="switch-line"><input type="checkbox" ${auto.enabled ? 'checked' : ''} onchange="setAutoEnabled(this.checked)"> Update automatically each day</label>
+        <label class="switch-line"><input type="checkbox" ${auto.enabled ? 'checked' : ''} onchange="setAutoEnabled(this.checked)"> Update automatically every 5 seconds</label>
         <div class="field"><label>Buying payout</label><div style="display:flex;align-items:center;gap:5px"><input style="width:82px" type="number" min="0" max="100" step="0.1" value="${auto.payoutPct}" onchange="setPayoutPct(this.value)"><span>%</span></div></div>
         <button class="btn small" onclick="refreshPhilippineRates(false)" ${pricingFetchBusy ? 'disabled' : ''}>Refresh &amp; apply now</button>
       </div>
@@ -551,7 +664,7 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">24K rate — pure gold</div>
-        <div class="base-input"><span>₱</span><input type="number" min="0" step="0.01" value="${db.pricing.gold.base || ''}" onchange="setBase('Gold', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.gold.base || ''}" onchange="setBase('Gold', this.value)"></div>
       </div>
       ${renderFeaturedBox()}
     </div>
@@ -563,7 +676,7 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">999 rate — pure silver</div>
-        <div class="base-input"><span>₱</span><input type="number" min="0" step="0.01" value="${db.pricing.silver.base || ''}" onchange="setBase('Silver', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.silver.base || ''}" onchange="setBase('Silver', this.value)"></div>
       </div>
     </div>
     <div class="grade-grid">${SILVER_GRADES.map(k => renderGradeCard('Silver', k, k, null)).join('')}</div>
@@ -574,7 +687,7 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">999 rate — pure platinum</div>
-        <div class="base-input"><span>₱</span><input type="number" min="0" step="0.01" value="${db.pricing.platinum.base || ''}" onchange="setBase('Platinum', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.platinum.base || ''}" onchange="setBase('Platinum', this.value)"></div>
       </div>
     </div>
     <div class="grade-grid">${PLATINUM_GRADES.map(k => renderGradeCard('Platinum', k, k, null)).join('')}</div>
@@ -592,20 +705,38 @@ function renderRates() {
     </div>
   </section>
 
-  <section class="block">
-    <h2 class="block-title">Rate history</h2>
-    ${tableOrEmpty(db.pricingHistory.slice().sort((a, b) => b.ts - a.ts), h => `<tr><td>${fmtDate(h.effectiveDate)}</td><td>${esc(h.enteredBy)}</td><td class="num">${fmtMoney(h.snapshot.gold.base)}/g</td><td class="num">${fmtMoney(h.snapshot.silver.base)}/g</td><td class="num">${fmtMoney(h.snapshot.platinum.base)}/g</td></tr>`, ['Effective date', 'Entered by', 'Gold 24K base', 'Silver base', 'Platinum base'], 'No saved rate sheets yet.')}
-  </section>
   `;
+}
+function renderStaffRates() {
+    const fetched = db.pricing.auto.lastFetchedAt ? new Date(db.pricing.auto.lastFetchedAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'medium' }) : 'Not fetched yet';
+    return `
+  <section class="auto-panel">
+    <div class="auto-panel-head"><div><h3>Active buying rates</h3><div class="metal-section-desc" style="margin:0;">Live base pricing refreshes every five seconds. Staff may override individual grades when needed.</div><div class="auto-status">Effective date: ${fmtDate(db.pricing.effectiveDate)} · Last checked: ${esc(fetched)}</div></div></div>
+  </section>
+  <section class="metal-section">
+    <div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>
+    <div class="grade-grid">${GOLD_GRADES.map(g => renderGradeCard('Gold', g.key, g.label, g.mult)).join('')}</div>
+  </section>
+  <section class="metal-section">
+    <div class="metal-section-head"><span class="metal-dot silver"></span><h3>Silver</h3><span class="count">${SILVER_GRADES.length} grades</span></div>
+    <div class="grade-grid">${SILVER_GRADES.map(key => renderGradeCard('Silver', key, key, null)).join('')}</div>
+  </section>
+  <section class="metal-section">
+    <div class="metal-section-head"><span class="metal-dot platinum"></span><h3>Platinum</h3><span class="count">${PLATINUM_GRADES.length} grades</span></div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(key => renderGradeCard('Platinum', key, key, null)).join('')}</div>
+  </section>`;
 }
 function renderGradeCard(metal, key, label, mult) {
     const ov = isOverridden(metal, key);
     const editing = overrideEditors.has(overrideEditorId(metal, key));
     const rate = metalRate(metal, key);
     const multTxt = (mult != null) ? `×${mult}` : `×${(parseInt(key, 10) / 999).toFixed(3)}`;
+    const rateControl = editing || ov
+        ? `<input data-rate-editor="${metal}-${key}" type="text" inputmode="decimal" value="${rate}" onchange="commitOverride('${metal}','${key}', this.value)">`
+        : `<span class="gc-value">${rate}</span>`;
     return `<div class="grade-card ${ov ? 'is-override' : ''}">
     <div class="gc-top"><span>${esc(label)}</span><span>${multTxt}</span></div>
-    <div class="gc-rate"><span class="unit">₱</span><input data-rate-editor="${metal}-${key}" type="number" min="0" step="0.01" value="${rate}" ${editing || ov ? '' : 'readonly'} onchange="commitOverride('${metal}','${key}', this.value)"><span class="unit">/g</span></div>
+    <div class="gc-rate"><span class="unit">₱</span>${rateControl}<span class="unit">/g</span></div>
     <div class="gc-foot">${ov ? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset to live price</button>` : editing ? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override price</button>`}</div>
   </div>`;
 }
@@ -617,8 +748,8 @@ function renderFeaturedBox() {
       <div class="fx-edit">
         <select id="fx_metal" onchange="updateFxKeyOptions()">${['Gold', 'Silver', 'Platinum'].map(m => `<option>${m}</option>`).join('')}</select>
         <select id="fx_key">${GRADES['Gold'].map(k => `<option value="${k}">${gradeLabel('Gold', k)}</option>`).join('')}</select>
-        <input id="fx_low" type="number" placeholder="Low">
-        <input id="fx_high" type="number" placeholder="High">
+        <input id="fx_low" type="text" inputmode="decimal" placeholder="Low">
+        <input id="fx_high" type="text" inputmode="decimal" placeholder="High">
         <button class="btn small" onclick="saveFeaturedFromForm()">Pin</button>
       </div>
     </div>`;
@@ -644,6 +775,32 @@ function saveFeaturedFromForm() {
     setFeatured(metal, key, low, high);
 }
 function val(id) { const e = document.getElementById(id); return e ? e.value : ''; }
+/* ============================= ADMIN EDIT MODALS ============================= */
+function openAdminEditModal(title, formMarkup, saveAction, deleteAction = '') {
+    if (!isAdmin()) {
+        toast('Administrator access required');
+        return;
+    }
+    closeAdminEditModal();
+    const modal = document.createElement('div');
+    modal.id = 'admin_edit_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="edit-modal" role="dialog" aria-modal="true" aria-labelledby="admin_edit_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Administrator edit</div><h2 id="admin_edit_title">${esc(title)}</h2></div><button class="modal-close" onclick="closeAdminEditModal()" aria-label="Close">×</button></div>
+    ${formMarkup}
+    <div class="form-actions">${deleteAction ? `<button class="btn danger" onclick="${deleteAction}()">Delete record</button>` : ''}<button class="btn secondary" onclick="closeAdminEditModal()">Cancel</button><button class="btn" onclick="${saveAction}()">Save changes</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeAdminEditModal(); });
+    document.body.appendChild(modal);
+    modal.querySelector('input, select, textarea')?.focus();
+}
+function closeAdminEditModal() { document.getElementById('admin_edit_modal')?.remove(); }
+function adminEditButton(kind, id) { return isAdmin() ? `<button class="btn secondary small" onclick="open${kind}Edit('${id}')">Edit</button>` : ''; }
+function adminEditGuard() { if (!isAdmin()) {
+    toast('Administrator access required');
+    return false;
+} return true; }
 /* ============================= CUSTOMERS ============================= */
 let custSearch = '', custOpen = null;
 function renderCustomers() {
@@ -662,18 +819,28 @@ function renderCustomers() {
   <section class="block">
     <h2 class="block-title">Customers on file</h2>
     <div class="filter-row">
-      <div class="field"><label>Search</label><input value="${esc(custSearch)}" oninput="custSearch=this.value; render();" placeholder="Search name or contact"></div>
+      <div class="field"><label>Search</label><input id="customer_search" value="${esc(custSearch)}" oninput="updateCustomerSearch(this.value)" placeholder="Search name or contact"></div>
     </div>
-    ${tableOrEmpty(list, c => {
+    <div id="customer_results">${renderCustomerTable(list)}</div>
+  </section>
+  `;
+}
+function renderCustomerTable(list) {
+    return tableOrEmpty(list, c => {
         const history = db.stock.filter(s => s.customerId === c.id);
         const totalPayout = history.reduce((a, s) => a + Number(s.payout), 0);
         return `<tr><td>${esc(c.name)}</td><td>${esc(c.contact || '—')}</td><td>${esc(c.notes || '—')}</td>
       <td class="num">${history.length} sale(s) · ${fmtMoney(totalPayout)}</td>
-      <td><button class="btn secondary small" onclick="toggleCustHist('${c.id}')">${custOpen === c.id ? 'Hide' : 'View'} history</button></td></tr>
+      <td><div class="form-actions"><button class="btn secondary small" onclick="toggleCustHist('${c.id}')">${custOpen === c.id ? 'Hide' : 'View'} history</button>${adminEditButton('Customer', c.id)}</div></td></tr>
       ${custOpen === c.id ? `<tr><td colspan="5"><div class="customer-hist">${history.length ? history.map(s => `${fmtDate(s.date)} — ${s.metal} ${esc(s.karat)} ${esc(s.itemType)}, ${fmtWeight(s.netWeight)}, ${fmtMoney(s.payout)} (${s.status})`).join('<br>') : 'No purchases from this customer yet.'}</div></td></tr>` : ''}`;
-    }, ['Name', 'Contact', 'Notes', 'Selling history', ''], 'No customers yet.')}
-  </section>
-  `;
+    }, ['Name', 'Contact', 'Notes', 'Selling history', ''], custSearch ? 'No customers match your search.' : 'No customers yet.');
+}
+function updateCustomerSearch(value) {
+    custSearch = value;
+    const list = db.customers.filter(c => (c.name + c.contact).toLowerCase().includes(custSearch.toLowerCase()));
+    const results = document.getElementById('customer_results');
+    if (results)
+        results.innerHTML = renderCustomerTable(list);
 }
 function toggleCustHist(id) { custOpen = (custOpen === id ? null : id); render(); }
 function addCustomer() {
@@ -686,6 +853,55 @@ function addCustomer() {
     saveDB();
     render();
     toast('Customer added');
+}
+let editingCustomerId = null;
+function openCustomerEdit(id) {
+    const customer = db.customers.find(c => c.id === id);
+    if (!customer || !adminEditGuard())
+        return;
+    editingCustomerId = id;
+    openAdminEditModal('Edit customer', `<div class="form-grid">
+    <div class="field"><label>Name</label><input id="edit_customer_name" value="${esc(customer.name)}"></div>
+    <div class="field"><label>Contact</label><input id="edit_customer_contact" value="${esc(customer.contact || '')}"></div>
+    <div class="field span-2"><label>Notes</label><textarea id="edit_customer_notes">${esc(customer.notes || '')}</textarea></div>
+  </div>`, 'saveCustomerEdit', 'deleteCustomerRecord');
+}
+async function saveCustomerEdit() {
+    if (!adminEditGuard())
+        return;
+    const customer = db.customers.find(c => c.id === editingCustomerId), name = val('edit_customer_name').trim();
+    if (!customer)
+        return;
+    if (!name) {
+        toast('Customer name is required');
+        return;
+    }
+    customer.name = name;
+    customer.contact = val('edit_customer_contact').trim();
+    customer.notes = val('edit_customer_notes').trim();
+    db.stock.filter(s => s.customerId === customer.id).forEach(s => s.customerName = name);
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Customer updated');
+}
+async function deleteCustomerRecord() {
+    if (!adminEditGuard())
+        return;
+    const customer = db.customers.find(c => c.id === editingCustomerId);
+    if (!customer)
+        return;
+    if (db.stock.some(item => item.customerId === customer.id)) {
+        toast('This customer has purchase history and cannot be deleted');
+        return;
+    }
+    if (!confirm(`Delete customer "${customer.name}"? This cannot be undone.`))
+        return;
+    db.customers = db.customers.filter(c => c.id !== customer.id);
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Customer deleted');
 }
 /* ============================= BUYING ============================= */
 let purchaseBatch = [];
@@ -779,7 +995,7 @@ function renderBuying() {
   <section class="block recent-purchases">
     <h2 class="block-title">Recent purchases</h2>
     ${tableOrEmpty(db.stock.slice().sort((a, b) => b.date.localeCompare(a.date)).slice(0, 10), s => `<tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Staff">${esc(s.staff || '—')}</td><td data-label="Status">${statusPill(s.status)}</td></tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Net weight', 'Payout', 'Staff', 'Status'], 'No purchases recorded yet.')}
+      <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Staff">${esc(s.staff || '—')}</td><td data-label="Status">${statusPill(s.status)}</td>${isAdmin() ? `<td data-label="Actions">${adminEditButton('Inventory', s.id)}</td>` : ''}</tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Net weight', 'Payout', 'Staff', 'Status', ...(isAdmin() ? ['Actions'] : [])], 'No purchases recorded yet.')}
   </section>
   `;
 }
@@ -983,9 +1199,81 @@ function renderInventory() {
         ${['All', 'For Selling', 'For Refining', 'On Hold', 'Liquidated', 'Sold'].map(s => `<option value="${s}" ${invFilter.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
     </div>
     ${tableOrEmpty(rows, s => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.location || '—')}</td><td>${esc(s.remarks || '—')}</td></tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Location', 'Remarks'], 'No stock matches this filter.')}
+      <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.location || '—')}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td>${adminEditButton('Inventory', s.id)}</td>` : ''}</tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Location', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], 'No stock matches this filter.')}
   </section>
   `;
+}
+let editingInventoryId = null;
+function openInventoryEdit(id) {
+    const item = db.stock.find(s => s.id === id);
+    if (!item || !adminEditGuard())
+        return;
+    editingInventoryId = id;
+    const statuses = ['For Selling', 'For Refining', 'On Hold', 'Liquidated', 'Sold'];
+    openAdminEditModal('Edit purchase / inventory record', `<div class="form-grid">
+    <div class="field"><label>Date</label><input id="edit_inventory_date" type="date" value="${esc(item.date || todayStr())}"></div>
+    <div class="field"><label>Classification</label><select id="edit_inventory_status">${statuses.map(status => `<option ${item.status === status ? 'selected' : ''}>${status}</option>`).join('')}</select></div>
+    <div class="field"><label>Current weight (g)</label><input id="edit_inventory_weight" type="number" min="0" max="${Number(item.netWeight)}" step="0.01" value="${Number(item.currentWeight)}"></div>
+    <div class="field"><label>Remaining cost (PHP)</label><input id="edit_inventory_cost" type="number" min="0" step="0.01" value="${Number(item.cost)}"></div>
+    <div class="field"><label>Payment method</label><input id="edit_inventory_payment" value="${esc(item.paymentMethod || '')}"></div>
+    <div class="field"><label>Staff member</label><input id="edit_inventory_staff" value="${esc(item.staff || '')}"></div>
+    <div class="field"><label>Storage location</label><input id="edit_inventory_location" value="${esc(item.location || '')}"></div>
+    <div class="field"><label>Item type</label><select id="edit_inventory_type"><option ${item.itemType === 'Jewelry' ? 'selected' : ''}>Jewelry</option><option ${item.itemType === 'Scrap' ? 'selected' : ''}>Scrap</option></select></div>
+    <div class="field span-2"><label>Remarks</label><textarea id="edit_inventory_remarks">${esc(item.remarks || '')}</textarea></div>
+  </div><p class="form-note">Original metal, purity, purchase weight, rate, and payout remain locked to preserve the audit trail.</p>`, 'saveInventoryEdit', 'deleteInventoryRecord');
+}
+async function saveInventoryEdit() {
+    if (!adminEditGuard())
+        return;
+    const item = db.stock.find(s => s.id === editingInventoryId);
+    if (!item)
+        return;
+    const weight = Number(val('edit_inventory_weight')), cost = Number(val('edit_inventory_cost')), status = val('edit_inventory_status');
+    if (!val('edit_inventory_date')) {
+        toast('Date is required');
+        return;
+    }
+    if (!Number.isFinite(weight) || weight < 0 || weight > Number(item.netWeight)) {
+        toast('Current weight must be between 0 and the original net weight');
+        return;
+    }
+    if (!Number.isFinite(cost) || cost < 0) {
+        toast('Enter a valid remaining cost');
+        return;
+    }
+    if (weight === 0 && !['Liquidated', 'Sold'].includes(status)) {
+        toast('Choose Liquidated or Sold when the remaining weight is zero');
+        return;
+    }
+    if (weight > 0 && ['Liquidated', 'Sold'].includes(status)) {
+        toast('Liquidated or Sold inventory must have zero remaining weight');
+        return;
+    }
+    Object.assign(item, { date: val('edit_inventory_date'), status, currentWeight: roundWeight(weight), cost: roundMoney(cost), paymentMethod: val('edit_inventory_payment').trim(), staff: val('edit_inventory_staff').trim(), location: val('edit_inventory_location').trim(), itemType: val('edit_inventory_type'), remarks: val('edit_inventory_remarks').trim() });
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Inventory record updated');
+}
+async function deleteInventoryRecord() {
+    if (!adminEditGuard())
+        return;
+    const item = db.stock.find(s => s.id === editingInventoryId);
+    if (!item)
+        return;
+    const linked = db.liquidations.some(record => (record.lines || []).some(line => line.itemId === item.id)) ||
+        db.refiningBatches.some(record => (record.itemIds || []).includes(item.id)) || db.retailSales.some(record => record.itemId === item.id);
+    if (linked) {
+        toast('This item is linked to a completed transaction. Delete that transaction first.');
+        return;
+    }
+    if (!confirm(`Delete this ${item.metal} ${item.karat} inventory record? This cannot be undone.`))
+        return;
+    db.stock = db.stock.filter(s => s.id !== item.id);
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Inventory record deleted');
 }
 /* ============================= LIQUIDATION ============================= */
 let liqMetal = 'Gold', liqStatus = 'All', liqKarat = 'All';
@@ -1007,16 +1295,18 @@ function renderLiquidation() {
         ${['All', 'For Selling', 'For Refining'].map(s => `<option ${liqStatus === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
     </div>
     ${eligible.length ? `
-    <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span></div>
-    ${eligible.map(s => `
-      <div class="item-check-row" data-item="${s.id}">
-        <input type="checkbox" class="liq-chk" onchange="syncLiqRow('${s.id}')">
-        <span>${fmtDate(s.date)} · ${esc(s.karat)} ${esc(s.itemType)} · ${esc(s.customerName)}</span>
-        <span class="num">${fmtWeight(s.currentWeight)}</span>
-        <span class="num">${fmtMoney(s.cost)}</span>
-        <span>${statusPill(s.status)}</span>
-        <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" placeholder="0.00" disabled>
-      </div>`).join('')}
+    <div class="item-check-wrap">
+      <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span></div>
+      ${eligible.map(s => `
+        <div class="item-check-row" data-item="${s.id}">
+          <input type="checkbox" class="liq-chk" onchange="syncLiqRow('${s.id}')">
+          <span>${fmtDate(s.date)} · ${esc(s.karat)} ${esc(s.itemType)} · ${esc(s.customerName)}</span>
+          <span class="num">${fmtWeight(s.currentWeight)}</span>
+          <span class="num">${fmtMoney(s.cost)}</span>
+          <span>${statusPill(s.status)}</span>
+          <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" placeholder="0.00" disabled>
+        </div>`).join('')}
+    </div>
     ` : `<div class="empty-note">No eligible ${liqMetal.toLowerCase()} stock for these filters.</div>`}
   </section>
 
@@ -1039,7 +1329,7 @@ function renderLiquidation() {
     <h2 class="block-title">Liquidation history</h2>
     ${tableOrEmpty(db.liquidations.slice().sort((a, b) => b.date.localeCompare(a.date)), l => `<tr><td>${fmtDate(l.date)}</td><td><span class="metal-tag ${l.metal.toLowerCase()}">${l.metal}</span></td><td>${esc(l.buyer)}</td>
       <td class="num">${fmtWeight(l.releasedWeight)}</td><td class="num">${fmtMoney(l.proceeds)}</td><td>${esc(l.paymentStatus || '—')}</td><td class="num">${fmtMoney(l.cost)}</td>
-      <td class="num" style="color:${l.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(l.margin)}</td></tr>`, ['Date', 'Metal', 'Buyer / refiner', 'Released wt', 'Proceeds', 'Payment', 'Cost', 'Margin'], 'No liquidations recorded yet.')}
+      <td class="num" style="color:${l.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(l.margin)}</td>${isAdmin() ? `<td>${adminEditButton('Liquidation', l.id)}</td>` : ''}</tr>`, ['Date', 'Metal', 'Buyer / refiner', 'Released wt', 'Proceeds', 'Payment', 'Cost', 'Margin', ...(isAdmin() ? ['Actions'] : [])], 'No liquidations recorded yet.')}
   </section>
   `;
 }
@@ -1080,6 +1370,7 @@ function submitLiquidation() {
             toast('Release weight exceeds available for one item');
             return;
         }
+        const previousStatus = item.status;
         const costPortion = (w / item.currentWeight) * item.cost;
         item.currentWeight = +(item.currentWeight - w).toFixed(4);
         item.cost = +(item.cost - costPortion).toFixed(2);
@@ -1089,7 +1380,7 @@ function submitLiquidation() {
         }
         totalWeight += w;
         totalCost += costPortion;
-        lines.push({ itemId: id, weight: w, costPortion });
+        lines.push({ itemId: id, weight: w, costPortion, previousStatus });
     }
     if (!lines.length) {
         toast('Enter a release weight for at least one selected item');
@@ -1101,6 +1392,84 @@ function submitLiquidation() {
     saveDB();
     render();
     toast('Liquidation recorded');
+}
+let editingLiquidationId = null;
+function openLiquidationEdit(id) {
+    const record = db.liquidations.find(l => l.id === id);
+    if (!record || !adminEditGuard())
+        return;
+    editingLiquidationId = id;
+    openAdminEditModal('Edit liquidation', `<div class="form-grid">
+    <div class="field"><label>Release date</label><input id="edit_liquidation_date" type="date" value="${esc(record.date || todayStr())}"></div>
+    <div class="field"><label>Buyer / refiner</label><input id="edit_liquidation_buyer" value="${esc(record.buyer || '')}"></div>
+    <div class="field"><label>Selling rate (PHP/g)</label><input id="edit_liquidation_rate" type="number" min="0" step="0.01" value="${Number(record.sellingRate)}"></div>
+    <div class="field"><label>Payment status</label><select id="edit_liquidation_payment">${['Pending', 'Partially Paid', 'Paid'].map(status => `<option ${record.paymentStatus === status ? 'selected' : ''}>${status}</option>`).join('')}</select></div>
+    <div class="field span-2"><label>Remarks</label><textarea id="edit_liquidation_remarks">${esc(record.remarks || '')}</textarea></div>
+  </div><p class="form-note">Released weight and inventory cost remain locked. Proceeds and margin are recalculated from the new selling rate.</p>`, 'saveLiquidationEdit', 'deleteLiquidationRecord');
+}
+async function saveLiquidationEdit() {
+    if (!adminEditGuard())
+        return;
+    const record = db.liquidations.find(l => l.id === editingLiquidationId);
+    if (!record)
+        return;
+    const buyer = val('edit_liquidation_buyer').trim(), rate = Number(val('edit_liquidation_rate'));
+    if (!val('edit_liquidation_date') || !buyer) {
+        toast('Date and buyer are required');
+        return;
+    }
+    if (!Number.isFinite(rate) || rate <= 0) {
+        toast('Enter a valid selling rate');
+        return;
+    }
+    record.date = val('edit_liquidation_date');
+    record.buyer = buyer;
+    record.sellingRate = roundMoney(rate);
+    record.paymentStatus = val('edit_liquidation_payment');
+    record.remarks = val('edit_liquidation_remarks').trim();
+    record.proceeds = roundMoney(Number(record.releasedWeight) * rate);
+    record.margin = roundMoney(record.proceeds - Number(record.cost));
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Liquidation updated');
+}
+async function deleteLiquidationRecord() {
+    if (!adminEditGuard())
+        return;
+    const record = db.liquidations.find(l => l.id === editingLiquidationId);
+    if (!record)
+        return;
+    const items = (record.lines || []).map(line => ({ line, item: db.stock.find(s => s.id === line.itemId) }));
+    if (items.some(entry => !entry.item)) {
+        toast('Cannot reverse this liquidation because an inventory item is missing');
+        return;
+    }
+    if (items.some(entry => entry.item.status === 'Sold' || db.retailSales.some(sale => sale.itemId === entry.item.id))) {
+        toast('Delete the later retail sale before reversing this liquidation');
+        return;
+    }
+    if (items.some(entry => db.refiningBatches.some(batch => (batch.itemIds || []).includes(entry.item.id)))) {
+        toast('Delete the later refining batch before reversing this liquidation');
+        return;
+    }
+    if (items.some(({ line, item }) => Number(item.currentWeight) + Number(line.weight || 0) > Number(item.netWeight) + 0.005)) {
+        toast('Inventory weight has changed and this liquidation cannot be reversed safely');
+        return;
+    }
+    if (!confirm(`Delete this liquidation for ${record.buyer} and restore ${fmtWeight(record.releasedWeight)} to inventory?`))
+        return;
+    items.forEach(({ line, item }) => {
+        item.currentWeight = roundWeight(Number(item.currentWeight) + Number(line.weight || 0));
+        item.cost = roundMoney(Number(item.cost) + Number(line.costPortion || 0));
+        if (item.currentWeight > 0 && item.status === 'Liquidated')
+            item.status = line.previousStatus || (item.itemType === 'Scrap' ? 'For Refining' : 'For Selling');
+    });
+    db.liquidations = db.liquidations.filter(l => l.id !== record.id);
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Liquidation deleted and inventory restored');
 }
 /* ============================= REFINING ============================= */
 let refMetal = 'Gold';
@@ -1144,7 +1513,7 @@ function renderRefining() {
     <h2 class="block-title">Refining history</h2>
     ${tableOrEmpty(db.refiningBatches.slice().sort((a, b) => b.date.localeCompare(a.date)), r => `<tr><td>${fmtDate(r.date)}</td><td><span class="metal-tag ${r.metal.toLowerCase()}">${r.metal}</span></td><td>${esc(r.refiner)}</td>
       <td class="num">${fmtWeight(r.inputWeight)}</td><td class="num">${fmtWeight(r.expectedYield)}</td><td class="num">${fmtWeight(r.actualYield)}</td>
-      <td class="num" style="color:${r.variance >= 0 ? 'var(--sage)' : 'var(--rust)'}">${r.variance >= 0 ? '+' : ''}${fmtWeight(r.variance)}</td><td class="num">${fmtMoney(r.refiningCharges)}</td></tr>`, ['Date', 'Metal', 'Refiner', 'Input wt', 'Expected yield', 'Actual yield', 'Variance', 'Charges'], 'No refining batches recorded yet.')}
+      <td class="num" style="color:${r.variance >= 0 ? 'var(--sage)' : 'var(--rust)'}">${r.variance >= 0 ? '+' : ''}${fmtWeight(r.variance)}</td><td class="num">${fmtMoney(r.refiningCharges)}</td>${isAdmin() ? `<td>${adminEditButton('Refining', r.id)}</td>` : ''}</tr>`, ['Date', 'Metal', 'Refiner', 'Input wt', 'Expected yield', 'Actual yield', 'Variance', 'Charges', ...(isAdmin() ? ['Actions'] : [])], 'No refining batches recorded yet.')}
   </section>
   `;
 }
@@ -1162,19 +1531,90 @@ function submitRefining() {
     }
     const expected = parseFloat(val('rf_expected')) || 0, actual = parseFloat(val('rf_actual')) || 0;
     const charges = parseFloat(val('rf_charges')) || 0, returned = parseFloat(val('rf_returned')) || 0;
-    let inputWeight = 0;
+    let inputWeight = 0, itemSnapshots = [];
     chosen.forEach(id => {
         const item = db.stock.find(s => s.id === id);
+        itemSnapshots.push({ itemId: id, currentWeight: Number(item.currentWeight), status: item.status });
         inputWeight += Number(item.currentWeight);
         item.currentWeight = 0;
         item.status = 'Liquidated';
     });
-    db.refiningBatches.push({ id: uid('ref'), date: val('rf_date'), metal: refMetal, refiner, itemIds: chosen,
+    db.refiningBatches.push({ id: uid('ref'), date: val('rf_date'), metal: refMetal, refiner, itemIds: chosen, itemSnapshots,
         inputWeight: +inputWeight.toFixed(2), expectedYield: expected, actualYield: actual,
         variance: +(actual - expected).toFixed(2), refiningCharges: charges, returnedMetal: returned, remarks: val('rf_remarks').trim() });
     saveDB();
     render();
     toast('Refining batch saved');
+}
+let editingRefiningId = null;
+function openRefiningEdit(id) {
+    const record = db.refiningBatches.find(r => r.id === id);
+    if (!record || !adminEditGuard())
+        return;
+    editingRefiningId = id;
+    openAdminEditModal('Edit refining batch', `<div class="form-grid">
+    <div class="field"><label>Date</label><input id="edit_refining_date" type="date" value="${esc(record.date || todayStr())}"></div>
+    <div class="field"><label>Refiner</label><input id="edit_refining_refiner" value="${esc(record.refiner || '')}"></div>
+    <div class="field"><label>Expected yield (g)</label><input id="edit_refining_expected" type="number" min="0" step="0.01" value="${Number(record.expectedYield) || 0}"></div>
+    <div class="field"><label>Actual yield (g)</label><input id="edit_refining_actual" type="number" min="0" step="0.01" value="${Number(record.actualYield) || 0}"></div>
+    <div class="field"><label>Refining charges (PHP)</label><input id="edit_refining_charges" type="number" min="0" step="0.01" value="${Number(record.refiningCharges) || 0}"></div>
+    <div class="field"><label>Returned metal (g)</label><input id="edit_refining_returned" type="number" min="0" step="0.01" value="${Number(record.returnedMetal) || 0}"></div>
+    <div class="field span-2"><label>Remarks</label><textarea id="edit_refining_remarks">${esc(record.remarks || '')}</textarea></div>
+  </div><p class="form-note">Input items and input weight remain locked. Variance is recalculated automatically.</p>`, 'saveRefiningEdit', 'deleteRefiningRecord');
+}
+async function saveRefiningEdit() {
+    if (!adminEditGuard())
+        return;
+    const record = db.refiningBatches.find(r => r.id === editingRefiningId);
+    if (!record)
+        return;
+    const expected = Number(val('edit_refining_expected')), actual = Number(val('edit_refining_actual')), charges = Number(val('edit_refining_charges')), returned = Number(val('edit_refining_returned'));
+    if (!val('edit_refining_date') || !val('edit_refining_refiner').trim()) {
+        toast('Date and refiner are required');
+        return;
+    }
+    if ([expected, actual, charges, returned].some(value => !Number.isFinite(value) || value < 0)) {
+        toast('Yield, charges, and returned metal must be valid non-negative values');
+        return;
+    }
+    Object.assign(record, { date: val('edit_refining_date'), refiner: val('edit_refining_refiner').trim(), expectedYield: roundWeight(expected), actualYield: roundWeight(actual), variance: roundWeight(actual - expected), refiningCharges: roundMoney(charges), returnedMetal: roundWeight(returned), remarks: val('edit_refining_remarks').trim() });
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Refining batch updated');
+}
+async function deleteRefiningRecord() {
+    if (!adminEditGuard())
+        return;
+    const record = db.refiningBatches.find(r => r.id === editingRefiningId);
+    if (!record)
+        return;
+    const snapshots = (record.itemSnapshots?.length ? record.itemSnapshots : (record.itemIds || []).map(itemId => {
+        const item = db.stock.find(s => s.id === itemId);
+        const previouslyReleased = db.liquidations.reduce((sum, batch) => sum + (batch.lines || []).filter(line => line.itemId === itemId).reduce((lineSum, line) => lineSum + Number(line.weight || 0), 0), 0);
+        return { itemId, currentWeight: Math.max(0, (Number(item?.netWeight) || 0) - previouslyReleased), status: 'For Refining' };
+    }));
+    const items = snapshots.map(snapshot => ({ snapshot, item: db.stock.find(s => s.id === snapshot.itemId) }));
+    if (items.some(entry => !entry.item)) {
+        toast('Cannot reverse this batch because an inventory item is missing');
+        return;
+    }
+    if (items.some(entry => entry.item.status === 'Sold' || db.retailSales.some(sale => sale.itemId === entry.item.id))) {
+        toast('Delete the later retail sale before reversing this refining batch');
+        return;
+    }
+    if (items.some(entry => Number(entry.item.currentWeight) !== 0 || entry.item.status !== 'Liquidated')) {
+        toast('Inventory has changed and this refining batch cannot be reversed safely');
+        return;
+    }
+    if (!confirm(`Delete this refining batch for ${record.refiner} and restore its input items to inventory?`))
+        return;
+    items.forEach(({ snapshot, item }) => { item.currentWeight = roundWeight(snapshot.currentWeight); item.status = snapshot.status || 'For Refining'; });
+    db.refiningBatches = db.refiningBatches.filter(r => r.id !== record.id);
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Refining batch deleted and inventory restored');
 }
 /* ============================= RETAIL SALES ============================= */
 let lastRetailSaleId = null;
@@ -1201,7 +1641,7 @@ function renderRetail() {
   <section class="block">
     <h2 class="block-title">Retail sales history</h2>
     ${tableOrEmpty(db.retailSales.slice().sort((a, b) => b.date.localeCompare(a.date)), r => `<tr><td>${fmtDate(r.date)}</td><td>${esc(r.buyer)}</td><td class="num">${fmtMoney(r.salePrice)}</td>
-      <td class="num">${fmtMoney(r.cost)}</td><td class="num" style="color:${r.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(r.margin)}</td><td><button class="btn secondary small" onclick="printRetailSummary('${r.id}')">Summary</button></td></tr>`, ['Date', 'Buyer', 'Sale price', 'Cost', 'Margin', ''], 'No retail sales recorded yet.')}
+      <td class="num">${fmtMoney(r.cost)}</td><td class="num" style="color:${r.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(r.margin)}</td><td><div class="form-actions"><button class="btn secondary small" onclick="printRetailSummary('${r.id}')">Summary</button>${adminEditButton('Retail', r.id)}</div></td></tr>`, ['Date', 'Buyer', 'Sale price', 'Cost', 'Margin', 'Actions'], 'No retail sales recorded yet.')}
   </section>
   `;
 }
@@ -1218,15 +1658,78 @@ function submitRetail() {
         return;
     }
     const buyer = val('rt_buyer').trim() || 'Walk-in';
+    const soldWeight = Number(item.currentWeight);
     item.status = 'Sold';
     item.currentWeight = 0;
     const sale = { id: uid('rtl'), date: val('rt_date'), itemId, buyer, salePrice: price, cost: item.cost, margin: +(price - item.cost).toFixed(2),
-        itemSummary: `${item.metal} ${item.karat} ${item.itemType}`, weight: item.netWeight };
+        itemSummary: `${item.metal} ${item.karat} ${item.itemType}`, weight: soldWeight };
     db.retailSales.push(sale);
     lastRetailSaleId = sale.id;
     saveDB();
     render();
     toast('Sale recorded');
+}
+let editingRetailId = null;
+function openRetailEdit(id) {
+    const record = db.retailSales.find(r => r.id === id);
+    if (!record || !adminEditGuard())
+        return;
+    editingRetailId = id;
+    openAdminEditModal('Edit retail sale', `<div class="form-grid">
+    <div class="field"><label>Sale date</label><input id="edit_retail_date" type="date" value="${esc(record.date || todayStr())}"></div>
+    <div class="field"><label>Buyer</label><input id="edit_retail_buyer" value="${esc(record.buyer || '')}"></div>
+    <div class="field span-2"><label>Sale price (PHP)</label><input id="edit_retail_price" type="number" min="0" step="0.01" value="${Number(record.salePrice)}"></div>
+  </div><p class="form-note">The sold item and inventory cost remain locked. Margin is recalculated automatically.</p>`, 'saveRetailEdit', 'deleteRetailRecord');
+}
+async function saveRetailEdit() {
+    if (!adminEditGuard())
+        return;
+    const record = db.retailSales.find(r => r.id === editingRetailId);
+    if (!record)
+        return;
+    const price = Number(val('edit_retail_price')), buyer = val('edit_retail_buyer').trim();
+    if (!val('edit_retail_date') || !buyer) {
+        toast('Date and buyer are required');
+        return;
+    }
+    if (!Number.isFinite(price) || price <= 0) {
+        toast('Enter a valid sale price');
+        return;
+    }
+    record.date = val('edit_retail_date');
+    record.buyer = buyer;
+    record.salePrice = roundMoney(price);
+    record.margin = roundMoney(price - Number(record.cost));
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Retail sale updated');
+}
+async function deleteRetailRecord() {
+    if (!adminEditGuard())
+        return;
+    const record = db.retailSales.find(r => r.id === editingRetailId);
+    if (!record)
+        return;
+    const item = db.stock.find(s => s.id === record.itemId);
+    if (!item) {
+        toast('Cannot reverse this sale because its inventory item is missing');
+        return;
+    }
+    if (item.status !== 'Sold' || Number(item.currentWeight) !== 0) {
+        toast('Inventory has changed and this retail sale cannot be reversed safely');
+        return;
+    }
+    if (!confirm(`Delete this retail sale to ${record.buyer} and return the item to available inventory?`))
+        return;
+    const previouslyReleased = db.liquidations.reduce((sum, batch) => sum + (batch.lines || []).filter(line => line.itemId === item.id).reduce((lineSum, line) => lineSum + Number(line.weight || 0), 0), 0);
+    item.currentWeight = roundWeight(Math.min(Number(record.weight) || Number(item.netWeight), Math.max(0, Number(item.netWeight) - previouslyReleased)));
+    item.status = 'For Selling';
+    db.retailSales = db.retailSales.filter(r => r.id !== record.id);
+    closeAdminEditModal();
+    await saveDB();
+    render();
+    toast('Retail sale deleted and item restored');
 }
 function printRetailSummary(id) {
     const sale = db.retailSales.find(r => r.id === id), item = sale && db.stock.find(s => s.id === sale.itemId);
@@ -1243,6 +1746,139 @@ function printRetailSummary(id) {
     }
     w.document.write(`<!doctype html><html><head><title>Retail Sale ${esc(sale.id)}</title><style>body{font-family:Arial,sans-serif;max-width:620px;margin:45px auto;color:#222}h1{font-family:Georgia,serif}table{width:100%;border-collapse:collapse;margin-top:24px}td{padding:10px;border-bottom:1px solid #ddd}td:last-child{text-align:right}.foot{margin-top:35px;font-size:12px;color:#666}@media print{button{display:none}}</style></head><body><h1>ZPP Gold Trading</h1><p>Retail transaction summary</p><table><tr><td>Reference</td><td>${esc(sale.id)}</td></tr><tr><td>Date</td><td>${esc(fmtDate(sale.date))}</td></tr><tr><td>Buyer</td><td>${esc(sale.buyer)}</td></tr><tr><td>Item</td><td>${esc(summary)}</td></tr><tr><td>Weight</td><td>${esc(fmtWeight(weight))}</td></tr><tr><td>Sale price</td><td>${esc(fmtMoney(sale.salePrice))}</td></tr></table><p class="foot">This summary records the selected jewelry item removed from available inventory.</p><button onclick="window.print()">Print</button></body></html>`);
     w.document.close();
+}
+/* ============================= USER ACCOUNTS ============================= */
+function renderUsers() {
+    if (!isAdmin())
+        return '<div class="empty-note">Administrator access required.</div>';
+    return `
+  <section class="block">
+    <h2 class="block-title">Create an account</h2>
+    <div class="form-grid">
+      <div class="field"><label>Account holder</label><input id="usr_name" placeholder="Full name"></div>
+      <div class="field"><label>Username</label><input id="usr_username" autocomplete="off" placeholder="e.g. juan.santos"></div>
+      <div class="field"><label>Temporary password</label><input id="usr_password" type="password" autocomplete="new-password" placeholder="At least 8 characters"></div>
+      <div class="field"><label>Role and access</label><select id="usr_role" onchange="updateRoleDescription()"><option value="staff">Staff — limited access</option><option value="admin">Admin — full access</option></select><span class="hint" id="usr_role_description">Can view rates, override grades, record purchases, view inventory, and manage customers.</span></div>
+    </div>
+    <div class="form-actions"><button class="btn" onclick="createUserAccount()">Create account</button><span class="form-note">Only administrators can create accounts or grant administrator access.</span></div>
+  </section>
+  <section class="block">
+    <h2 class="block-title">Accounts</h2>
+    <div id="user_accounts_table">${renderUserAccountsTable()}</div>
+  </section>`;
+}
+function renderUserAccountsTable() {
+    return tableOrEmpty(userAccounts, user => `<tr><td>${esc(user.displayName)}</td><td>${esc(user.username)}</td><td>${esc(user.role)}</td><td>${user.active ? 'Active' : 'Disabled'}</td><td>${esc(new Date(user.createdAt).toLocaleDateString('en-PH'))}</td><td>${adminEditButton('User', user.id)}</td></tr>`, ['Name', 'Username', 'Role', 'Status', 'Created', 'Actions'], 'Loading accounts…');
+}
+async function loadUserAccounts() {
+    if (!isAdmin())
+        return;
+    try {
+        const response = await fetch('/api/users', { cache: 'no-store' });
+        if (!response.ok)
+            throw new Error('Could not load accounts');
+        userAccounts = (await response.json()).users || [];
+        const container = document.getElementById('user_accounts_table');
+        if (container)
+            container.innerHTML = renderUserAccountsTable();
+    }
+    catch (error) {
+        toast(error.message || 'Could not load accounts');
+    }
+}
+function updateRoleDescription() {
+    const description = document.getElementById('usr_role_description');
+    if (description)
+        description.textContent = val('usr_role') === 'admin'
+            ? 'Full access to pricing, purchases, inventory, liquidation, refining, retail sales, reports, and user accounts.'
+            : 'Can view rates, override grades, record purchases, view inventory, and manage customers.';
+}
+async function createUserAccount() {
+    const displayName = val('usr_name').trim(), username = val('usr_username').trim(), password = val('usr_password'), role = val('usr_role');
+    try {
+        const response = await fetch('/api/users', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName, username, password, role }) });
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error || 'Could not create account');
+        toast(`${role === 'admin' ? 'Admin' : 'Staff'} account ${result.user.username} created`);
+        ['usr_name', 'usr_username', 'usr_password'].forEach(id => { const input = document.getElementById(id); if (input)
+            input.value = ''; });
+        await loadUserAccounts();
+    }
+    catch (error) {
+        toast(error.message || 'Could not create account');
+    }
+}
+let editingUserId = null;
+function openUserEdit(id) {
+    const account = userAccounts.find(user => user.id === id);
+    if (!account || !adminEditGuard())
+        return;
+    editingUserId = id;
+    openAdminEditModal('Edit user account', `<div class="form-grid">
+    <div class="field"><label>Account holder</label><input id="edit_user_name" value="${esc(account.displayName)}"></div>
+    <div class="field"><label>Username</label><input value="${esc(account.username)}" disabled><span class="hint">Usernames cannot be changed.</span></div>
+    <div class="field"><label>Role and access</label><select id="edit_user_role"><option value="staff" ${account.role === 'staff' ? 'selected' : ''}>Staff — limited access</option><option value="admin" ${account.role === 'admin' ? 'selected' : ''}>Admin — full access</option></select></div>
+    <div class="field"><label>Account status</label><select id="edit_user_active"><option value="true" ${account.active ? 'selected' : ''}>Active</option><option value="false" ${!account.active ? 'selected' : ''}>Disabled</option></select></div>
+    <div class="field span-2"><label>Reset password <span class="hint">optional</span></label><input id="edit_user_password" type="password" autocomplete="new-password" placeholder="Leave blank to keep the current password"></div>
+  </div><p class="form-note">Role and status changes take effect on the server. A disabled user is signed out on their next request.</p>`, 'saveUserEdit', 'deleteUserRecord');
+}
+async function saveUserEdit() {
+    if (!adminEditGuard())
+        return;
+    const account = userAccounts.find(user => user.id === editingUserId);
+    if (!account)
+        return;
+    const displayName = val('edit_user_name').trim(), role = val('edit_user_role'), active = val('edit_user_active') === 'true', password = val('edit_user_password');
+    if (!displayName) {
+        toast('Account holder name is required');
+        return;
+    }
+    if (password && password.length < 8) {
+        toast('New password must be at least 8 characters');
+        return;
+    }
+    try {
+        const response = await fetch(`/api/users/${encodeURIComponent(account.id)}`, { method: 'PATCH', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ displayName, role, active, password }) });
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error || 'Could not update account');
+        closeAdminEditModal();
+        if (currentUser?.id === account.id) {
+            currentUser = { ...currentUser, displayName: result.user.displayName };
+            showApp();
+        }
+        await loadUserAccounts();
+        toast('User account updated');
+    }
+    catch (error) {
+        toast(error.message || 'Could not update account');
+    }
+}
+async function deleteUserRecord() {
+    if (!adminEditGuard())
+        return;
+    const account = userAccounts.find(user => user.id === editingUserId);
+    if (!account)
+        return;
+    if (account.id === currentUser?.id) {
+        toast('You cannot delete the account currently signed in');
+        return;
+    }
+    if (!confirm(`Permanently delete the account "${account.username}"?`))
+        return;
+    try {
+        const response = await fetch(`/api/users/${encodeURIComponent(account.id)}`, { method: 'DELETE' });
+        const result = await response.json();
+        if (!response.ok)
+            throw new Error(result.error || 'Could not delete account');
+        closeAdminEditModal();
+        await loadUserAccounts();
+        toast('User account deleted');
+    }
+    catch (error) {
+        toast(error.message || 'Could not delete account');
+    }
 }
 /* ============================= REPORTS ============================= */
 function toCSV(rows, columns) {
@@ -1297,7 +1933,7 @@ function exportCustomers() {
     ]));
 }
 function exportRates() {
-    downloadCSV('zpp_rate_history.csv', toCSV(db.pricingHistory, [
+    downloadCSV('zpp_rate_history.csv', toCSV(visiblePricingHistory(), [
         { label: 'Effective date', key: 'effectiveDate' }, { label: 'Entered by', key: 'enteredBy' },
         { label: 'Gold 24K base', get: h => h.snapshot.gold.base }, { label: 'Silver base', get: h => h.snapshot.silver.base }, { label: 'Platinum base', get: h => h.snapshot.platinum.base }
     ]));
@@ -1334,4 +1970,4 @@ function renderReports() {
   `;
 }
 /* ============================= INIT ============================= */
-loadDB();
+initializeAuth();
