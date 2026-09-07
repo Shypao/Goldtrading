@@ -3,12 +3,16 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
-import { randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
+import { createHmac, randomBytes, scryptSync, timingSafeEqual } from 'node:crypto';
 
 const currentDirectory = path.dirname(fileURLToPath(import.meta.url));
-const projectDirectory = path.resolve(currentDirectory, '..');
+const parentDirectory = path.resolve(currentDirectory, '..');
+const projectDirectory = fs.existsSync(path.join(parentDirectory, 'public'))
+  ? parentDirectory
+  : path.resolve(parentDirectory, '..');
 const publicDirectory = path.join(projectDirectory, 'public');
-const dataDirectory = path.join(projectDirectory, 'data');
+const isVercel = Boolean(process.env.VERCEL);
+const dataDirectory = isVercel ? path.join('/tmp', 'zpp-gold-trading') : path.join(projectDirectory, 'data');
 const databaseFile = path.join(dataDirectory, 'zpp-gold-trading.db');
 const host = '127.0.0.1';
 const port = Number(process.env.ZPP_PORT ?? 4177);
@@ -29,7 +33,6 @@ interface GoldApiResponse { price: number }
 interface ExchangeApiResponse { rates?: { PHP?: number } }
 type UserRole = 'admin' | 'staff';
 interface AuthUser { id: string; username: string; displayName: string; role: UserRole }
-interface SessionRecord { user: AuthUser; expiresAt: number }
 
 fs.mkdirSync(dataDirectory, { recursive: true });
 const database = new DatabaseSync(databaseFile);
@@ -55,8 +58,8 @@ database.exec(`
   );
 `);
 
-const sessions = new Map<string, SessionRecord>();
 const sessionLifetimeMs = 12 * 60 * 60 * 1000;
+const sessionSecret = process.env.ZPP_SESSION_SECRET ?? process.env.ZPP_ADMIN_PASSWORD ?? 'zpp-local-session-secret-change-in-production';
 
 function passwordDigest(password: string, salt: string): string {
   return scryptSync(password, salt, 64).toString('hex');
@@ -102,23 +105,33 @@ function cookies(request: IncomingMessage): Record<string, string> {
   }));
 }
 
+function signSession(userId: string, expiresAt: number): string {
+  const payload = Buffer.from(JSON.stringify({ userId, expiresAt }), 'utf8').toString('base64url');
+  const signature = createHmac('sha256', sessionSecret).update(payload).digest('base64url');
+  return `${payload}.${signature}`;
+}
+
 function sessionUser(request: IncomingMessage): AuthUser | null {
   const token = cookies(request).zpp_session;
   if (!token) return null;
-  const session = sessions.get(token);
-  if (!session || session.expiresAt <= Date.now()) {
-    sessions.delete(token);
+  const [payload, suppliedSignature] = token.split('.');
+  if (!payload || !suppliedSignature) return null;
+  const expectedSignature = createHmac('sha256', sessionSecret).update(payload).digest('base64url');
+  const suppliedBuffer = Buffer.from(suppliedSignature);
+  const expectedBuffer = Buffer.from(expectedSignature);
+  if (suppliedBuffer.length !== expectedBuffer.length || !timingSafeEqual(suppliedBuffer, expectedBuffer)) return null;
+  let session: { userId: string; expiresAt: number };
+  try {
+    session = JSON.parse(Buffer.from(payload, 'base64url').toString('utf8')) as { userId: string; expiresAt: number };
+  } catch {
     return null;
   }
-  const account = database.prepare('SELECT username, display_name AS displayName, role, active FROM users WHERE id = ?').get(session.user.id) as {
+  if (!session.userId || !Number.isFinite(session.expiresAt) || session.expiresAt <= Date.now()) return null;
+  const account = database.prepare('SELECT username, display_name AS displayName, role, active FROM users WHERE id = ?').get(session.userId) as {
     username: string; displayName: string; role: UserRole; active: number;
   } | undefined;
-  if (!account?.active) {
-    sessions.delete(token);
-    return null;
-  }
-  session.user = { id: session.user.id, username: account.username, displayName: account.displayName, role: account.role };
-  return session.user;
+  if (!account?.active) return null;
+  return { id: session.userId, username: account.username, displayName: account.displayName, role: account.role };
 }
 
 function publicStateFor(user: AuthUser): LedgerState {
@@ -296,7 +309,7 @@ function serveFile(response: ServerResponse, filename: string, contentType: stri
   fs.createReadStream(filepath).pipe(response);
 }
 
-const server = http.createServer(async (request, response) => {
+export async function requestHandler(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? `${host}:${port}`}`);
   try {
     if (request.method === 'GET' && url.pathname === '/api/health') return sendJson(response, 200, { ok: true, database: databaseFile });
@@ -314,14 +327,13 @@ const server = http.createServer(async (request, response) => {
         timingSafeEqual(Buffer.from(suppliedHash, 'hex'), Buffer.from(row.password_hash, 'hex')));
       if (!valid || !row) return sendJson(response, 401, { error: 'Invalid username or password' });
       const user: AuthUser = { id: row.id, username: row.username, displayName: row.display_name, role: row.role };
-      const token = randomBytes(32).toString('hex');
-      sessions.set(token, { user, expiresAt: Date.now() + sessionLifetimeMs });
-      return sendJson(response, 200, { user }, { 'Set-Cookie': `zpp_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200` });
+      const token = signSession(user.id, Date.now() + sessionLifetimeMs);
+      const secure = isVercel ? '; Secure' : '';
+      return sendJson(response, 200, { user }, { 'Set-Cookie': `zpp_session=${token}; HttpOnly; SameSite=Strict; Path=/; Max-Age=43200${secure}` });
     }
     if (request.method === 'POST' && url.pathname === '/api/logout') {
-      const token = cookies(request).zpp_session;
-      if (token) sessions.delete(token);
-      return sendJson(response, 200, { ok: true }, { 'Set-Cookie': 'zpp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0' });
+      const secure = isVercel ? '; Secure' : '';
+      return sendJson(response, 200, { ok: true }, { 'Set-Cookie': `zpp_session=; HttpOnly; SameSite=Strict; Path=/; Max-Age=0${secure}` });
     }
     if (request.method === 'GET' && url.pathname === '/api/session') {
       const user = sessionUser(request);
@@ -403,11 +415,6 @@ const server = http.createServer(async (request, response) => {
         database.prepare('UPDATE users SET display_name = ?, role = ?, active = ? WHERE id = ?')
           .run(displayName, role, active, targetId);
       }
-      if (target.id === user!.id) {
-        for (const session of sessions.values()) {
-          if (session.user.id === targetId) session.user = { ...session.user, displayName };
-        }
-      }
       return sendJson(response, 200, { user: { id: target.id, username: target.username, displayName, role, active: Boolean(active), createdAt: target.createdAt } });
     }
     if (request.method === 'DELETE' && userEditMatch) {
@@ -423,9 +430,6 @@ const server = http.createServer(async (request, response) => {
         if (activeAdminCount <= 1) return sendJson(response, 400, { error: 'At least one active administrator is required' });
       }
       database.prepare('DELETE FROM users WHERE id = ?').run(targetId);
-      for (const [token, session] of sessions.entries()) {
-        if (session.user.id === targetId) sessions.delete(token);
-      }
       return sendJson(response, 200, { ok: true, deletedUser: target.username });
     }
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return serveFile(response, 'index.html', 'text/html; charset=utf-8');
@@ -435,9 +439,15 @@ const server = http.createServer(async (request, response) => {
     console.error(error);
     return sendJson(response, 500, { error: error instanceof Error ? error.message : 'Server error' });
   }
-});
+}
 
-server.listen(port, host, () => {
-  console.log(`ZPP Gold Trading: http://${host}:${port}`);
-  console.log(`SQLite database: ${databaseFile}`);
-});
+export default requestHandler;
+
+const isDirectRun = Boolean(process.argv[1]) && path.resolve(process.argv[1]) === fileURLToPath(import.meta.url);
+if (isDirectRun) {
+  const server = http.createServer(requestHandler);
+  server.listen(port, host, () => {
+    console.log(`ZPP Gold Trading: http://${host}:${port}`);
+    console.log(`SQLite database: ${databaseFile}`);
+  });
+}
