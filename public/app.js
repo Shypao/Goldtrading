@@ -534,6 +534,8 @@ function render() {
         liquidation: renderLiquidation, refining: renderRefining, retail: renderRetail, customers: renderCustomers,
         users: renderUsers };
     el.innerHTML = fns[currentTab]();
+    if (currentTab === 'liquidation')
+        requestAnimationFrame(updateLiquidationPreview);
 }
 /* ============================= DASHBOARD ============================= */
 function renderDashboard() {
@@ -1259,14 +1261,115 @@ function printPurchaseReceipt(batchId) {
 }
 /* ============================= INVENTORY ============================= */
 let invFilter = { metal: 'All', karat: 'All', type: 'All', status: 'All' };
+let inventoryWeekOffset = 0;
+let inventorySelectedDate = todayStr();
+const liquidationSelection = new Set();
+const liquidationDraft = new Map();
+function inventoryWeekRange(offset = inventoryWeekOffset) {
+    const today = new Date(todayStr() + 'T00:00:00');
+    const mondayIndex = (today.getDay() + 6) % 7;
+    const start = new Date(today);
+    start.setDate(today.getDate() - mondayIndex + (offset * 7));
+    const end = new Date(start);
+    end.setDate(start.getDate() + 6);
+    const asKey = date => { const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000); return local.toISOString().slice(0, 10); };
+    return { start: asKey(start), end: asKey(end) };
+}
+function clearInventoryLiquidationSelection() { liquidationSelection.clear(); liquidationDraft.clear(); }
+function dateKeyPlusDays(dateKey, days) {
+    const date = new Date(dateKey + 'T00:00:00');
+    date.setDate(date.getDate() + days);
+    const local = new Date(date.getTime() - date.getTimezoneOffset() * 60000);
+    return local.toISOString().slice(0, 10);
+}
+function changeInventoryWeek(delta) {
+    clearInventoryLiquidationSelection();
+    inventoryWeekOffset += delta;
+    inventorySelectedDate = inventoryWeekRange().start;
+    render();
+}
+function selectInventoryDate(date) { clearInventoryLiquidationSelection(); inventorySelectedDate = date; render(); }
+function selectableInventory(item) { return Number(item.currentWeight) > 0 && (item.status === 'For Selling' || item.status === 'For Refining'); }
+function selectedInventoryForLiquidation() { return db.stock.filter(item => liquidationSelection.has(item.id) && selectableInventory(item)); }
+function inventoryPercentagePool() {
+    return db.stock.filter(item => item.date === inventorySelectedDate && selectableInventory(item) &&
+        (invFilter.metal === 'All' || item.metal === invFilter.metal) &&
+        (invFilter.karat === 'All' || item.karat === invFilter.karat) &&
+        (invFilter.type === 'All' || item.itemType === invFilter.type) &&
+        (invFilter.status === 'All' || item.status === invFilter.status));
+}
+function percentageStockCount(percentage, total) { return total ? Math.max(1, Math.ceil(total * (Number(percentage) / 100))) : 0; }
+function toggleInventoryForLiquidation(id, checked) {
+    const item = db.stock.find(stock => stock.id === id);
+    if (!item || !selectableInventory(item))
+        return;
+    if (checked)
+        liquidationSelection.add(id);
+    else {
+        liquidationSelection.delete(id);
+        liquidationDraft.delete(id);
+    }
+    const selected = selectedInventoryForLiquidation();
+    const buttons = document.querySelectorAll('.inventory-move-liquidation');
+    const count = document.getElementById('inventory_liq_count');
+    buttons.forEach(button => button.disabled = !inventoryPercentagePool().length);
+    if (count)
+        count.textContent = String(selected.length);
+}
+function moveInventorySelectionToLiquidation(percentage) {
+    const selected = selectedInventoryForLiquidation();
+    const portion = Number(percentage);
+    if (![25, 50, 75, 100].includes(portion)) {
+        toast('Choose 25%, 50%, 75%, or 100%');
+        return;
+    }
+    const pool = inventoryPercentagePool();
+    const required = percentageStockCount(portion, pool.length);
+    if (!pool.length) {
+        toast('There are no eligible stock records for this date and filter');
+        return;
+    }
+    if (selected.length !== required) {
+        toast(`Select exactly ${required} of ${pool.length} stock records to move ${portion}%`);
+        return;
+    }
+    if (selected.some(item => !pool.some(poolItem => poolItem.id === item.id))) {
+        toast('All selected records must belong to the displayed date and filter');
+        return;
+    }
+    const metals = Array.from(new Set(selected.map(item => item.metal)));
+    if (metals.length !== 1) {
+        toast('Choose only one metal at a time. Gold, silver, and platinum use separate liquidation batches.');
+        return;
+    }
+    liqMetal = metals[0];
+    liqKarat = 'All';
+    liqStatus = 'All';
+    selected.forEach(item => {
+        liquidationSelection.add(item.id);
+        liquidationDraft.set(item.id, { weight: Number(item.currentWeight).toFixed(2), rate: liquidationDraft.get(item.id)?.rate || '' });
+    });
+    goTab('liquidation');
+    toast(`${portion}% of the stock records prepared: ${selected.length} of ${pool.length}`);
+}
 function renderInventory() {
+    const week = inventoryWeekRange();
+    if (inventorySelectedDate < week.start || inventorySelectedDate > week.end)
+        inventorySelectedDate = week.start;
+    const dates = Array.from({ length: 7 }, (_, index) => dateKeyPlusDays(week.start, index));
+    const dailyRows = dates.map(date => {
+        const stock = db.stock.filter(item => item.date === date), available = stock.filter(selectableInventory);
+        return { date, stock, available, weight: available.reduce((sum, item) => sum + Number(item.currentWeight), 0), cost: available.reduce((sum, item) => sum + Number(item.cost), 0) };
+    });
+    const selectedDay = dailyRows.find(day => day.date === inventorySelectedDate) || dailyRows[0];
+    const percentagePool = inventoryPercentagePool();
     const karats = Array.from(new Set(db.stock.map(s => s.karat)));
-    const rows = db.stock.filter(s => (invFilter.metal === 'All' || s.metal === invFilter.metal) &&
+    const rows = selectedDay.stock.filter(s => (invFilter.metal === 'All' || s.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || s.karat === invFilter.karat) &&
         (invFilter.type === 'All' || s.itemType === invFilter.type) &&
         (invFilter.status === 'All' || s.status === invFilter.status)).sort((a, b) => b.date.localeCompare(a.date));
     const groups = {};
-    db.stock.forEach(s => {
+    selectedDay.available.forEach(s => {
         if (s.currentWeight <= 0 || s.status === 'Sold' || s.status === 'Liquidated')
             return;
         const key = [s.metal, s.karat, s.itemType, s.status].join(' · ');
@@ -1276,10 +1379,21 @@ function renderInventory() {
     });
     return `
   <section class="block">
-    <h2 class="block-title">Inventory summary (weight &amp; cost)</h2>
+    <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Monday through Sunday</p><h2 class="block-title" style="margin:0;">Inventory by purchase date</h2><p class="form-note">Choose a dated day to see and select its stock.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
+    <div class="inventory-days">
+      ${dailyRows.map(day => `<button class="inventory-day ${day.date === inventorySelectedDate ? 'active' : ''}" onclick="selectInventoryDate('${day.date}')"><strong>${new Date(day.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}</strong><span>${fmtDate(day.date)}</span><small>${day.stock.length} record${day.stock.length === 1 ? '' : 's'}<br>${fmtWeight(day.weight)} available</small></button>`).join('')}
+    </div>
+    <h2 class="block-title">${new Date(selectedDay.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}, ${fmtDate(selectedDay.date)}</h2>
+    <div class="stat-row">
+      <div class="stat"><div class="label">Purchases recorded</div><div class="value">${selectedDay.stock.length}</div><div class="sub">inventory lines received on this date</div></div>
+      <div class="stat"><div class="label">Available stock lines</div><div class="value">${selectedDay.available.length}</div><div class="sub">eligible for selling or refining</div></div>
+      <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from this date's purchases</div></div>
+      <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost for this purchase date</div></div>
+    </div>
+    <h2 class="block-title" style="margin-top:20px;">Stock by metal, assay, type &amp; status</h2>
     <div class="stat-row">
       ${Object.keys(groups).length ? Object.entries(groups).map(([k, v]) => `<div class="stat"><div class="label">${k}</div><div class="value">${fmtWeight(v.weight)}</div><div class="sub">${fmtMoney(v.cost)} cost</div></div>`).join('')
-        : '<div class="empty-note" style="flex:1;">No active inventory yet.</div>'}
+        : `<div class="empty-note" style="flex:1;">No available inventory was purchased on ${fmtDate(selectedDay.date)}.</div>`}
     </div>
   </section>
 
@@ -1295,8 +1409,9 @@ function renderInventory() {
       <div class="field"><label>Status</label><select onchange="invFilter.status=this.value; render();">
         ${['All', 'For Selling', 'For Refining', 'On Hold', 'Liquidated', 'Sold'].map(s => `<option value="${s}" ${invFilter.status === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
     </div>
-    ${tableOrEmpty(rows, s => `<tr><td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.location || '—')}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td>${adminEditButton('Inventory', s.id)}</td>` : ''}</tr>`, ['Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Location', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], 'No stock matches this filter.')}
+    ${isAdmin() ? `<div class="form-actions"><strong>Selected: <span id="inventory_liq_count">${selectedInventoryForLiquidation().length}</span> of ${percentagePool.length} eligible records</strong>${[25, 50, 75, 100].map(percent => `<button class="btn ${percent === 100 ? '' : 'secondary'} small inventory-move-liquidation" onclick="moveInventorySelectionToLiquidation(${percent})" ${percentagePool.length ? '' : 'disabled'}>Move ${percent}% (${percentageStockCount(percent, percentagePool.length)})</button>`).join('')}<span class="form-note">Choose the exact records first. Percentages use the number of eligible records shown for this date; selected records move at their full available weight.</span></div>` : ''}
+    ${tableOrEmpty(rows, s => `<tr>${isAdmin() ? `<td><input type="checkbox" aria-label="Select ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${liquidationSelection.has(s.id) ? 'checked' : ''} ${selectableInventory(s) ? '' : 'disabled'}></td>` : ''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
+      <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.location || '—')}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td>${adminEditButton('Inventory', s.id)}</td>` : ''}</tr>`, [...(isAdmin() ? ['Select'] : []), 'Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Location', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], `No stock matches this filter on ${fmtDate(selectedDay.date)}.`)}
   </section>
   `;
 }
@@ -1375,39 +1490,34 @@ async function deleteInventoryRecord() {
 /* ============================= LIQUIDATION ============================= */
 let liqMetal = 'Gold', liqStatus = 'All', liqKarat = 'All';
 function renderLiquidation() {
-    const eligible = db.stock.filter(s => s.metal === liqMetal && s.currentWeight > 0 && (s.status === 'For Selling' || s.status === 'For Refining')
-        && (liqStatus === 'All' || s.status === liqStatus) && (liqKarat === 'All' || s.karat === liqKarat));
-    const karats = Array.from(new Set(db.stock.filter(s => s.metal === liqMetal).map(s => s.karat)));
+    const eligible = selectedInventoryForLiquidation();
+    if (eligible.length)
+        liqMetal = eligible[0].metal;
     return `
   <section class="block">
-    <h2 class="block-title">1. Choose what to release</h2>
-    <div class="filter-row">
-      <div class="field"><label>Metal</label><select onchange="liqMetal=this.value; render();">
-        ${['Gold', 'Silver', 'Platinum'].map(m => `<option ${liqMetal === m ? 'selected' : ''}>${m}</option>`).join('')}</select>
-        <span class="hint">Gold and silver are released in separate batches.</span>
-      </div>
-      <div class="field"><label>Karat / purity</label><select onchange="liqKarat=this.value; render();">
-        <option value="All">All</option>${karats.map(k => `<option ${liqKarat === k ? 'selected' : ''}>${k}</option>`).join('')}</select></div>
-      <div class="field"><label>Status</label><select onchange="liqStatus=this.value; render();">
-        ${['All', 'For Selling', 'For Refining'].map(s => `<option ${liqStatus === s ? 'selected' : ''}>${s}</option>`).join('')}</select></div>
-    </div>
+    <h2 class="block-title">1. Inventory moved for liquidation</h2>
+    <p class="form-note">Only records moved from the dated Inventory screen appear here. Return to Inventory to add other stock records.</p>
     ${eligible.length ? `
     <div class="item-check-wrap">
       <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span><span>Selling price (PHP/g)</span></div>
-      ${eligible.map(s => `
+      ${eligible.map(s => {
+        const draft = liquidationDraft.get(s.id) || { weight: Number(s.currentWeight).toFixed(2), rate: '' };
+        return `
         <div class="item-check-row" data-item="${s.id}">
-          <input type="checkbox" class="liq-chk" onchange="syncLiqRow('${s.id}')">
+          <button class="btn danger small" style="padding:4px 7px;" aria-label="Remove ${esc(s.karat)} from liquidation" onclick="removeStagedLiquidationItem('${s.id}')">×</button>
           <span>${fmtDate(s.date)} · ${esc(s.karat)} ${esc(s.itemType)} · ${esc(s.customerName)}</span>
           <span class="num">${fmtWeight(s.currentWeight)}</span>
           <span class="num">${fmtMoney(s.cost)}</span>
           <span>${statusPill(s.status)}</span>
-          <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" placeholder="0.00" oninput="updateLiquidationPreview()" disabled>
-          <input type="number" min="0" step="0.01" class="liq-rate" id="liqrate_${s.id}" placeholder="0.00" oninput="updateLiquidationPreview()" disabled>
-        </div>`).join('')}
+          <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" value="${esc(draft.weight)}" readonly>
+          <input type="number" min="0" step="0.01" class="liq-rate" id="liqrate_${s.id}" value="${esc(draft.rate)}" placeholder="0.00" oninput="updateLiquidationDraft('${s.id}')">
+        </div>`;
+    }).join('')}
     </div>
-    ` : `<div class="empty-note">No eligible ${liqMetal.toLowerCase()} stock for these filters.</div>`}
+    ` : `<div class="empty-note">No stock has been moved from Inventory.<div class="form-actions" style="justify-content:center;"><button class="btn" onclick="goTab('inventory')">Open Inventory</button></div></div>`}
   </section>
 
+  ${eligible.length ? `
   <section class="block">
     <h2 class="block-title">2. Batch details</h2>
     <div class="form-grid">
@@ -1427,6 +1537,7 @@ function renderLiquidation() {
       <span class="form-note">Each assay is calculated separately: release weight × its selling price. Cost is carried proportionally from each selected item.</span>
     </div>
   </section>
+  ` : ''}
 
   <section class="block">
     <h2 class="block-title">Liquidation history</h2>
@@ -1436,16 +1547,13 @@ function renderLiquidation() {
   </section>
   `;
 }
-function syncLiqRow(id) {
-    const chk = document.querySelector(`.item-check-row[data-item="${id}"] .liq-chk`);
-    const wt = document.getElementById('liqwt_' + id);
-    const rate = document.getElementById('liqrate_' + id);
-    wt.disabled = !chk.checked;
-    rate.disabled = !chk.checked;
-    if (chk.checked && !wt.value) {
-        const item = db.stock.find(s => s.id === id);
-        wt.value = Number(item.currentWeight).toFixed(2);
-    }
+function removeStagedLiquidationItem(id) {
+    liquidationSelection.delete(id);
+    liquidationDraft.delete(id);
+    render();
+}
+function updateLiquidationDraft(id) {
+    liquidationDraft.set(id, { weight: val('liqwt_' + id), rate: val('liqrate_' + id) });
     updateLiquidationPreview();
 }
 function liquidationRateLabel(record) {
@@ -1463,8 +1571,8 @@ function liquidationRateLabel(record) {
 }
 function liquidationPreviewValues() {
     let totalWeight = 0, totalCost = 0, totalProceeds = 0, selected = 0;
-    document.querySelectorAll('.item-check-row .liq-chk:checked').forEach(chk => {
-        const id = chk.closest('.item-check-row').dataset.item;
+    document.querySelectorAll('.item-check-row[data-item]').forEach(row => {
+        const id = row.dataset.item;
         const item = db.stock.find(s => s.id === id);
         if (!item)
             return;
@@ -1498,9 +1606,9 @@ function updateLiquidationPreview() {
     }
 }
 function submitLiquidation() {
-    const rows = Array.from(document.querySelectorAll('.item-check-row .liq-chk')).filter(c => c.checked);
+    const rows = Array.from(document.querySelectorAll('.item-check-row[data-item]'));
     if (!rows.length) {
-        toast('Select at least one item');
+        toast('Move stock records from Inventory first');
         return;
     }
     const buyer = val('lq_buyer').trim(), date = val('lq_date');
@@ -1513,8 +1621,7 @@ function submitLiquidation() {
         return;
     }
     const prepared = [];
-    for (const chk of rows) {
-        const row = chk.closest('.item-check-row');
+    for (const row of rows) {
         const id = row.dataset.item;
         const item = db.stock.find(s => s.id === id);
         const wtInput = document.getElementById('liqwt_' + id);
@@ -1557,6 +1664,7 @@ function submitLiquidation() {
     const uniqueRates = Array.from(new Set(lines.map(line => line.sellingRate)));
     db.liquidations.push({ id: uid('liq'), date, metal: liqMetal, buyer, sellingRate: uniqueRates.length === 1 ? uniqueRates[0] : null, releasedWeight: roundWeight(totalWeight),
         proceeds: roundMoney(totalProceeds), paymentStatus: val('lq_payment'), cost: roundMoney(totalCost), margin: roundMoney(totalProceeds - totalCost), lines, remarks: val('lq_remarks').trim() });
+    lines.forEach(line => { liquidationSelection.delete(line.itemId); liquidationDraft.delete(line.itemId); });
     saveDB();
     render();
     toast('Liquidation recorded');
