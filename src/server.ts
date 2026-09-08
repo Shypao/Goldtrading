@@ -342,6 +342,21 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     const user = sessionUser(request);
     if (url.pathname.startsWith('/api/') && !user) return sendJson(response, 401, { error: 'Sign in required' });
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, publicStateFor(user!));
+    if (request.method === 'POST' && url.pathname === '/api/admin/verify') {
+      const body = await readJsonBody(request) as Record<string, unknown>;
+      const username = String(body.username ?? '').trim().toLowerCase();
+      const password = String(body.password ?? '');
+      const row = database.prepare(`SELECT id, username, display_name, role, password_hash, salt, active
+        FROM users WHERE username = ?`).get(username) as {
+          id: string; username: string; display_name: string; role: UserRole;
+          password_hash: string; salt: string; active: number;
+        } | undefined;
+      const suppliedHash = row ? passwordDigest(password, row.salt) : passwordDigest(password, 'invalid-admin-verification-salt');
+      const valid = Boolean(row?.active && row.role === 'admin' &&
+        timingSafeEqual(Buffer.from(suppliedHash, 'hex'), Buffer.from(row.password_hash, 'hex')));
+      if (!valid || !row) return sendJson(response, 401, { error: 'Invalid administrator username or password' });
+      return sendJson(response, 200, { verified: true, admin: { id: row.id, username: row.username, displayName: row.display_name } });
+    }
     if (request.method === 'PUT' && url.pathname === '/api/state') {
       const body = await readJsonBody(request);
       if (!isLedgerState(body)) return sendJson(response, 400, { error: 'Invalid ledger state' });

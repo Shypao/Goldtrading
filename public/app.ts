@@ -369,21 +369,21 @@ function savePricingSnapshot(){
 
 /* ============================= NAV / BOOT ============================= */
 const TABS = [
-  {id:'dashboard', label:'Dashboard', staff:true},
+  {id:'dashboard', label:'Dashboard'},
   {id:'rates', label:'Daily rate setup', staff:true},
   {id:'buying', label:'Buying transactions', staff:true},
   {id:'inventory', label:'Inventory', staff:true},
   {id:'liquidation', label:'Selective liquidation'},
   {id:'refining', label:'Refining tracking'},
   {id:'retail', label:'Limited retail sales'},
-  {id:'customers', label:'Customer management', staff:true},
+  {id:'customers', label:'Customer management'},
   {id:'reports', label:'Reports & exports'},
   {id:'users', label:'User accounts'},
 ];
 
 function boot(){
   const nav = document.getElementById('navTabs');
-  if(!allowedTabs().some(tab=>tab.id===currentTab)) currentTab='dashboard';
+  if(!allowedTabs().some(tab=>tab.id===currentTab)) currentTab=allowedTabs()[0]?.id||'buying';
   nav.innerHTML = allowedTabs().map(t=>`<button data-tab="${t.id}" class="${t.id===currentTab?'active':''}" onclick="goTab('${t.id}')"><span class="dot"></span>${t.label}</button>`).join('');
   document.getElementById('pageDate').textContent = fmtDate(todayStr());
   render();
@@ -499,15 +499,6 @@ function renderDashboard(){
     </div>
   </section>`:''}
 
-  <section class="block latest-purchases">
-    <h2 class="block-title">Latest purchases</h2>
-    ${tableOrEmpty(purchases.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8), s=>`
-      <tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td>
-      <td data-label="Status">${statusPill(s.status)}</td>${isAdmin()?`<td data-label="Actions">${adminEditButton('Inventory',s.id)}</td>`:''}</tr>`,
-      ['Date','Customer','Metal / karat','Type','Net weight','Payout','Status',...(isAdmin()?['Actions']:[])],
-      'No purchases recorded yet — add one under Buying transactions.')}
-  </section>
   `;
 }
 
@@ -849,14 +840,6 @@ function renderBuying(){
 
   <section class="block" id="purchase_batch_panel">${renderPurchaseBatchPanelMarkup()}</section>
 
-  <section class="block recent-purchases">
-    <h2 class="block-title">Recent purchases</h2>
-    ${tableOrEmpty(db.stock.filter(s=>!s.sourceRefiningBatchId).slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10),
-      s=>`<tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Staff">${esc(s.staff||'—')}</td><td data-label="Status">${statusPill(s.status)}</td><td data-label="Actions"><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId||s.id}')">Receipt</button>${adminEditButton('Inventory',s.id)}</div></td></tr>`,
-      ['Date','Customer','Metal / karat','Type','Net weight','Payout','Staff','Status','Actions'],
-      'No purchases recorded yet.')}
-  </section>
   `;
 }
 function updateBuyingGrades(){
@@ -915,9 +898,37 @@ function addPurchaseItem(){
   recalcBuying(); renderPurchaseBatchPanel();
   toast(`${gradeLabel(item.metal,item.karat)} added to payout`);
 }
-function removePurchaseItem(id){
-  purchaseBatch=purchaseBatch.filter(item=>item.id!==id);
-  renderPurchaseBatchPanel();
+let pendingPurchaseRemovalId=null;
+function requestPurchaseItemRemoval(id){
+  const item=purchaseBatch.find(line=>line.id===id); if(!item) return;
+  pendingPurchaseRemovalId=id; closeAdminVerification();
+  const modal=document.createElement('div'); modal.id='admin_verification_modal'; modal.className='modal-backdrop';
+  modal.innerHTML=`<form class="summary-modal" onsubmit="verifyPurchaseItemRemoval(event)" role="dialog" aria-modal="true" aria-labelledby="admin_verification_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Protected action</div><h2 id="admin_verification_title">Admin verification</h2></div><button type="button" class="modal-close" onclick="closeAdminVerification()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">An administrator must approve removing <strong>${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))}</strong> (${fmtWeight(item.netWeight)}) from the current payout.</p>
+    <div class="form-grid">
+      <div class="field"><label>Admin username</label><input id="verify_admin_username" autocomplete="username" value="${isAdmin()?esc(currentUser.username):''}" required></div>
+      <div class="field"><label>Admin password</label><input id="verify_admin_password" type="password" autocomplete="current-password" required></div>
+    </div>
+    <div class="form-note" id="admin_verification_error" style="color:var(--rust);min-height:18px;margin-top:10px;"></div>
+    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeAdminVerification()">Keep item</button><button type="submit" class="btn">Verify &amp; remove</button></div>
+  </form>`;
+  modal.addEventListener('click',event=>{if(event.target===modal)closeAdminVerification();});
+  document.body.appendChild(modal); document.getElementById('verify_admin_password')?.focus();
+}
+function closeAdminVerification(){ document.getElementById('admin_verification_modal')?.remove(); pendingPurchaseRemovalId=null; }
+async function verifyPurchaseItemRemoval(event){
+  event.preventDefault();
+  const itemId=pendingPurchaseRemovalId,errorEl=document.getElementById('admin_verification_error');
+  if(!itemId) return;
+  if(errorEl) errorEl.textContent='Verifying administrator…';
+  try{
+    const response=await fetch('/api/admin/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:val('verify_admin_username'),password:val('verify_admin_password')})});
+    const result=await response.json();
+    if(!response.ok) throw new Error(result.error||'Administrator verification failed');
+    purchaseBatch=purchaseBatch.filter(item=>item.id!==itemId);
+    closeAdminVerification(); renderPurchaseBatchPanel(); toast(`Item removed with approval from ${result.admin.displayName}`);
+  }catch(error){ if(errorEl) errorEl.textContent=error.message||'Administrator verification failed'; }
 }
 function renderPurchaseBatchPanel(){
   const panel=document.getElementById('purchase_batch_panel');
@@ -928,7 +939,7 @@ function renderPurchaseBatchPanelMarkup(){
   if(!purchaseBatch.length) return `<h2 class="block-title">Current payout</h2><div class="empty-note">Start by adding an item above. You can review the combined total before choosing the seller.</div>`;
   return `<div class="batch-head"><div><h2 class="block-title">Current payout · ${purchaseBatch.length} item${purchaseBatch.length===1?'':'s'}</h2><div class="batch-total">${fmtMoney(total)}</div></div><button class="btn" onclick="openPurchaseSummary()">Review total</button></div>
     <div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
-    ${purchaseBatch.map((item,index)=>`<tr><td>${index+1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="removePurchaseItem('${item.id}')">Remove</button></td></tr>`).join('')}
+    ${purchaseBatch.map((item,index)=>`<tr><td>${index+1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
     </tbody></table></div>`;
 }
 function purchaseCustomer(required=true){
@@ -1613,6 +1624,11 @@ function exportRefining(){ downloadCSV('zpp_refining.csv', toCSV(db.refiningBatc
   {label:'Charges',key:'refiningCharges'},{label:'Output purity',key:'outputPurity'},{label:'Output weight',get:r=>r.outputWeight??r.returnedMetal},
   {label:'Output inventory cost',key:'outputCost'}
 ])); }
+function exportPurchases(){ downloadCSV('zpp_purchase_history.csv', toCSV(db.stock.filter(s=>!s.sourceRefiningBatchId), [
+  {label:'Date',key:'date'},{label:'Seller',key:'customerName'},{label:'Metal',key:'metal'},{label:'Karat / purity',key:'karat'},
+  {label:'Item type',key:'itemType'},{label:'Net weight',key:'netWeight'},{label:'Rate',key:'rate'},{label:'Payout',key:'payout'},
+  {label:'Payment method',key:'paymentMethod'},{label:'Staff',key:'staff'},{label:'Status',key:'status'}
+])); }
 function exportRetail(){ downloadCSV('zpp_retail_sales.csv', toCSV(db.retailSales, [
   {label:'Date',key:'date'},{label:'Buyer',key:'buyer'},{label:'Sale price',key:'salePrice'},{label:'Cost',key:'cost'},{label:'Margin',key:'margin'}
 ])); }
@@ -1625,11 +1641,28 @@ function exportRates(){ downloadCSV('zpp_rate_history.csv', toCSV(visiblePricing
 ])); }
 
 function renderReports(){
+  const purchases=db.stock.filter(s=>!s.sourceRefiningBatchId).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const purchaseWeight=purchases.reduce((sum,item)=>sum+Number(item.netWeight||0),0);
+  const purchasePayout=purchases.reduce((sum,item)=>sum+Number(item.payout||0),0);
   return `
+  <section class="block recent-purchases purchase-history">
+    <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div>
+    <div class="stat-row" style="margin:16px 0;">
+      <div class="stat"><div class="label">Items purchased</div><div class="value">${purchases.length}</div></div>
+      <div class="stat"><div class="label">Total net weight</div><div class="value">${fmtWeight(purchaseWeight)}</div></div>
+      <div class="stat"><div class="label">Total payout</div><div class="value">${fmtMoney(purchasePayout)}</div></div>
+    </div>
+    ${tableOrEmpty(purchases,
+      s=>`<tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Seller">${esc(s.customerName)}</td><td data-label="Item"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)} · ${esc(s.itemType)}</td>
+      <td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Status">${statusPill(s.status)}</td>
+      <td data-label="Details"><div class="purchase-details"><span class="hint">${esc(s.staff||'No staff recorded')}</span><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId||s.id}')">Receipt</button>${adminEditButton('Inventory',s.id)}</div></div></td></tr>`,
+      ['Date','Seller','Item','Net weight','Payout','Status','Details'], 'No purchases recorded yet.')}
+  </section>
+
   <section class="block">
     <h2 class="block-title">Export ledger data</h2>
     <div class="stat-row">
-      <div class="stat"><div class="label">Inventory &amp; purchases</div><button class="btn small" style="margin-top:8px;" onclick="exportStock()">Download CSV</button></div>
+      <div class="stat"><div class="label">Inventory ledger</div><button class="btn small" style="margin-top:8px;" onclick="exportStock()">Download CSV</button></div>
       <div class="stat"><div class="label">Liquidation history</div><button class="btn small" style="margin-top:8px;" onclick="exportLiquidations()">Download CSV</button></div>
       <div class="stat"><div class="label">Refining history</div><button class="btn small" style="margin-top:8px;" onclick="exportRefining()">Download CSV</button></div>
       <div class="stat"><div class="label">Retail sales</div><button class="btn small" style="margin-top:8px;" onclick="exportRetail()">Download CSV</button></div>
