@@ -432,8 +432,9 @@ function render(){
 /* ============================= DASHBOARD ============================= */
 function renderDashboard(){
   const today = todayStr(), mon = monthStr();
-  const pToday = db.stock.filter(s=>s.date===today);
-  const pMonth = db.stock.filter(s=>s.date.startsWith(mon));
+  const purchases=db.stock.filter(s=>!s.sourceRefiningBatchId);
+  const pToday = purchases.filter(s=>s.date===today);
+  const pMonth = purchases.filter(s=>s.date.startsWith(mon));
   const payoutToday = pToday.reduce((a,s)=>a+Number(s.payout),0);
   const payoutMonth = pMonth.reduce((a,s)=>a+Number(s.payout),0);
 
@@ -500,7 +501,7 @@ function renderDashboard(){
 
   <section class="block latest-purchases">
     <h2 class="block-title">Latest purchases</h2>
-    ${tableOrEmpty(db.stock.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8), s=>`
+    ${tableOrEmpty(purchases.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,8), s=>`
       <tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td>
       <td data-label="Status">${statusPill(s.status)}</td>${isAdmin()?`<td data-label="Actions">${adminEditButton('Inventory',s.id)}</td>`:''}</tr>`,
@@ -850,7 +851,7 @@ function renderBuying(){
 
   <section class="block recent-purchases">
     <h2 class="block-title">Recent purchases</h2>
-    ${tableOrEmpty(db.stock.slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10),
+    ${tableOrEmpty(db.stock.filter(s=>!s.sourceRefiningBatchId).slice().sort((a,b)=>b.date.localeCompare(a.date)).slice(0,10),
       s=>`<tr><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Customer">${esc(s.customerName)}</td><td data-label="Metal / karat"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td data-label="Type">${esc(s.itemType)}</td><td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Staff">${esc(s.staff||'—')}</td><td data-label="Status">${statusPill(s.status)}</td><td data-label="Actions"><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId||s.id}')">Receipt</button>${adminEditButton('Inventory',s.id)}</div></td></tr>`,
       ['Date','Customer','Metal / karat','Type','Net weight','Payout','Staff','Status','Actions'],
@@ -1101,7 +1102,7 @@ async function deleteInventoryRecord(){
   if(!adminEditGuard()) return;
   const item=db.stock.find(s=>s.id===editingInventoryId); if(!item) return;
   const linked=db.liquidations.some(record=>(record.lines||[]).some(line=>line.itemId===item.id)) ||
-    db.refiningBatches.some(record=>(record.itemIds||[]).includes(item.id)) || db.retailSales.some(record=>record.itemId===item.id);
+    db.refiningBatches.some(record=>(record.itemIds||[]).includes(item.id)||record.outputItemId===item.id) || db.retailSales.some(record=>record.itemId===item.id);
   if(linked){ toast('This item is linked to a completed transaction. Delete that transaction first.'); return; }
   if(!confirm(`Delete this ${item.metal} ${item.karat} inventory record? This cannot be undone.`)) return;
   db.stock=db.stock.filter(s=>s.id!==item.id);
@@ -1253,6 +1254,7 @@ async function deleteLiquidationRecord(){
 let refMetal='Gold';
 function renderRefining(){
   const eligible = db.stock.filter(s=>s.metal===refMetal && s.status==='For Refining' && s.currentWeight>0);
+  const outputPurities=distinctKarats(refMetal);
   return `
   <section class="block">
     <h2 class="block-title">1. Select scrap for this refining batch</h2>
@@ -1278,12 +1280,17 @@ function renderRefining(){
       <div class="field"><label>Expected yield (g)</label><input id="rf_expected" type="number" min="0" step="0.01"></div>
       <div class="field"><label>Actual yield (g)</label><input id="rf_actual" type="number" min="0" step="0.01"></div>
       <div class="field"><label>Refining charges (PHP)</label><input id="rf_charges" type="number" min="0" step="0.01"></div>
-      <div class="field"><label>Returned metal (g)</label><input id="rf_returned" type="number" min="0" step="0.01"></div>
+      <div class="field"><label>Output purity / karat</label><select id="rf_purity" required>
+        <option value="">— select purity —</option>${outputPurities.map(purity=>`<option value="${esc(purity)}">${esc(purity)}</option>`).join('')}
+      </select></div>
+      <div class="field"><label>Output weight returned to inventory (g)</label><input id="rf_returned" type="number" min="0.01" step="0.01" placeholder="0.00"></div>
+      <div class="field"><label>Inventory status</label><select id="rf_status"><option>For Selling</option><option>For Refining</option><option>On Hold</option></select></div>
+      <div class="field"><label>Storage location</label><input id="rf_location" placeholder="e.g. Vault A · Tray 2"></div>
       <div class="field span-2"><label>Remarks</label><input id="rf_remarks" placeholder="Optional"></div>
     </div>
     <div class="form-actions">
       <button class="btn" onclick="submitRefining()">Save refining batch</button>
-      <span class="form-note">Variance = actual yield − expected yield. Selected items are removed from available inventory.</span>
+      <span class="form-note">All selected items are consumed and combined into one new inventory item using the purity and output weight above.</span>
     </div>
   </section>
 
@@ -1291,9 +1298,9 @@ function renderRefining(){
     <h2 class="block-title">Refining history</h2>
     ${tableOrEmpty(db.refiningBatches.slice().sort((a,b)=>b.date.localeCompare(a.date)),
       r=>`<tr><td>${fmtDate(r.date)}</td><td><span class="metal-tag ${r.metal.toLowerCase()}">${r.metal}</span></td><td>${esc(r.refiner)}</td>
-      <td class="num">${fmtWeight(r.inputWeight)}</td><td class="num">${fmtWeight(r.expectedYield)}</td><td class="num">${fmtWeight(r.actualYield)}</td>
+      <td class="num">${fmtWeight(r.inputWeight)}</td><td>${esc(r.outputPurity||'—')}</td><td class="num">${fmtWeight(r.outputWeight??r.returnedMetal)}</td>
       <td class="num" style="color:${r.variance>=0?'var(--sage)':'var(--rust)'}">${r.variance>=0?'+':''}${fmtWeight(r.variance)}</td><td class="num">${fmtMoney(r.refiningCharges)}</td>${isAdmin()?`<td>${adminEditButton('Refining',r.id)}</td>`:''}</tr>`,
-      ['Date','Metal','Refiner','Input wt','Expected yield','Actual yield','Variance','Charges',...(isAdmin()?['Actions']:[])],
+      ['Date','Metal','Refiner','Input wt','Output purity','Output wt','Yield variance','Charges',...(isAdmin()?['Actions']:[])],
       'No refining batches recorded yet.')}
   </section>
   `;
@@ -1302,35 +1309,47 @@ function submitRefining(){
   const chosen = Array.from(document.querySelectorAll('.ref-chk')).filter(c=>c.checked)
     .map(c=>c.closest('.item-check-row').dataset.item);
   if(!chosen.length){ toast('Select at least one item for refining'); return; }
-  const refiner = val('rf_refiner').trim();
+  const refiner = val('rf_refiner').trim(), date=val('rf_date'), outputPurity=val('rf_purity');
+  if(!date){ toast('Select the refining date'); return; }
   if(!refiner){ toast('Enter a refiner name'); return; }
-  const expected = parseFloat(val('rf_expected'))||0, actual = parseFloat(val('rf_actual'))||0;
-  const charges = parseFloat(val('rf_charges'))||0, returned = parseFloat(val('rf_returned'))||0;
-  let inputWeight=0, itemSnapshots=[];
+  if(!outputPurity){ toast('Select the output purity or karat'); return; }
+  const expected = Number(val('rf_expected')), actual = Number(val('rf_actual'));
+  const charges = Number(val('rf_charges')), returned = Number(val('rf_returned'));
+  if([expected,actual,charges].some(value=>!Number.isFinite(value)||value<0)){ toast('Yield and refining charges must be valid non-negative values'); return; }
+  if(!Number.isFinite(returned)||returned<=0){ toast('Enter the output weight returned to inventory'); return; }
+  let inputWeight=0, inputCost=0, itemSnapshots=[];
   chosen.forEach(id=>{
     const item = db.stock.find(s=>s.id===id);
-    itemSnapshots.push({itemId:id,currentWeight:Number(item.currentWeight),status:item.status});
+    itemSnapshots.push({itemId:id,currentWeight:Number(item.currentWeight),status:item.status,cost:Number(item.cost)||0});
     inputWeight += Number(item.currentWeight);
-    item.currentWeight = 0; item.status='Liquidated';
+    inputCost += Number(item.cost)||0;
+    item.currentWeight = 0; item.cost=0; item.status='Liquidated';
   });
-  db.refiningBatches.push({id:uid('ref'), date: val('rf_date'), metal:refMetal, refiner, itemIds:chosen,itemSnapshots,
-    inputWeight:+inputWeight.toFixed(2), expectedYield:expected, actualYield:actual,
-    variance:+(actual-expected).toFixed(2), refiningCharges:charges, returnedMetal:returned, remarks:val('rf_remarks').trim()});
-  saveDB(); render(); toast('Refining batch saved');
+  const batchId=uid('ref'), outputItemId=uid('stk'), outputCost=roundMoney(inputCost+charges), outputWeight=roundWeight(returned);
+  const outputStatus=val('rf_status'), remarks=val('rf_remarks').trim();
+  db.stock.push({id:outputItemId,date,customerId:'',customerName:`Refining output · ${refiner}`,metal:refMetal,itemType:'Scrap',karat:outputPurity,
+    grossWeight:outputWeight,deductions:0,netWeight:outputWeight,currentWeight:outputWeight,rate:roundMoney(outputCost/outputWeight),
+    suggestedAmount:0,payout:0,overrideReason:'',paymentMethod:'Refining transfer',staff:currentUser?.displayName||refiner,
+    status:outputStatus,location:val('rf_location').trim(),remarks:remarks||`Consolidated from ${chosen.length} refining items`,cost:outputCost,sourceRefiningBatchId:batchId});
+  db.refiningBatches.push({id:batchId,date,metal:refMetal,refiner,itemIds:chosen,itemSnapshots,outputItemId,outputPurity,outputWeight,
+    outputStatus,inputCost:roundMoney(inputCost),outputCost,inputWeight:roundWeight(inputWeight),expectedYield:roundWeight(expected),actualYield:roundWeight(actual),
+    variance:roundWeight(actual-expected),refiningCharges:roundMoney(charges),returnedMetal:outputWeight,remarks});
+  saveDB(); render(); toast(`${chosen.length} ${chosen.length===1?'item':'items'} consolidated into 1 inventory item`);
 }
 let editingRefiningId=null;
 function openRefiningEdit(id){
   const record=db.refiningBatches.find(r=>r.id===id); if(!record||!adminEditGuard()) return;
   editingRefiningId=id;
+  const outputLocked=Boolean(record.outputItemId);
   openAdminEditModal('Edit refining batch',`<div class="form-grid">
     <div class="field"><label>Date</label><input id="edit_refining_date" type="date" value="${esc(record.date||todayStr())}"></div>
     <div class="field"><label>Refiner</label><input id="edit_refining_refiner" value="${esc(record.refiner||'')}"></div>
     <div class="field"><label>Expected yield (g)</label><input id="edit_refining_expected" type="number" min="0" step="0.01" value="${Number(record.expectedYield)||0}"></div>
-    <div class="field"><label>Actual yield (g)</label><input id="edit_refining_actual" type="number" min="0" step="0.01" value="${Number(record.actualYield)||0}"></div>
-    <div class="field"><label>Refining charges (PHP)</label><input id="edit_refining_charges" type="number" min="0" step="0.01" value="${Number(record.refiningCharges)||0}"></div>
-    <div class="field"><label>Returned metal (g)</label><input id="edit_refining_returned" type="number" min="0" step="0.01" value="${Number(record.returnedMetal)||0}"></div>
+    <div class="field"><label>Actual yield (g)</label><input id="edit_refining_actual" type="number" min="0" step="0.01" value="${Number(record.actualYield)||0}" ${outputLocked?'readonly':''}></div>
+    <div class="field"><label>Refining charges (PHP)</label><input id="edit_refining_charges" type="number" min="0" step="0.01" value="${Number(record.refiningCharges)||0}" ${outputLocked?'readonly':''}></div>
+    <div class="field"><label>Output weight (g)</label><input id="edit_refining_returned" type="number" min="0" step="0.01" value="${Number(record.outputWeight??record.returnedMetal)||0}" ${outputLocked?'readonly':''}></div>
     <div class="field span-2"><label>Remarks</label><textarea id="edit_refining_remarks">${esc(record.remarks||'')}</textarea></div>
-  </div><p class="form-note">Input items and input weight remain locked. Variance is recalculated automatically.</p>`,'saveRefiningEdit','deleteRefiningRecord');
+  </div><p class="form-note">${outputLocked?'Output purity, weight, charges, and input items are locked because they define the consolidated inventory item.':'Input items and input weight remain locked. Variance is recalculated automatically.'}</p>`,'saveRefiningEdit','deleteRefiningRecord');
 }
 async function saveRefiningEdit(){
   if(!adminEditGuard()) return;
@@ -1338,7 +1357,10 @@ async function saveRefiningEdit(){
   const expected=Number(val('edit_refining_expected')),actual=Number(val('edit_refining_actual')),charges=Number(val('edit_refining_charges')),returned=Number(val('edit_refining_returned'));
   if(!val('edit_refining_date')||!val('edit_refining_refiner').trim()){ toast('Date and refiner are required'); return; }
   if([expected,actual,charges,returned].some(value=>!Number.isFinite(value)||value<0)){ toast('Yield, charges, and returned metal must be valid non-negative values'); return; }
-  Object.assign(record,{date:val('edit_refining_date'),refiner:val('edit_refining_refiner').trim(),expectedYield:roundWeight(expected),actualYield:roundWeight(actual),variance:roundWeight(actual-expected),refiningCharges:roundMoney(charges),returnedMetal:roundWeight(returned),remarks:val('edit_refining_remarks').trim()});
+  const date=val('edit_refining_date'),refiner=val('edit_refining_refiner').trim(),remarks=val('edit_refining_remarks').trim();
+  Object.assign(record,{date,refiner,expectedYield:roundWeight(expected),actualYield:roundWeight(actual),variance:roundWeight(actual-expected),refiningCharges:roundMoney(charges),returnedMetal:roundWeight(returned),remarks});
+  const outputItem=record.outputItemId?db.stock.find(item=>item.id===record.outputItemId):null;
+  if(outputItem){ outputItem.date=date; outputItem.customerName=`Refining output · ${refiner}`; if(remarks) outputItem.remarks=remarks; }
   closeAdminEditModal(); await saveDB(); render(); toast('Refining batch updated');
 }
 async function deleteRefiningRecord(){
@@ -1351,10 +1373,22 @@ async function deleteRefiningRecord(){
   }));
   const items=snapshots.map(snapshot=>({snapshot,item:db.stock.find(s=>s.id===snapshot.itemId)}));
   if(items.some(entry=>!entry.item)){ toast('Cannot reverse this batch because an inventory item is missing'); return; }
+  const outputItem=record.outputItemId?db.stock.find(item=>item.id===record.outputItemId):null;
+  if(record.outputItemId&&!outputItem){ toast('Cannot reverse this batch because its output inventory item is missing'); return; }
+  if(outputItem){
+    const usedInLiquidation=db.liquidations.some(batch=>(batch.lines||[]).some(line=>line.itemId===outputItem.id));
+    const usedInRefining=db.refiningBatches.some(batch=>batch.id!==record.id&&(batch.itemIds||[]).includes(outputItem.id));
+    const usedInRetail=db.retailSales.some(sale=>sale.itemId===outputItem.id);
+    if(usedInLiquidation||usedInRefining||usedInRetail){ toast('Delete the later transaction using the refined output before reversing this batch'); return; }
+    if(Math.abs(Number(outputItem.currentWeight)-Number(record.outputWeight??record.returnedMetal))>0.005||Math.abs(Number(outputItem.cost)-Number(record.outputCost))>0.01){
+      toast('The refined output inventory has changed and this batch cannot be reversed safely'); return;
+    }
+  }
   if(items.some(entry=>entry.item.status==='Sold'||db.retailSales.some(sale=>sale.itemId===entry.item.id))){ toast('Delete the later retail sale before reversing this refining batch'); return; }
   if(items.some(entry=>Number(entry.item.currentWeight)!==0||entry.item.status!=='Liquidated')){ toast('Inventory has changed and this refining batch cannot be reversed safely'); return; }
-  if(!confirm(`Delete this refining batch for ${record.refiner} and restore its input items to inventory?`)) return;
-  items.forEach(({snapshot,item})=>{ item.currentWeight=roundWeight(snapshot.currentWeight); item.status=snapshot.status||'For Refining'; });
+  if(!confirm(`Delete this refining batch for ${record.refiner}, remove its output item, and restore ${items.length} input ${items.length===1?'item':'items'}?`)) return;
+  if(outputItem) db.stock=db.stock.filter(item=>item.id!==outputItem.id);
+  items.forEach(({snapshot,item})=>{ item.currentWeight=roundWeight(snapshot.currentWeight); item.cost=roundMoney(snapshot.cost??item.cost); item.status=snapshot.status||'For Refining'; });
   db.refiningBatches=db.refiningBatches.filter(r=>r.id!==record.id);
   closeAdminEditModal(); await saveDB(); render(); toast('Refining batch deleted and inventory restored');
 }
@@ -1568,7 +1602,8 @@ function exportLiquidations(){ downloadCSV('zpp_liquidations.csv', toCSV(db.liqu
 function exportRefining(){ downloadCSV('zpp_refining.csv', toCSV(db.refiningBatches, [
   {label:'Date',key:'date'},{label:'Metal',key:'metal'},{label:'Refiner',key:'refiner'},{label:'Input weight',key:'inputWeight'},
   {label:'Expected yield',key:'expectedYield'},{label:'Actual yield',key:'actualYield'},{label:'Variance',key:'variance'},
-  {label:'Charges',key:'refiningCharges'},{label:'Returned metal',key:'returnedMetal'}
+  {label:'Charges',key:'refiningCharges'},{label:'Output purity',key:'outputPurity'},{label:'Output weight',get:r=>r.outputWeight??r.returnedMetal},
+  {label:'Output inventory cost',key:'outputCost'}
 ])); }
 function exportRetail(){ downloadCSV('zpp_retail_sales.csv', toCSV(db.retailSales, [
   {label:'Date',key:'date'},{label:'Buyer',key:'buyer'},{label:'Sale price',key:'salePrice'},{label:'Cost',key:'cost'},{label:'Margin',key:'margin'}
