@@ -922,26 +922,6 @@ function renderBuying() {
     <div class="buying-step">
       <div class="step-number">1</div>
       <div class="step-content">
-        <h2>Who is selling?</h2>
-        <p>Select a saved customer or add a new name.</p>
-        <div class="form-grid buying-customer-grid">
-          <div class="field"><label>Customer</label>
-            <select id="b_customer" onchange="toggleNewCustomerField()">
-              <option value="">Select customer</option>
-              ${db.customers.map(c => `<option value="${c.id}" ${selectedCustomer === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
-              <option value="__new__" ${selectedCustomer === '__new__' ? 'selected' : ''}>+ New customer</option>
-            </select>
-          </div>
-          <div class="field ${selectedCustomer === '__new__' ? '' : 'is-hidden'}" id="b_new_customer_field"><label>New customer name</label><input id="b_newcust" placeholder="Full name"></div>
-          <div class="field"><label>Date</label><input id="b_date" type="date" value="${val('b_date') || todayStr()}"></div>
-          <div class="field"><label>Payment</label><select id="b_pay"><option>Cash</option><option>Bank transfer</option><option>GCash</option></select></div>
-        </div>
-      </div>
-    </div>
-
-    <div class="buying-step">
-      <div class="step-number">2</div>
-      <div class="step-content">
         <h2>Add an item</h2>
         <p>Choose the grade and enter its weight. The amount calculates automatically.</p>
         <div class="form-grid buying-item-grid">
@@ -986,6 +966,26 @@ function renderBuying() {
         <div class="form-actions buying-add-action">
           <button class="btn" onclick="addPurchaseItem()">Add this item</button>
           <span class="form-note">You can add more items before paying.</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="buying-step" id="buying_seller_step">
+      <div class="step-number">2</div>
+      <div class="step-content">
+        <h2>Who is selling?</h2>
+        <p>Choose a saved seller or add a new seller for this payout.</p>
+        <div class="form-grid buying-customer-grid">
+          <div class="field"><label>Seller</label>
+            <select id="b_customer" onchange="toggleNewCustomerField()">
+              <option value="">Choose seller</option>
+              ${db.customers.map(c => `<option value="${c.id}" ${selectedCustomer === c.id ? 'selected' : ''}>${esc(c.name)}</option>`).join('')}
+              <option value="__new__" ${selectedCustomer === '__new__' ? 'selected' : ''}>+ Add new seller</option>
+            </select>
+          </div>
+          <div class="field ${selectedCustomer === '__new__' ? '' : 'is-hidden'}" id="b_new_customer_field"><label>New seller name</label><input id="b_newcust" placeholder="Full name"></div>
+          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${val('b_date') || todayStr()}"></div>
+          <div class="field"><label>Payment method</label><select id="b_pay"><option>Cash</option><option>Bank transfer</option><option>GCash</option></select></div>
         </div>
       </div>
     </div>
@@ -1095,13 +1095,13 @@ function renderPurchaseBatchPanel() {
 function renderPurchaseBatchPanelMarkup() {
     const total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
     if (!purchaseBatch.length)
-        return `<h2 class="block-title">Current payout</h2><div class="empty-note">Add the customer's gold or other metal items above. The combined total will appear here.</div>`;
+        return `<h2 class="block-title">Current payout</h2><div class="empty-note">Start by adding an item above. You can review the combined total before choosing the seller.</div>`;
     return `<div class="batch-head"><div><h2 class="block-title">Current payout · ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</h2><div class="batch-total">${fmtMoney(total)}</div></div><button class="btn" onclick="openPurchaseSummary()">Review total</button></div>
     <div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
     ${purchaseBatch.map((item, index) => `<tr><td>${index + 1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="removePurchaseItem('${item.id}')">Remove</button></td></tr>`).join('')}
     </tbody></table></div>`;
 }
-function purchaseCustomer() {
+function purchaseCustomer(required = true) {
     const newName = val('b_newcust').trim(), customerId = val('b_customer');
     if (newName)
         return { id: '', name: newName, isNew: true };
@@ -1110,17 +1110,21 @@ function purchaseCustomer() {
         if (customer)
             return { id: customer.id, name: customer.name, isNew: false };
     }
-    toast('Select or enter a customer');
+    if (required)
+        toast('Choose or enter the seller');
     return null;
+}
+function focusPurchaseSeller() {
+    closePurchaseSummary();
+    document.getElementById('buying_seller_step')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    setTimeout(() => document.getElementById('b_customer')?.focus(), 250);
 }
 function openPurchaseSummary() {
     if (!purchaseBatch.length) {
         toast('Add at least one item');
         return;
     }
-    const customer = purchaseCustomer();
-    if (!customer)
-        return;
+    const customer = purchaseCustomer(false);
     closePurchaseSummary();
     const total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
     const totalWeight = purchaseBatch.reduce((sum, item) => sum + Number(item.netWeight), 0);
@@ -1128,11 +1132,13 @@ function openPurchaseSummary() {
     modal.id = 'purchase_summary_modal';
     modal.className = 'modal-backdrop';
     modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="purchase_summary_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Combined customer payout</div><h2 id="purchase_summary_title">${esc(customer.name)}</h2></div><button class="modal-close" onclick="closePurchaseSummary()" aria-label="Close">×</button></div>
+    <div class="summary-modal-head"><div><div class="eyebrow">Combined payout</div><h2 id="purchase_summary_title">${customer ? esc(customer.name) : 'Review total'}</h2></div><button class="modal-close" onclick="closePurchaseSummary()" aria-label="Close">×</button></div>
     <div class="summary-lines">${purchaseBatch.map((item, index) => `<div class="summary-line"><div><strong>${index + 1}. ${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))}</strong><span>${esc(item.itemType)} · ${fmtWeight(item.netWeight)} × ${fmtMoney(item.rate)}/g</span></div><strong>${fmtMoney(item.payout)}</strong></div>`).join('')}</div>
     <div class="summary-grand"><div><span>${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'} · ${fmtWeight(totalWeight)}</span><strong>Grand total</strong></div><div>${fmtMoney(total)}</div></div>
-    <div class="summary-meta">${fmtDate(val('b_date') || todayStr())} · ${esc(val('b_pay'))}${val('b_staff').trim() ? ` · Staff: ${esc(val('b_staff').trim())}` : ''}</div>
-    <div class="form-actions"><button class="btn secondary" onclick="closePurchaseSummary()">Back to items</button><button class="btn secondary" onclick="commitPurchaseBatch(false)">Record only</button><button class="btn" onclick="commitPurchaseBatch(true)">Confirm &amp; view receipt</button></div>
+    <div class="summary-meta">Seller: ${customer ? esc(customer.name) : '<strong>Not selected yet</strong>'} · ${fmtDate(val('b_date') || todayStr())} · ${esc(val('b_pay'))}${val('b_staff').trim() ? ` · Staff: ${esc(val('b_staff').trim())}` : ''}</div>
+    ${customer
+        ? `<div class="form-actions"><button class="btn secondary" onclick="closePurchaseSummary()">Back to items</button><button class="btn secondary" onclick="commitPurchaseBatch(false)">Record only</button><button class="btn" onclick="commitPurchaseBatch(true)">Confirm &amp; view receipt</button></div>`
+        : `<div class="empty-note">The total is ready. Choose who is selling before you record the payout.</div><div class="form-actions"><button class="btn secondary" onclick="closePurchaseSummary()">Back to items</button><button class="btn" onclick="focusPurchaseSeller()">Choose seller</button></div>`}
   </div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
         closePurchaseSummary(); });
