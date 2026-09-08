@@ -474,7 +474,7 @@ function savePricingSnapshot() {
 }
 /* ============================= NAV / BOOT ============================= */
 const TABS = [
-    { id: 'dashboard', label: 'Dashboard' },
+    { id: 'dashboard', label: 'Dashboard & reports' },
     { id: 'rates', label: 'Daily rate setup', staff: true },
     { id: 'buying', label: 'Buying transactions', staff: true },
     { id: 'inventory', label: 'Inventory', staff: true },
@@ -482,7 +482,6 @@ const TABS = [
     { id: 'refining', label: 'Refining tracking' },
     { id: 'retail', label: 'Limited retail sales' },
     { id: 'customers', label: 'Customer management' },
-    { id: 'reports', label: 'Reports & exports' },
     { id: 'users', label: 'User accounts' },
 ];
 function boot() {
@@ -518,7 +517,7 @@ function goTab(id) {
 }
 function render() {
     const titles = {
-        dashboard: ['Overview', 'Dashboard'],
+        dashboard: ['Admin overview, records & exports', 'Dashboard & reports'],
         rates: ['Pricing control', 'Daily rate setup'],
         buying: ['Record a purchase', 'Buying transactions'],
         inventory: ['Current stock', 'Inventory'],
@@ -526,14 +525,13 @@ function render() {
         refining: ['Refining batches', 'Refining tracking'],
         retail: ['Walk-in resale', 'Limited retail sales'],
         customers: ['Sellers on file', 'Customer management'],
-        reports: ['Ledger views & exports', 'Reports & exports'],
         users: ['Access control', 'User accounts'],
     };
     document.getElementById('pageEyebrow').textContent = titles[currentTab][0];
     document.getElementById('pageTitle').textContent = titles[currentTab][1];
     const el = document.getElementById('content');
     const fns = { dashboard: renderDashboard, rates: renderRates, buying: renderBuying, inventory: renderInventory,
-        liquidation: renderLiquidation, refining: renderRefining, retail: renderRetail, customers: renderCustomers, reports: renderReports,
+        liquidation: renderLiquidation, refining: renderRefining, retail: renderRetail, customers: renderCustomers,
         users: renderUsers };
     el.innerHTML = fns[currentTab]();
 }
@@ -608,6 +606,7 @@ function renderDashboard() {
     </div>
   </section>` : ''}
 
+  ${isAdmin() ? renderReports() : ''}
   `;
 }
 function statusPill(status) {
