@@ -440,7 +440,7 @@
 
   .item-check-row{
     display:grid;
-    grid-template-columns:24px 1fr 100px 100px 100px 110px;
+    grid-template-columns:24px minmax(240px,1fr) 100px 100px 100px 110px 130px;
     gap:8px;
     align-items:center;
     padding:8px 10px;
@@ -448,7 +448,7 @@
     font-size:12px;
   }
   .item-check-wrap{width:100%;max-width:100%;overflow-x:auto;}
-  .item-check-wrap .item-check-row{min-width:720px;}
+  .item-check-wrap .item-check-row{min-width:900px;}
   .item-check-row.head{
     font-size:10.5px;color:var(--ink-soft);font-weight:600;border-bottom:1.5px solid var(--ink);
   }

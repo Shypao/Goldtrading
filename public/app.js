@@ -1393,7 +1393,7 @@ function renderLiquidation() {
     </div>
     ${eligible.length ? `
     <div class="item-check-wrap">
-      <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span></div>
+      <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span><span>Selling price (PHP/g)</span></div>
       ${eligible.map(s => `
         <div class="item-check-row" data-item="${s.id}">
           <input type="checkbox" class="liq-chk" onchange="syncLiqRow('${s.id}')">
@@ -1401,7 +1401,8 @@ function renderLiquidation() {
           <span class="num">${fmtWeight(s.currentWeight)}</span>
           <span class="num">${fmtMoney(s.cost)}</span>
           <span>${statusPill(s.status)}</span>
-          <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" placeholder="0.00" disabled>
+          <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" placeholder="0.00" oninput="updateLiquidationPreview()" disabled>
+          <input type="number" min="0" step="0.01" class="liq-rate" id="liqrate_${s.id}" placeholder="0.00" oninput="updateLiquidationPreview()" disabled>
         </div>`).join('')}
     </div>
     ` : `<div class="empty-note">No eligible ${liqMetal.toLowerCase()} stock for these filters.</div>`}
@@ -1412,31 +1413,88 @@ function renderLiquidation() {
     <div class="form-grid">
       <div class="field"><label>Buyer / refiner</label><input id="lq_buyer" placeholder="Name"></div>
       <div class="field"><label>Release date</label><input id="lq_date" type="date" value="${todayStr()}"></div>
-      <div class="field"><label>Selling rate (PHP/g)</label><input id="lq_rate" type="number" min="0" step="0.01"></div>
       <div class="field"><label>Payment status</label><select id="lq_payment"><option>Pending</option><option>Partially Paid</option><option>Paid</option></select></div>
       <div class="field span-2"><label>Remarks</label><input id="lq_remarks" placeholder="Optional"></div>
     </div>
+    <div class="stat-row" style="margin-top:16px;">
+      <div class="stat"><div class="label">Selected weight</div><div class="value" id="liq_preview_weight">0.00 g</div></div>
+      <div class="stat"><div class="label">Liquidation proceeds</div><div class="value" id="liq_preview_proceeds">PHP 0.00</div></div>
+      <div class="stat"><div class="label">Selected inventory cost</div><div class="value" id="liq_preview_cost">PHP 0.00</div></div>
+      <div class="stat"><div class="label">Indicative margin</div><div class="value" id="liq_preview_margin">PHP 0.00</div></div>
+    </div>
     <div class="form-actions">
       <button class="btn" onclick="submitLiquidation()">Record liquidation</button>
-      <span class="form-note">Proceeds = total released weight × selling rate. Cost is carried proportionally from each item.</span>
+      <span class="form-note">Each assay is calculated separately: release weight × its selling price. Cost is carried proportionally from each selected item.</span>
     </div>
   </section>
 
   <section class="block">
     <h2 class="block-title">Liquidation history</h2>
     ${tableOrEmpty(db.liquidations.slice().sort((a, b) => b.date.localeCompare(a.date)), l => `<tr><td>${fmtDate(l.date)}</td><td><span class="metal-tag ${l.metal.toLowerCase()}">${l.metal}</span></td><td>${esc(l.buyer)}</td>
-      <td class="num">${fmtWeight(l.releasedWeight)}</td><td class="num">${fmtMoney(l.proceeds)}</td><td>${esc(l.paymentStatus || '—')}</td><td class="num">${fmtMoney(l.cost)}</td>
-      <td class="num" style="color:${l.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(l.margin)}</td>${isAdmin() ? `<td>${adminEditButton('Liquidation', l.id)}</td>` : ''}</tr>`, ['Date', 'Metal', 'Buyer / refiner', 'Released wt', 'Proceeds', 'Payment', 'Cost', 'Margin', ...(isAdmin() ? ['Actions'] : [])], 'No liquidations recorded yet.')}
+      <td class="num">${fmtWeight(l.releasedWeight)}</td><td>${liquidationRateLabel(l)}</td><td class="num">${fmtMoney(l.proceeds)}</td><td>${esc(l.paymentStatus || '—')}</td><td class="num">${fmtMoney(l.cost)}</td>
+      <td class="num" style="color:${l.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(l.margin)}</td>${isAdmin() ? `<td>${adminEditButton('Liquidation', l.id)}</td>` : ''}</tr>`, ['Date', 'Metal', 'Buyer / refiner', 'Released wt', 'Selling prices', 'Proceeds', 'Payment', 'Cost', 'Margin', ...(isAdmin() ? ['Actions'] : [])], 'No liquidations recorded yet.')}
   </section>
   `;
 }
 function syncLiqRow(id) {
     const chk = document.querySelector(`.item-check-row[data-item="${id}"] .liq-chk`);
     const wt = document.getElementById('liqwt_' + id);
+    const rate = document.getElementById('liqrate_' + id);
     wt.disabled = !chk.checked;
+    rate.disabled = !chk.checked;
     if (chk.checked && !wt.value) {
         const item = db.stock.find(s => s.id === id);
         wt.value = Number(item.currentWeight).toFixed(2);
+    }
+    updateLiquidationPreview();
+}
+function liquidationRateLabel(record) {
+    const rates = [];
+    (record.lines || []).forEach(line => {
+        const rate = Number(line.sellingRate || record.sellingRate);
+        const assay = line.assay || (db.stock.find(item => item.id === line.itemId) || {}).karat || 'Item';
+        const label = `${assay}: ${fmtMoney(rate)}/g`;
+        if (rate > 0 && !rates.includes(label))
+            rates.push(label);
+    });
+    if (!rates.length && Number(record.sellingRate) > 0)
+        rates.push(`${fmtMoney(record.sellingRate)}/g`);
+    return rates.length ? rates.map(esc).join('<br>') : '—';
+}
+function liquidationPreviewValues() {
+    let totalWeight = 0, totalCost = 0, totalProceeds = 0, selected = 0;
+    document.querySelectorAll('.item-check-row .liq-chk:checked').forEach(chk => {
+        const id = chk.closest('.item-check-row').dataset.item;
+        const item = db.stock.find(s => s.id === id);
+        if (!item)
+            return;
+        const enteredWeight = Number(val('liqwt_' + id));
+        let weight = Math.min(Math.max(enteredWeight || 0, 0), Number(item.currentWeight));
+        if (Number(item.currentWeight) - weight <= 0.005)
+            weight = Number(item.currentWeight);
+        const rate = Math.max(Number(val('liqrate_' + id)) || 0, 0);
+        if (weight <= 0)
+            return;
+        selected++;
+        totalWeight += weight;
+        totalCost += (weight / Number(item.currentWeight)) * Number(item.cost);
+        totalProceeds += weight * rate;
+    });
+    return { selected, totalWeight, totalCost, totalProceeds, margin: totalProceeds - totalCost };
+}
+function updateLiquidationPreview() {
+    const preview = liquidationPreviewValues();
+    const weight = document.getElementById('liq_preview_weight'), proceeds = document.getElementById('liq_preview_proceeds');
+    const cost = document.getElementById('liq_preview_cost'), margin = document.getElementById('liq_preview_margin');
+    if (weight)
+        weight.textContent = fmtWeight(preview.totalWeight);
+    if (proceeds)
+        proceeds.textContent = fmtMoney(preview.totalProceeds);
+    if (cost)
+        cost.textContent = fmtMoney(preview.totalCost);
+    if (margin) {
+        margin.textContent = fmtMoney(preview.margin);
+        margin.style.color = preview.margin >= 0 ? 'var(--sage)' : 'var(--rust)';
     }
 }
 function submitLiquidation() {
@@ -1445,47 +1503,60 @@ function submitLiquidation() {
         toast('Select at least one item');
         return;
     }
-    const buyer = val('lq_buyer').trim(), date = val('lq_date'), rate = parseFloat(val('lq_rate'));
+    const buyer = val('lq_buyer').trim(), date = val('lq_date');
     if (!buyer) {
         toast('Enter a buyer or refiner name');
         return;
     }
-    if (!rate || rate <= 0) {
-        toast('Enter a valid selling rate');
+    if (!date) {
+        toast('Enter the release date');
         return;
     }
-    let totalWeight = 0, totalCost = 0, lines = [];
+    const prepared = [];
     for (const chk of rows) {
         const row = chk.closest('.item-check-row');
         const id = row.dataset.item;
         const item = db.stock.find(s => s.id === id);
         const wtInput = document.getElementById('liqwt_' + id);
-        const w = parseFloat(wtInput.value) || 0;
-        if (w <= 0)
-            continue;
+        const rateInput = document.getElementById('liqrate_' + id);
+        let w = parseFloat(wtInput.value) || 0;
+        const rate = parseFloat(rateInput.value) || 0;
+        if (w <= 0) {
+            toast(`Enter a release weight for ${item.karat}`);
+            return;
+        }
+        if (rate <= 0) {
+            toast(`Enter a selling price for ${item.karat}`);
+            return;
+        }
         if (w > item.currentWeight + 0.0001) {
             toast('Release weight exceeds available for one item');
             return;
         }
-        const previousStatus = item.status;
+        if (item.currentWeight - w <= 0.005)
+            w = Number(item.currentWeight);
         const costPortion = (w / item.currentWeight) * item.cost;
+        const lineProceeds = w * rate;
+        prepared.push({ item, w, rate, costPortion, lineProceeds, previousStatus: item.status });
+    }
+    let totalWeight = 0, totalCost = 0, totalProceeds = 0, lines = [];
+    for (const entry of prepared) {
+        const { item, w, rate, costPortion, lineProceeds, previousStatus } = entry;
         item.currentWeight = +(item.currentWeight - w).toFixed(4);
         item.cost = +(item.cost - costPortion).toFixed(2);
         if (item.currentWeight <= 0.005) {
             item.currentWeight = 0;
+            item.cost = 0;
             item.status = 'Liquidated';
         }
         totalWeight += w;
         totalCost += costPortion;
-        lines.push({ itemId: id, weight: w, costPortion, previousStatus });
+        totalProceeds += lineProceeds;
+        lines.push({ itemId: item.id, assay: item.karat, weight: roundWeight(w), sellingRate: roundMoney(rate), proceeds: roundMoney(lineProceeds), costPortion: roundMoney(costPortion), previousStatus });
     }
-    if (!lines.length) {
-        toast('Enter a release weight for at least one selected item');
-        return;
-    }
-    const proceeds = totalWeight * rate;
-    db.liquidations.push({ id: uid('liq'), date, metal: liqMetal, buyer, sellingRate: rate, releasedWeight: +totalWeight.toFixed(2),
-        proceeds: +proceeds.toFixed(2), paymentStatus: val('lq_payment'), cost: +totalCost.toFixed(2), margin: +(proceeds - totalCost).toFixed(2), lines, remarks: val('lq_remarks').trim() });
+    const uniqueRates = Array.from(new Set(lines.map(line => line.sellingRate)));
+    db.liquidations.push({ id: uid('liq'), date, metal: liqMetal, buyer, sellingRate: uniqueRates.length === 1 ? uniqueRates[0] : null, releasedWeight: roundWeight(totalWeight),
+        proceeds: roundMoney(totalProceeds), paymentStatus: val('lq_payment'), cost: roundMoney(totalCost), margin: roundMoney(totalProceeds - totalCost), lines, remarks: val('lq_remarks').trim() });
     saveDB();
     render();
     toast('Liquidation recorded');
@@ -1496,13 +1567,21 @@ function openLiquidationEdit(id) {
     if (!record || !adminEditGuard())
         return;
     editingLiquidationId = id;
+    const rateFields = (record.lines || []).length
+        ? record.lines.map((line, index) => {
+            const item = db.stock.find(stock => stock.id === line.itemId);
+            const assay = line.assay || item?.karat || 'Item';
+            const rate = Number(line.sellingRate || record.sellingRate) || 0;
+            return `<div class="field"><label>${esc(assay)} · ${fmtWeight(line.weight)} selling price (PHP/g)</label><input id="edit_liquidation_line_rate_${index}" type="number" min="0" step="0.01" value="${rate}"></div>`;
+        }).join('')
+        : `<div class="field"><label>Selling price (PHP/g)</label><input id="edit_liquidation_rate" type="number" min="0" step="0.01" value="${Number(record.sellingRate) || 0}"></div>`;
     openAdminEditModal('Edit liquidation', `<div class="form-grid">
     <div class="field"><label>Release date</label><input id="edit_liquidation_date" type="date" value="${esc(record.date || todayStr())}"></div>
     <div class="field"><label>Buyer / refiner</label><input id="edit_liquidation_buyer" value="${esc(record.buyer || '')}"></div>
-    <div class="field"><label>Selling rate (PHP/g)</label><input id="edit_liquidation_rate" type="number" min="0" step="0.01" value="${Number(record.sellingRate)}"></div>
+    ${rateFields}
     <div class="field"><label>Payment status</label><select id="edit_liquidation_payment">${['Pending', 'Partially Paid', 'Paid'].map(status => `<option ${record.paymentStatus === status ? 'selected' : ''}>${status}</option>`).join('')}</select></div>
     <div class="field span-2"><label>Remarks</label><textarea id="edit_liquidation_remarks">${esc(record.remarks || '')}</textarea></div>
-  </div><p class="form-note">Released weight and inventory cost remain locked. Proceeds and margin are recalculated from the new selling rate.</p>`, 'saveLiquidationEdit', 'deleteLiquidationRecord');
+  </div><p class="form-note">Released weights and inventory costs remain locked. Each assay total, batch proceeds, and margin are recalculated from its selling price.</p>`, 'saveLiquidationEdit', 'deleteLiquidationRecord');
 }
 async function saveLiquidationEdit() {
     if (!adminEditGuard())
@@ -1510,21 +1589,40 @@ async function saveLiquidationEdit() {
     const record = db.liquidations.find(l => l.id === editingLiquidationId);
     if (!record)
         return;
-    const buyer = val('edit_liquidation_buyer').trim(), rate = Number(val('edit_liquidation_rate'));
-    if (!val('edit_liquidation_date') || !buyer) {
+    const buyer = val('edit_liquidation_buyer').trim(), date = val('edit_liquidation_date');
+    if (!date || !buyer) {
         toast('Date and buyer are required');
         return;
     }
-    if (!Number.isFinite(rate) || rate <= 0) {
-        toast('Enter a valid selling rate');
-        return;
+    if ((record.lines || []).length) {
+        const rates = [];
+        for (let index = 0; index < record.lines.length; index++) {
+            const line = record.lines[index], rate = Number(val('edit_liquidation_line_rate_' + index));
+            if (!Number.isFinite(rate) || rate <= 0) {
+                toast(`Enter a valid selling price for ${line.assay || 'each item'}`);
+                return;
+            }
+            rates.push(roundMoney(rate));
+        }
+        let proceeds = 0;
+        record.lines.forEach((line, index) => { line.sellingRate = rates[index]; line.proceeds = roundMoney(Number(line.weight) * rates[index]); proceeds += line.proceeds; });
+        const uniqueRates = Array.from(new Set(rates));
+        record.sellingRate = uniqueRates.length === 1 ? uniqueRates[0] : null;
+        record.proceeds = roundMoney(proceeds);
     }
-    record.date = val('edit_liquidation_date');
+    else {
+        const rate = Number(val('edit_liquidation_rate'));
+        if (!Number.isFinite(rate) || rate <= 0) {
+            toast('Enter a valid selling price');
+            return;
+        }
+        record.sellingRate = roundMoney(rate);
+        record.proceeds = roundMoney(Number(record.releasedWeight) * rate);
+    }
+    record.date = date;
     record.buyer = buyer;
-    record.sellingRate = roundMoney(rate);
     record.paymentStatus = val('edit_liquidation_payment');
     record.remarks = val('edit_liquidation_remarks').trim();
-    record.proceeds = roundMoney(Number(record.releasedWeight) * rate);
     record.margin = roundMoney(record.proceeds - Number(record.cost));
     closeAdminEditModal();
     await saveDB();
@@ -2068,7 +2166,8 @@ function exportStock() {
 function exportLiquidations() {
     downloadCSV('zpp_liquidations.csv', toCSV(db.liquidations, [
         { label: 'Date', key: 'date' }, { label: 'Metal', key: 'metal' }, { label: 'Buyer/Refiner', key: 'buyer' }, { label: 'Released weight', key: 'releasedWeight' },
-        { label: 'Selling rate', key: 'sellingRate' }, { label: 'Proceeds', key: 'proceeds' }, { label: 'Payment status', key: 'paymentStatus' }, { label: 'Cost', key: 'cost' }, { label: 'Margin', key: 'margin' }
+        { label: 'Selling prices by assay', get: record => (record.lines || []).map(line => `${line.assay || 'Item'}: ${Number(line.sellingRate || record.sellingRate) || 0}/g`).join(' | ') },
+        { label: 'Proceeds', key: 'proceeds' }, { label: 'Payment status', key: 'paymentStatus' }, { label: 'Cost', key: 'cost' }, { label: 'Margin', key: 'margin' }
     ]));
 }
 function exportRefining() {
