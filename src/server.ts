@@ -58,6 +58,34 @@ database.exec(`
   );
 `);
 
+function removeInventoryLocationFields(records: LedgerRecord[]): boolean {
+  let changed=false;
+  for (const record of records) {
+    if (Object.prototype.hasOwnProperty.call(record, 'location')) {
+      delete record.location;
+      changed=true;
+    }
+  }
+  return changed;
+}
+
+function purgeStoredInventoryLocations(): void {
+  const rows=database.prepare('SELECT id, data FROM inventory').all() as Array<{ id: string; data: string }>;
+  const cleaned=rows.map(row=>({id:row.id,record:JSON.parse(row.data) as LedgerRecord}));
+  if (!removeInventoryLocationFields(cleaned.map(row=>row.record))) return;
+  database.exec('BEGIN IMMEDIATE');
+  try {
+    const update=database.prepare('UPDATE inventory SET data = ? WHERE id = ?');
+    for (const row of cleaned) update.run(JSON.stringify(row.record),row.id);
+    database.exec('COMMIT');
+  } catch (error) {
+    database.exec('ROLLBACK');
+    throw error;
+  }
+}
+
+purgeStoredInventoryLocations();
+
 const sessionLifetimeMs = 12 * 60 * 60 * 1000;
 const sessionSecret = process.env.ZPP_SESSION_SECRET ?? process.env.ZPP_ADMIN_PASSWORD ?? 'zpp-local-session-secret-change-in-production';
 
@@ -167,6 +195,7 @@ function unchangedRecord(candidate: LedgerRecord, original: LedgerRecord): boole
 
 function saveStaffAdditions(candidate: LedgerState): void {
   const current = loadState();
+  removeInventoryLocationFields(candidate.stock);
   if (!candidate.pricing || !current.pricing) throw new Error('Pricing settings are unavailable');
   const candidatePricing = JSON.parse(JSON.stringify(candidate.pricing)) as Record<string, any>;
   const currentPricing = JSON.parse(JSON.stringify(current.pricing)) as Record<string, any>;
@@ -206,7 +235,7 @@ function saveStaffAdditions(candidate: LedgerState): void {
   }
   for (const item of newStock) {
     const status = String(item.status ?? '');
-    if (!item.id || !knownCustomerIds.has(String(item.customerId ?? '')) ||
+    if (!item.id || (item.customerId && !knownCustomerIds.has(String(item.customerId))) ||
         !['Gold', 'Silver', 'Platinum'].includes(String(item.metal ?? '')) ||
         !['Jewelry', 'Scrap'].includes(String(item.itemType ?? '')) ||
         !['For Selling', 'For Refining', 'On Hold'].includes(status) ||
@@ -237,10 +266,39 @@ function loadState(): LedgerState {
   }
   const pricingRow = database.prepare("SELECT value FROM settings WHERE key = 'pricing'").get() as { value: string } | undefined;
   state.pricing = pricingRow ? JSON.parse(pricingRow.value) as PricingSettings | null : null;
+  removeInventoryLocationFields(state.stock);
   return state;
 }
 
+function validateLedgerIntegrity(state: LedgerState): void {
+  const stockIds = new Set(state.stock.map(record => record.id));
+  if (stockIds.size !== state.stock.length) throw new Error('Inventory contains duplicate record IDs');
+  const consumedBy = new Map<string, string>();
+  const claimInventory = (itemId: string, owner: string) => {
+    if (!stockIds.has(itemId)) throw new Error(`${owner} references a missing inventory item`);
+    const existing = consumedBy.get(itemId);
+    if (existing) throw new Error(`Inventory item ${itemId} is already assigned to ${existing}`);
+    consumedBy.set(itemId, owner);
+  };
+  for (const liquidation of state.liquidations) {
+    const lines = Array.isArray(liquidation.lines) ? liquidation.lines as LedgerRecord[] : [];
+    for (const line of lines) claimInventory(String(line.itemId ?? ''), `liquidation ${liquidation.id}`);
+  }
+  for (const batch of state.refiningBatches) {
+    const itemIds = Array.isArray(batch.itemIds) ? batch.itemIds : [];
+    for (const itemId of itemIds) claimInventory(String(itemId), `refining batch ${batch.id}`);
+    if (batch.outputItemId && !stockIds.has(String(batch.outputItemId))) {
+      throw new Error(`Refining batch ${batch.id} references a missing output inventory item`);
+    }
+  }
+  for (const sale of state.retailSales) {
+    if (sale.itemId) claimInventory(String(sale.itemId), `retail sale ${sale.id}`);
+  }
+}
+
 function saveState(state: LedgerState): void {
+  removeInventoryLocationFields(state.stock);
+  validateLedgerIntegrity(state);
   database.exec('BEGIN IMMEDIATE');
   try {
     for (const [key, table] of Object.entries(tableMap) as Array<[keyof typeof tableMap, string]>) {
