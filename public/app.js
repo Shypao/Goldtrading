@@ -676,6 +676,7 @@ function renderRates() {
         <label class="switch-line"><input type="checkbox" ${auto.enabled ? 'checked' : ''} onchange="setAutoEnabled(this.checked)"> Update automatically every 5 seconds</label>
         <div class="field"><label>Buying payout</label><div style="display:flex;align-items:center;gap:5px"><input style="width:82px" type="number" min="0" max="100" step="0.1" value="${auto.payoutPct}" onchange="setPayoutPct(this.value)"><span>%</span></div></div>
         <button class="btn small" onclick="refreshPhilippineRates(false)" ${pricingFetchBusy ? 'disabled' : ''}>Refresh &amp; apply now</button>
+        <button class="btn secondary small" onclick="openGradeFormulaEditor('Gold','24K')">Edit today's formula</button>
       </div>
     </div>
     <div class="stat-row" style="margin-top:16px">
@@ -793,7 +794,12 @@ function openGradeFormulaEditor(metal, key) {
     modal.innerHTML = `<form class="summary-modal" onsubmit="saveGradeFormula(event)" role="dialog" aria-modal="true" aria-labelledby="formula_edit_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Today's PHP rate formula</div><h2 id="formula_edit_title">${esc(metal)} ${esc(grade.label)}</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
     <p class="form-note" style="margin:16px 0;">Buying rate = PHP base rate × grade multiplier. This change applies only on ${fmtDate(todayStr())}; tomorrow the standard multiplier returns automatically.</p>
-    <div class="form-grid"><div class="field"><label>PHP base rate</label><input value="${base.toFixed(2)}" readonly></div><div class="field"><label>Grade multiplier</label><input id="formula_multiplier" type="number" min="0.001" max="2" step="0.001" value="${multiplier}" oninput="updateGradeFormulaPreview()" required></div></div>
+    <div class="form-grid">
+      <div class="field"><label>Metal</label><select id="formula_metal" onchange="changeFormulaEditorMetal(this.value)">${Object.keys(GRADES).map(name => `<option value="${name}" ${name === metal ? 'selected' : ''}>${name}</option>`).join('')}</select></div>
+      <div class="field"><label>Grade / purity</label><select id="formula_grade" onchange="openGradeFormulaEditor('${metal}',this.value)">${GRADES[metal].map(gradeKey => `<option value="${gradeKey}" ${gradeKey === key ? 'selected' : ''}>${esc(gradeLabel(metal, gradeKey))}</option>`).join('')}</select></div>
+      <div class="field"><label>PHP base rate</label><input value="${base.toFixed(2)}" readonly></div>
+      <div class="field"><label>Grade multiplier</label><input id="formula_multiplier" type="number" min="0.001" max="2" step="0.001" value="${multiplier}" oninput="updateGradeFormulaPreview()" required></div>
+    </div>
     <div class="stat" style="margin-top:14px"><div class="label">Calculated buying rate</div><div class="value" id="formula_preview">${fmtMoney(base * multiplier)}/g</div></div>
     <div class="form-actions">${customized ? '<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use default formula</button>' : ''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save formula</button></div>
   </form>`;
@@ -802,6 +808,7 @@ function openGradeFormulaEditor(metal, key) {
     document.body.appendChild(modal);
     document.getElementById('formula_multiplier')?.focus();
 }
+function changeFormulaEditorMetal(metal) { openGradeFormulaEditor(metal, GRADES[metal]?.[0] || ''); }
 function updateGradeFormulaPreview() {
     if (!formulaEditTarget)
         return;
