@@ -2456,6 +2456,19 @@ function exportRates(){ downloadCSV('zpp_rate_history.csv', toCSV(visiblePricing
 ])); }
 
 function closeCustomerHistoryModal(){ document.getElementById('customer_history_modal')?.remove(); }
+function filterCustomerHistory(value){
+  const query=String(value||'').trim().toLowerCase();
+  const rows=Array.from(document.querySelectorAll('#customer_history_results [data-customer-history-search]'));
+  let visible=0;
+  rows.forEach(row=>{
+    const matches=!query||String(row.dataset.customerHistorySearch||'').includes(query);
+    row.hidden=!matches;
+    if(matches) visible+=1;
+  });
+  const count=document.getElementById('customer_history_result_count');
+  if(count) count.textContent=`Showing ${visible} of ${rows.length}`;
+  document.getElementById('customer_history_search_empty')?.classList.toggle('is-hidden',visible>0||!rows.length);
+}
 function openCustomerHistoryModal(){
   closeCustomerHistoryModal();
   const purchases=purchaseHistoryRecords();
@@ -2463,16 +2476,18 @@ function openCustomerHistoryModal(){
   const modal=document.createElement('div'); modal.id='customer_history_modal'; modal.className='modal-backdrop';
   modal.innerHTML=`<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="customer_history_title">
     <div class="summary-modal-head"><div><div class="eyebrow">${esc(purchaseHistoryFilterLabel())}</div><h2 id="customer_history_title">Customer history</h2><p class="form-note">Purchase totals grouped by customer for the selected dates.</p></div><button class="modal-close" onclick="closeCustomerHistoryModal()" aria-label="Close">×</button></div>
-    <div style="margin-top:18px;">${tableOrEmpty(customers,customer=>{
+    <div class="dashboard-report-search customer-history-search"><div class="field"><label for="customer_history_search">Search customer</label><input id="customer_history_search" type="search" autocomplete="off" placeholder="Type a customer name" oninput="filterCustomerHistory(this.value)"></div><span id="customer_history_result_count">Showing ${customers.length} of ${customers.length}</span></div>
+    <div id="customer_history_search_empty" class="empty-note is-hidden">No customers match your search.</div>
+    <div id="customer_history_results">${tableOrEmpty(customers,customer=>{
       const history=purchases.filter(item=>item.customerId===customer.id);
       const totalWeight=history.reduce((sum,item)=>sum+Number(item.netWeight||0),0);
       const totalPayout=history.reduce((sum,item)=>sum+Number(item.payout||0),0);
-      return `<tr><td data-label="Customer"><strong>${esc(customer.name)}</strong></td><td data-label="Transactions" class="num">${history.length}</td><td data-label="Total weight sold" class="num">${fmtWeight(totalWeight)}</td><td data-label="Total payout" class="num">${fmtMoney(totalPayout)}</td></tr>`;
+      return `<tr data-customer-history-search="${dashboardSearchValue(customer.name,customer.contact)}"><td data-label="Customer"><strong>${esc(customer.name)}</strong></td><td data-label="Transactions" class="num">${history.length}</td><td data-label="Total weight sold" class="num">${fmtWeight(totalWeight)}</td><td data-label="Total payout" class="num">${fmtMoney(totalPayout)}</td></tr>`;
     },['Customer','Transactions','Total weight sold','Total payout'],'No customer purchases match the selected dates.')}</div>
     <div class="form-actions" style="justify-content:flex-end;margin-top:18px;"><button class="btn" onclick="closeCustomerHistoryModal()">Close</button></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeCustomerHistoryModal();});
-  document.body.appendChild(modal); modal.querySelector('.modal-close')?.focus();
+  document.body.appendChild(modal); modal.querySelector('#customer_history_search')?.focus();
 }
 
 function renderLiquidationHistory(){
