@@ -334,8 +334,8 @@ const GOLD_GRADES = [
 const SILVER_GRADES = [
     { key: '999', label: '999', mult: 1 },
     { key: '925', label: '925', mult: 925 / 999 },
-    { key: '900', label: '90%', mult: 0.9 },
-    { key: '800', label: '80%', mult: 0.8 },
+    { key: '900', label: '900', mult: 0.9 },
+    { key: '800', label: '800', mult: 0.8 },
     { key: '750', label: '75%', mult: 0.75 },
     { key: '600', label: '60%', mult: 0.6 },
 ];
@@ -360,6 +360,16 @@ function configuredBaseRate(metal) {
     const configured = Number(daily?.effectiveDate === todayStr() ? daily?.baseRates?.[metal] : NaN);
     return Number.isFinite(configured) && configured > 0 ? configured : liveBase;
 }
+function configuredSilver925Rate(silver999Base = configuredBaseRate('Silver')) {
+    const daily = db.pricing?.dailyFormula;
+    const configured = Number(daily?.effectiveDate === todayStr() ? daily?.baseRates?.Silver925 : NaN);
+    if (Number.isFinite(configured) && configured > 0)
+        return roundPeso(configured);
+    const legacyOverride = Number(db.pricing?.silver?.overrides?.['925']);
+    if (Number.isFinite(legacyOverride) && legacyOverride > 0)
+        return roundPeso(legacyOverride);
+    return roundPeso(Math.max(Number(silver999Base || 0) - 10, 0));
+}
 function calculatedRateFromBase(metal, key, base) {
     if (!Number.isFinite(base) || base <= 0 || !gradeMeta(metal, key))
         return 0;
@@ -368,14 +378,14 @@ function calculatedRateFromBase(metal, key, base) {
         rate = base * configuredGradeMultiplier(metal, key);
     }
     else if (metal === 'Silver') {
-        const sterlingRate = Math.max(base - 10, 0);
-        rate = key === '999' ? base : key === '925' ? sterlingRate : sterlingRate * (Number(key) / 10) / 92.5;
+        const sterlingRate = configuredSilver925Rate(base);
+        rate = key === '999' ? base : key === '925' ? sterlingRate : sterlingRate * Number(key) / 925;
     }
     else if (metal === 'Platinum') {
         const deductions = { 999: 0, 950: 100, 900: 150, 850: 200 };
         rate = Math.max(base - Number(deductions[key] ?? 0), 0);
     }
-    return +rate.toFixed(2);
+    return roundPeso(rate);
 }
 function computedRate(metal, key) {
     return calculatedRateFromBase(metal, key, configuredBaseRate(metal));
@@ -384,7 +394,7 @@ function bucketFor(metal) { return metal === 'Gold' ? db.pricing.gold : metal ==
 function metalRate(metal, key) {
     const b = bucketFor(metal);
     const ov = b.overrides[key];
-    return (ov != null && ov !== '') ? +ov : computedRate(metal, key);
+    return (ov != null && ov !== '') ? roundPeso(ov) : computedRate(metal, key);
 }
 function isOverridden(metal, key) {
     const b = bucketFor(metal);
@@ -398,7 +408,7 @@ function activeRate(metal, karat) {
     return { rate: metalRate(metal, karat), effectiveDate: db.pricing.effectiveDate };
 }
 async function setBase(metal, value) {
-    const v = parseFloat(value);
+    const v = roundPeso(parseFloat(value));
     if (!Number.isFinite(v) || v <= 0) {
         toast('Enter a valid PHP base rate');
         render();
@@ -411,13 +421,28 @@ async function setBase(metal, value) {
     render();
     toast(`${metal} PHP base rate updated for today`);
 }
+async function setSilver925Base(value) {
+    const rate = roundPeso(parseFloat(value));
+    if (!Number.isFinite(rate) || rate <= 0) {
+        toast('Enter a valid 925 Silver rate');
+        render();
+        return;
+    }
+    if (db.pricing.dailyFormula.effectiveDate !== todayStr())
+        db.pricing.dailyFormula = { effectiveDate: todayStr(), baseRates: {} };
+    db.pricing.dailyFormula.baseRates.Silver925 = rate;
+    delete db.pricing.silver.overrides['925'];
+    await saveDB();
+    render();
+    toast('Silver 925 basis rate updated for today');
+}
 function setOverride(metal, key, value) {
     const b = bucketFor(metal);
     if (value === '') {
         delete b.overrides[key];
     }
     else {
-        b.overrides[key] = parseFloat(value);
+        b.overrides[key] = roundPeso(parseFloat(value));
     }
     saveDB();
     render();
@@ -669,6 +694,8 @@ function render() {
 let dashboardReportPanel = '';
 let purchaseHistoryFrom = '';
 let purchaseHistoryTo = '';
+let liquidationHistoryFrom = '';
+let liquidationHistoryTo = '';
 function toggleDashboardReport(panel) {
     dashboardReportPanel = dashboardReportPanel === panel ? '' : panel;
     render();
@@ -735,6 +762,48 @@ function purchaseHistoryFilterLabel() {
     if (purchaseHistoryTo)
         return `Through ${fmtDate(purchaseHistoryTo)}`;
     return 'All purchase dates';
+}
+function liquidationHistoryDateMatch(item) {
+    return (!liquidationHistoryFrom || item.date >= liquidationHistoryFrom) && (!liquidationHistoryTo || item.date <= liquidationHistoryTo);
+}
+function liquidationHistoryRecords() {
+    return db.liquidations.filter(liquidationHistoryDateMatch).slice().sort((a, b) => b.date.localeCompare(a.date));
+}
+function applyLiquidationHistoryDates() {
+    const from = val('liquidation_history_from'), to = val('liquidation_history_to');
+    if (from && to && from > to) {
+        toast('The From date must be before the To date');
+        return;
+    }
+    liquidationHistoryFrom = from;
+    liquidationHistoryTo = to;
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function setLiquidationHistoryDatePreset(preset) {
+    if (preset === 'today') {
+        liquidationHistoryFrom = todayStr();
+        liquidationHistoryTo = todayStr();
+    }
+    else if (preset === 'month') {
+        liquidationHistoryFrom = `${monthStr()}-01`;
+        liquidationHistoryTo = todayStr();
+    }
+    else {
+        liquidationHistoryFrom = '';
+        liquidationHistoryTo = '';
+    }
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function liquidationHistoryFilterLabel() {
+    if (liquidationHistoryFrom && liquidationHistoryTo)
+        return liquidationHistoryFrom === liquidationHistoryTo ? fmtDate(liquidationHistoryFrom) : `${fmtDate(liquidationHistoryFrom)} to ${fmtDate(liquidationHistoryTo)}`;
+    if (liquidationHistoryFrom)
+        return `From ${fmtDate(liquidationHistoryFrom)}`;
+    if (liquidationHistoryTo)
+        return `Through ${fmtDate(liquidationHistoryTo)}`;
+    return 'All liquidation dates';
 }
 function renderDashboard() {
     const today = todayStr(), mon = monthStr();
@@ -812,7 +881,7 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">24K rate — pure gold</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${configuredBaseRate('Gold') || ''}" onchange="setBase('Gold', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${roundPeso(configuredBaseRate('Gold')) || ''}" onchange="setBase('Gold', this.value)"></div>
       </div>
       ${renderFeaturedBox()}
     </div>
@@ -823,11 +892,15 @@ function renderRates() {
     <div class="metal-section-head"><span class="metal-dot silver"></span><h3>Silver</h3><span class="count">${SILVER_GRADES.length} grades</span></div>
     <div class="base-row">
       <div class="base-box">
-        <div class="base-label">999 rate — pure silver</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${configuredBaseRate('Silver') || ''}" onchange="setBase('Silver', this.value)"></div>
+        <div class="base-label">999 rate — independent silver rate</div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${roundPeso(configuredBaseRate('Silver')) || ''}" onchange="setBase('Silver', this.value)"></div>
+      </div>
+      <div class="base-box">
+        <div class="base-label">925 basis — calculates 900, 800, 75% and 60%</div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${configuredSilver925Rate() || ''}" onchange="setSilver925Base(this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${SILVER_GRADES.map(g => renderGradeCard('Silver', g.key, g.label)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.filter(g => g.key !== '999' && g.key !== '925').map(g => renderGradeCard('Silver', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="metal-section">
@@ -835,7 +908,7 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">999 rate — pure platinum</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${configuredBaseRate('Platinum') || ''}" onchange="setBase('Platinum', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${roundPeso(configuredBaseRate('Platinum')) || ''}" onchange="setBase('Platinum', this.value)"></div>
       </div>
     </div>
     <div class="grade-grid">${PLATINUM_GRADES.map(g => renderGradeCard('Platinum', g.key, g.label)).join('')}</div>
@@ -896,20 +969,21 @@ function openDailyBaseEditor(metal) {
         return;
     formulaEditTarget = { metal };
     document.getElementById('formula_edit_modal')?.remove();
-    const liveBase = Number(bucketFor(metal).base) || 0, base = configuredBaseRate(metal);
+    const liveBase = Number(bucketFor(metal).base) || 0, base = configuredBaseRate(metal), silver925 = configuredSilver925Rate(base);
     const customized = Math.abs(base - liveBase) >= 0.005;
     const modal = document.createElement('div');
     modal.id = 'formula_edit_modal';
     modal.className = 'modal-backdrop';
     modal.innerHTML = `<form class="summary-modal" onsubmit="saveGradeFormula(event)" role="dialog" aria-modal="true" aria-labelledby="formula_edit_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Daily rate setup</div><h2 id="formula_edit_title">Today's PHP base rate</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
-    <p class="form-note" style="margin:16px 0;">This exact PHP base rate applies to all ${esc(metal)} grades on ${fmtDate(todayStr())}. Grade calculations remain automatic and fixed. Tomorrow, the live PHP base returns automatically.</p>
+    <p class="form-note" style="margin:16px 0;">${metal === 'Silver' ? 'Set the independent 999 rate and the 925 basis used to calculate 900, 800, 75%, and 60%.' : 'This exact PHP base rate applies to all ' + esc(metal) + ' grades.'} Rates are rounded to whole pesos with no centavos.</p>
     <div class="form-grid">
       <div class="field"><label>Metal</label><select id="formula_metal" onchange="changeFormulaEditorMetal(this.value)">${Object.keys(GRADES).map(name => `<option value="${name}" ${name === metal ? 'selected' : ''}>${name}</option>`).join('')}</select></div>
-      <div class="field"><label>Live PHP base rate</label><input value="${liveBase.toFixed(2)}" readonly></div>
-      <div class="field"><label>Today's PHP base rate</label><input id="formula_base_rate" type="number" min="0.01" step="0.01" value="${base.toFixed(2)}" oninput="updateGradeFormulaPreview()" required></div>
+      <div class="field"><label>Live PHP base rate</label><input value="${roundPeso(liveBase)}" readonly></div>
+      <div class="field"><label>Today's ${metal === 'Silver' ? '999' : 'PHP base'} rate</label><input id="formula_base_rate" type="number" min="1" step="1" value="${roundPeso(base)}" oninput="updateGradeFormulaPreview()" required></div>
+      ${metal === 'Silver' ? `<div class="field"><label>Today's 925 basis rate</label><input id="formula_silver_925_rate" type="number" min="1" step="1" value="${silver925}" oninput="updateGradeFormulaPreview()" required><span class="hint">900, 800, 75%, and 60% calculate from this rate.</span></div>` : ''}
     </div>
-    <div class="stat" style="margin-top:14px"><div class="label">Active base rate for today</div><div class="value" id="formula_preview">${fmtMoney(base)}/g</div></div>
+    <div class="stat" style="margin-top:14px"><div class="label">Active rate${metal === 'Silver' ? 's' : ''} for today</div><div class="value" id="formula_preview">${metal === 'Silver' ? `999: ${fmtMoney(base)}/g · 925: ${fmtMoney(silver925)}/g` : fmtMoney(base) + '/g'}</div></div>
     <div class="form-actions">${customized ? '<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use live PHP base</button>' : ''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save today's base rate</button></div>
   </form>`;
     modal.addEventListener('click', event => { if (event.target === modal)
@@ -922,23 +996,33 @@ function updateGradeFormulaPreview() {
     if (!formulaEditTarget)
         return;
     const base = Number(val('formula_base_rate')), preview = document.getElementById('formula_preview');
+    const silver925 = Number(val('formula_silver_925_rate'));
     if (preview)
-        preview.textContent = Number.isFinite(base) && base > 0 ? `${fmtMoney(base)}/g` : 'Enter a valid PHP base rate';
+        preview.textContent = Number.isFinite(base) && base > 0 ? (formulaEditTarget.metal === 'Silver' && Number.isFinite(silver925) && silver925 > 0 ? `999: ${fmtMoney(base)}/g · 925: ${fmtMoney(silver925)}/g` : `${fmtMoney(base)}/g`) : 'Enter a valid PHP base rate';
 }
 function closeGradeFormulaEditor() { document.getElementById('formula_edit_modal')?.remove(); formulaEditTarget = null; }
 async function saveGradeFormula(event) {
     event.preventDefault();
     if (!formulaEditTarget || !adminEditGuard())
         return;
-    const baseRate = Number(val('formula_base_rate'));
+    const baseRate = roundPeso(Number(val('formula_base_rate')));
     if (!Number.isFinite(baseRate) || baseRate <= 0) {
         toast('Enter a valid PHP base rate');
         return;
     }
     const { metal } = formulaEditTarget;
+    const silver925 = metal === 'Silver' ? roundPeso(Number(val('formula_silver_925_rate'))) : 0;
+    if (metal === 'Silver' && (!Number.isFinite(silver925) || silver925 <= 0)) {
+        toast('Enter a valid Silver 925 basis rate');
+        return;
+    }
     if (db.pricing.dailyFormula.effectiveDate !== todayStr())
         db.pricing.dailyFormula = { effectiveDate: todayStr(), baseRates: {} };
     db.pricing.dailyFormula.baseRates[metal] = baseRate;
+    if (metal === 'Silver') {
+        db.pricing.dailyFormula.baseRates.Silver925 = silver925;
+        delete db.pricing.silver.overrides['925'];
+    }
     closeGradeFormulaEditor();
     await saveDB();
     render();
@@ -950,6 +1034,8 @@ async function resetGradeFormula() {
     const { metal } = formulaEditTarget;
     if (db.pricing.dailyFormula?.baseRates)
         delete db.pricing.dailyFormula.baseRates[metal];
+    if (metal === 'Silver' && db.pricing.dailyFormula?.baseRates)
+        delete db.pricing.dailyFormula.baseRates.Silver925;
     closeGradeFormulaEditor();
     await saveDB();
     render();
@@ -2923,7 +3009,7 @@ function exportStock() {
     ]));
 }
 function exportLiquidations() {
-    downloadCSV('zpp_liquidations.csv', toCSV(db.liquidations, [
+    downloadCSV('zpp_liquidations.csv', toCSV(liquidationHistoryRecords(), [
         { label: 'Liquidation ID', key: 'id' }, { label: 'Date', key: 'date' }, { label: 'Metal', key: 'metal' }, { label: 'Buyer/Refiner', key: 'buyer' }, { label: 'Number of items', get: record => (record.lines || []).length || record.itemCount || 0 }, { label: 'Released weight', key: 'releasedWeight' },
         { label: 'Total sold by item', get: record => (record.lines || []).map(line => `${line.assay || 'Item'}: ${Number(line.sellingAmount ?? line.proceeds) || 0}`).join(' | ') },
         { label: 'Total sold', key: 'proceeds' }, { label: 'Payment status', key: 'paymentStatus' }, { label: 'Total cost', key: 'cost' }, { label: 'Profit', key: 'margin' }
@@ -2961,11 +3047,49 @@ function exportRates() {
         { label: 'Gold 24K base', get: h => h.snapshot.gold.base }, { label: 'Silver base', get: h => h.snapshot.silver.base }, { label: 'Platinum base', get: h => h.snapshot.platinum.base }
     ]));
 }
+function closeCustomerHistoryModal() { document.getElementById('customer_history_modal')?.remove(); }
+function openCustomerHistoryModal() {
+    closeCustomerHistoryModal();
+    const purchases = purchaseHistoryRecords();
+    const customers = db.customers.filter(customer => purchases.some(item => item.customerId === customer.id));
+    const modal = document.createElement('div');
+    modal.id = 'customer_history_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="customer_history_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">${esc(purchaseHistoryFilterLabel())}</div><h2 id="customer_history_title">Customer history</h2><p class="form-note">Purchase totals grouped by customer for the selected dates.</p></div><button class="modal-close" onclick="closeCustomerHistoryModal()" aria-label="Close">×</button></div>
+    <div style="margin-top:18px;">${tableOrEmpty(customers, customer => {
+        const history = purchases.filter(item => item.customerId === customer.id);
+        const totalWeight = history.reduce((sum, item) => sum + Number(item.netWeight || 0), 0);
+        const totalPayout = history.reduce((sum, item) => sum + Number(item.payout || 0), 0);
+        return `<tr><td data-label="Customer"><strong>${esc(customer.name)}</strong></td><td data-label="Transactions" class="num">${history.length}</td><td data-label="Total weight sold" class="num">${fmtWeight(totalWeight)}</td><td data-label="Total payout" class="num">${fmtMoney(totalPayout)}</td></tr>`;
+    }, ['Customer', 'Transactions', 'Total weight sold', 'Total payout'], 'No customer purchases match the selected dates.')}</div>
+    <div class="form-actions" style="justify-content:flex-end;margin-top:18px;"><button class="btn" onclick="closeCustomerHistoryModal()">Close</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeCustomerHistoryModal(); });
+    document.body.appendChild(modal);
+    modal.querySelector('.modal-close')?.focus();
+}
 function renderLiquidationHistory() {
+    const liquidations = liquidationHistoryRecords();
+    const totalCost = liquidations.reduce((sum, item) => sum + Number(item.cost || 0), 0);
+    const totalSold = liquidations.reduce((sum, item) => sum + Number(item.proceeds || 0), 0);
+    const totalProfit = liquidations.reduce((sum, item) => sum + Number(item.margin || 0), 0);
     return `<section class="block">
     <div class="batch-head"><div><h2 class="block-title">Liquidation history</h2><p class="form-note">Administrator record of all completed liquidation batches.</p></div><button class="btn small" onclick="exportLiquidations()">Download liquidation CSV</button></div>
-    ${dashboardReportSearch('Search ID, date, buyer, metal, or status', db.liquidations.length)}
-    ${tableOrEmpty(db.liquidations.slice().sort((a, b) => b.date.localeCompare(a.date)), l => `<tr data-dashboard-search="${dashboardSearchValue(l.id, l.date, fmtDate(l.date), l.buyer, l.metal, l.paymentStatus)}"><td><button class="link-button" onclick="openLiquidationDetails('${l.id}')">${esc(l.id)}</button></td><td>${fmtDate(l.date)}</td><td>${esc(l.buyer)}</td><td class="num">${(l.lines || []).length || l.itemCount || 0}</td>
+    <div class="purchase-history-filter-card">
+      <div class="purchase-history-filter-top"><div><strong>Liquidation date</strong><span>Choose a date range or use a quick option.</span></div><div class="purchase-history-presets"><button class="btn secondary small" onclick="setLiquidationHistoryDatePreset('today')">Today</button><button class="btn secondary small" onclick="setLiquidationHistoryDatePreset('month')">This month</button><button class="btn secondary small" onclick="setLiquidationHistoryDatePreset('all')" ${liquidationHistoryFrom || liquidationHistoryTo ? '' : 'disabled'}>Clear dates</button></div></div>
+      <div class="purchase-history-date-row"><div class="field"><label for="liquidation_history_from">From</label><input id="liquidation_history_from" type="date" value="${esc(liquidationHistoryFrom)}"></div><div class="field"><label for="liquidation_history_to">To</label><input id="liquidation_history_to" type="date" value="${esc(liquidationHistoryTo)}"></div><button class="btn" onclick="applyLiquidationHistoryDates()">Apply dates</button></div>
+      <div class="purchase-history-active-range"><span>Showing:</span><strong>${esc(liquidationHistoryFilterLabel())}</strong></div>
+    </div>
+    ${dashboardReportSearch('Search ID, date, buyer, metal, or status', liquidations.length)}
+    <div class="stat-row" style="margin:16px 0;">
+      <div class="stat"><div class="label">Liquidation batches</div><div class="value">${liquidations.length}</div></div>
+      <div class="stat"><div class="label">Total cost</div><div class="value">${fmtMoney(totalCost)}</div></div>
+      <div class="stat"><div class="label">Total sold</div><div class="value">${fmtMoney(totalSold)}</div></div>
+      <div class="stat"><div class="label">Total profit</div><div class="value" style="color:${totalProfit >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(totalProfit)}</div></div>
+    </div>
+    ${tableOrEmpty(liquidations, l => `<tr data-dashboard-search="${dashboardSearchValue(l.id, l.date, fmtDate(l.date), l.buyer, l.metal, l.paymentStatus)}"><td><button class="link-button" onclick="openLiquidationDetails('${l.id}')">${esc(l.id)}</button></td><td>${fmtDate(l.date)}</td><td>${esc(l.buyer)}</td><td class="num">${(l.lines || []).length || l.itemCount || 0}</td>
       <td class="num">${fmtMoney(l.cost)}</td><td class="num">${fmtMoney(l.proceeds)}</td><td class="num" style="color:${l.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(l.margin)}</td><td>${esc(l.paymentStatus || '—')}</td><td><div class="form-actions"><button class="btn secondary small" onclick="openLiquidationDetails('${l.id}')">Details</button>${adminEditButton('Liquidation', l.id)}</div></td></tr>`, ['ID', 'Date', 'Buyer / refiner', 'Items', 'Total cost', 'Total sold', 'Profit', 'Status', 'Actions'], 'No liquidations recorded yet.')}
   </section>`;
 }
@@ -2977,7 +3101,7 @@ function renderReports() {
     const readyStock = db.stock.filter(s => (s.status === 'For Selling' || s.status === 'For Refining') && s.currentWeight > 0);
     const purchaseReport = `<div id="dashboard_report_content" class="dashboard-report-content">
   <section class="block recent-purchases purchase-history">
-    <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div>
+    <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><div class="form-actions"><button class="btn secondary small" onclick="openCustomerHistoryModal()">View customer history</button><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div></div>
     <div class="purchase-history-filter-card">
       <div class="purchase-history-filter-top"><div><strong>Purchase date</strong><span>Choose a date range or use a quick option.</span></div><div class="purchase-history-presets"><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('today')">Today</button><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('month')">This month</button><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('all')" ${purchaseHistoryFrom || purchaseHistoryTo ? '' : 'disabled'}>Clear dates</button></div></div>
       <div class="purchase-history-date-row"><div class="field"><label for="purchase_history_from">From</label><input id="purchase_history_from" type="date" value="${esc(purchaseHistoryFrom)}"></div><div class="field"><label for="purchase_history_to">To</label><input id="purchase_history_to" type="date" value="${esc(purchaseHistoryTo)}"></div><button class="btn" onclick="applyPurchaseHistoryDates()">Apply dates</button></div>
@@ -2992,15 +3116,6 @@ function renderReports() {
     ${tableOrEmpty(purchases, s => `<tr data-dashboard-search="${dashboardSearchValue(s.date, fmtDate(s.date), s.customerName, s.metal, s.karat, s.itemType, s.status, s.staff, s.batchId)}"><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Seller">${esc(s.customerName)}</td><td data-label="Item"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)} · ${esc(s.itemType)}</td>
       <td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Status">${statusPill(s.status)}</td>
       <td data-label="Details"><div class="purchase-details"><span class="hint">${esc(s.staff || 'No staff recorded')}</span><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId || s.id}')">Receipt</button>${adminEditButton('Inventory', s.id)}</div></div></td></tr>`, ['Date', 'Seller', 'Item', 'Net weight', 'Payout', 'Status', 'Details'], 'No purchases recorded yet.')}
-  </section>
-  <section class="block">
-    <h2 class="block-title">Customer history (${esc(purchaseHistoryFilterLabel())})</h2>
-    ${tableOrEmpty(db.customers.filter(c => purchases.some(s => s.customerId === c.id)), c => {
-        const hist = purchases.filter(s => s.customerId === c.id);
-        const totalW = hist.reduce((a, s) => a + Number(s.netWeight), 0);
-        const totalP = hist.reduce((a, s) => a + Number(s.payout), 0);
-        return `<tr><td>${esc(c.name)}</td><td class="num">${hist.length}</td><td class="num">${fmtWeight(totalW)}</td><td class="num">${fmtMoney(totalP)}</td></tr>`;
-    }, ['Customer', 'Transactions', 'Total weight sold', 'Total payout'], 'No customers on file yet.')}
   </section></div>`;
     const liquidationReport = `<div id="dashboard_report_content" class="dashboard-report-content">${renderLiquidationHistory()}</div>`;
     const readinessReport = `<div id="dashboard_report_content" class="dashboard-report-content"><section class="block">
