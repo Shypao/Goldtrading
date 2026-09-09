@@ -833,6 +833,10 @@ function renderDashboard() {
     const pMonth = purchases.filter(s => s.date.startsWith(mon));
     const payoutToday = pToday.reduce((a, s) => a + Number(s.payout), 0);
     const payoutMonth = pMonth.reduce((a, s) => a + Number(s.payout), 0);
+    const monthLabel = new Date(`${mon}-01T00:00:00`).toLocaleDateString('en-PH', { month: 'long', year: 'numeric' });
+    const inventoryMonth = db.stock.filter(s => s.date.startsWith(mon) && Number(s.currentWeight) > 0 && !['Liquidated', 'Refined', 'Sold'].includes(s.status));
+    const inventoryAmountMonth = inventoryMonth.reduce((a, s) => a + Number(s.cost), 0);
+    const inventoryWeightMonth = inventoryMonth.reduce((a, s) => a + Number(s.currentWeight), 0);
     const liqMonth = db.liquidations.filter(l => l.date.startsWith(mon));
     const liqMargin = liqMonth.reduce((a, l) => a + Number(l.margin), 0);
     const retailMonth = db.retailSales.filter(r => r.date.startsWith(mon));
@@ -842,6 +846,7 @@ function renderDashboard() {
     <h2 class="block-title">Today &amp; this month</h2>
     <div class="stat-row">
       <div class="stat"><div class="label">Purchases today</div><div class="value">${pToday.length}</div><div class="sub">${fmtMoney(payoutToday)} paid out</div></div>
+      <div class="stat"><div class="label">${esc(monthLabel)} inventory amount</div><div class="value">${fmtMoney(inventoryAmountMonth)}</div><div class="sub">${inventoryMonth.length} active item${inventoryMonth.length === 1 ? '' : 's'} · ${fmtWeight(inventoryWeightMonth)}</div></div>
       <div class="stat"><div class="label">Purchases this month</div><div class="value">${pMonth.length}</div><div class="sub">${fmtMoney(payoutMonth)} paid out</div></div>
       ${isAdmin() ? `<div class="stat"><div class="label">Liquidation margin (month)</div><div class="value">${fmtMoney(liqMargin)}</div><div class="sub">${liqMonth.length} batch(es) released</div></div>
       <div class="stat"><div class="label">Retail margin (month)</div><div class="value">${fmtMoney(retailMargin)}</div><div class="sub">${retailMonth.length} item(s) sold</div></div>` : ''}
@@ -1626,7 +1631,7 @@ function printPurchaseReceipt(batchId) {
 let invFilter = { metal: 'All', karat: 'All', type: 'All', status: 'All' };
 let inventoryBulkStatus = 'For Selling';
 let inventoryWeekOffset = 0;
-let inventorySelectedDate = todayStr();
+let inventorySelectedDate = 'All';
 const inventoryMoveSelection = new Set();
 const liquidationSelection = new Set();
 const liquidationDraft = new Map();
@@ -1662,10 +1667,18 @@ function selectInventoryDate(date) {
     render();
     requestAnimationFrame(() => openInventoryFilterModal());
 }
+function selectAllInventoryDates() {
+    inventorySelectedDate = 'All';
+    inventoryMoveSelection.clear();
+    render();
+    requestAnimationFrame(() => document.getElementById('inventory_stock_list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function inventoryDateScope(item) { return inventorySelectedDate === 'All' || item.date === inventorySelectedDate; }
+function inventoryDateLabel() { return inventorySelectedDate === 'All' ? 'all purchase dates' : fmtDate(inventorySelectedDate); }
 function closeInventoryFilterModal() { document.getElementById('inventory_filter_modal')?.remove(); }
 function activeInventoryRecord(item) { return Number(item.currentWeight) > 0 && !['Liquidated', 'Refined', 'Sold'].includes(item.status); }
 function inventoryFilterKaratsForDate(metal) {
-    return Array.from(new Set(db.stock.filter(item => item.date === inventorySelectedDate && activeInventoryRecord(item) && (metal === 'All' || item.metal === metal)).map(item => item.karat)));
+    return Array.from(new Set(db.stock.filter(item => inventoryDateScope(item) && activeInventoryRecord(item) && (metal === 'All' || item.metal === metal)).map(item => item.karat)));
 }
 function updateInventoryFilterModalKarats() {
     const metal = val('modal_inv_metal'), select = document.getElementById('modal_inv_karat');
@@ -1677,22 +1690,22 @@ function updateInventoryFilterModalKarats() {
 }
 function openInventoryFilterModal() {
     closeInventoryFilterModal();
-    const dayStock = db.stock.filter(item => item.date === inventorySelectedDate && activeInventoryRecord(item));
+    const dayStock = db.stock.filter(item => inventoryDateScope(item) && activeInventoryRecord(item));
     const available = dayStock.filter(selectableInventory);
     const karats = inventoryFilterKaratsForDate(invFilter.metal);
     const modal = document.createElement('div');
     modal.id = 'inventory_filter_modal';
     modal.className = 'modal-backdrop';
     modal.innerHTML = `<div class="summary-modal inventory-filter-modal" role="dialog" aria-modal="true" aria-labelledby="inventory_filter_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">${new Date(inventorySelectedDate + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })} · ${fmtDate(inventorySelectedDate)}</div><h2 id="inventory_filter_title">Filter this day's stock</h2></div><button class="modal-close" onclick="closeInventoryFilterModal()" aria-label="Close">×</button></div>
-    <p class="move-confirmation-intro">This date has <strong>${dayStock.length} stock record${dayStock.length === 1 ? '' : 's'}</strong>, with <strong>${available.length} currently available</strong>. Choose what you want to see.</p>
+    <div class="summary-modal-head"><div><div class="eyebrow">${inventorySelectedDate === 'All' ? 'Complete current inventory' : `${new Date(inventorySelectedDate + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })} · ${fmtDate(inventorySelectedDate)}`}</div><h2 id="inventory_filter_title">Filter ${inventorySelectedDate === 'All' ? 'all stock' : "this day's stock"}</h2></div><button class="modal-close" onclick="closeInventoryFilterModal()" aria-label="Close">×</button></div>
+    <p class="move-confirmation-intro">This view has <strong>${dayStock.length} stock record${dayStock.length === 1 ? '' : 's'}</strong>, with <strong>${available.length} currently available</strong>. Choose what you want to see.</p>
     <div class="form-grid inventory-filter-modal-grid">
       <div class="field"><label for="modal_inv_metal">Metal</label><select id="modal_inv_metal" onchange="updateInventoryFilterModalKarats()">${['All', 'Gold', 'Silver', 'Platinum'].map(metal => `<option value="${metal}" ${invFilter.metal === metal ? 'selected' : ''}>${metal === 'All' ? 'All metals' : metal}</option>`).join('')}</select></div>
       <div class="field"><label for="modal_inv_karat">Karat / purity</label><select id="modal_inv_karat"><option value="All">All purities</option>${karats.map(karat => `<option value="${esc(karat)}" ${invFilter.karat === karat ? 'selected' : ''}>${esc(karat)}</option>`).join('')}</select></div>
       <div class="field"><label for="modal_inv_type">Item type</label><select id="modal_inv_type">${['All', 'Jewelry', 'Scrap'].map(type => `<option value="${type}" ${invFilter.type === type ? 'selected' : ''}>${type === 'All' ? 'All item types' : type}</option>`).join('')}</select></div>
       <div class="field"><label for="modal_inv_status">Status</label><select id="modal_inv_status">${['All', 'For Selling', 'For Refining', 'On Hold', 'Liquidated', 'Refined', 'Sold'].map(status => `<option value="${status}" ${invFilter.status === status ? 'selected' : ''}>${status === 'All' ? 'All statuses' : status}</option>`).join('')}</select></div>
     </div>
-    <div class="inventory-filter-help"><strong>Tip:</strong> Choose “All” to include every record from ${fmtDate(inventorySelectedDate)}.</div>
+    <div class="inventory-filter-help"><strong>Tip:</strong> Choose “All” to include every current record from ${inventoryDateLabel()}.</div>
     <div class="form-actions inventory-filter-modal-actions"><button class="btn secondary" onclick="showAllInventoryForSelectedDate()">Show all stock</button><button class="btn" onclick="applyInventoryDateFilters()">Apply filters</button></div>
   </div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
@@ -1726,7 +1739,7 @@ function selectedInventoryForCategory() { return db.stock.filter(item => invento
 function selectedInventoryForMove() { return db.stock.filter(item => inventoryMoveSelection.has(item.id) && movableInventory(item)); }
 function selectedInventoryForLiquidation() { return db.stock.filter(item => liquidationSelection.has(item.id) && selectableInventory(item)); }
 function inventoryPercentagePool() {
-    return db.stock.filter(item => item.date === inventorySelectedDate && movableInventory(item) &&
+    return db.stock.filter(item => inventoryDateScope(item) && movableInventory(item) &&
         (invFilter.metal === 'All' || item.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || item.karat === invFilter.karat) &&
         (invFilter.type === 'All' || item.itemType === invFilter.type) &&
@@ -1766,7 +1779,7 @@ function syncInventoryMoveCheckboxes() {
         count.textContent = String(selected.length);
 }
 function visibleInventoryRecords() {
-    return db.stock.filter(item => item.date === inventorySelectedDate && activeInventoryRecord(item) &&
+    return db.stock.filter(item => inventoryDateScope(item) && activeInventoryRecord(item) &&
         (invFilter.metal === 'All' || item.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || item.karat === invFilter.karat) &&
         (invFilter.type === 'All' || item.itemType === invFilter.type) &&
@@ -1787,6 +1800,7 @@ function selectAllLowKaratGold() {
     inventoryMoveSelection.clear();
     records.forEach(item => inventoryMoveSelection.add(item.id));
     inventoryBulkStatus = 'For Refining';
+    inventorySelectedDate = 'All';
     invFilter = { ...invFilter, metal: 'Gold', karat: 'All', status: 'All' };
     render();
     requestAnimationFrame(() => document.getElementById('inventory_stock_list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
@@ -2036,14 +2050,18 @@ function confirmInventoryMoveToLiquidation() {
 }
 function renderInventory() {
     const week = inventoryWeekRange();
-    if (inventorySelectedDate < week.start || inventorySelectedDate > week.end)
+    if (inventorySelectedDate !== 'All' && (inventorySelectedDate < week.start || inventorySelectedDate > week.end))
         inventorySelectedDate = week.start;
     const dates = Array.from({ length: 7 }, (_, index) => dateKeyPlusDays(week.start, index));
     const dailyRows = dates.map(date => {
         const stock = db.stock.filter(item => item.date === date && activeInventoryRecord(item)), available = stock.filter(selectableInventory);
         return { date, stock, available, weight: available.reduce((sum, item) => sum + Number(item.currentWeight), 0), cost: available.reduce((sum, item) => sum + Number(item.cost), 0) };
     });
-    const selectedDay = dailyRows.find(day => day.date === inventorySelectedDate) || dailyRows[0];
+    const allActiveStock = db.stock.filter(activeInventoryRecord);
+    const allAvailableStock = allActiveStock.filter(selectableInventory);
+    const selectedDay = inventorySelectedDate === 'All'
+        ? { date: 'All', stock: allActiveStock, available: allAvailableStock, weight: allAvailableStock.reduce((sum, item) => sum + Number(item.currentWeight), 0), cost: allAvailableStock.reduce((sum, item) => sum + Number(item.cost), 0) }
+        : dailyRows.find(day => day.date === inventorySelectedDate) || dailyRows[0];
     const percentagePool = inventoryPercentagePool();
     const selectedMoveCount = selectedInventoryForCategory().length;
     const selectedRecords = selectedInventoryForCategory();
@@ -2055,7 +2073,7 @@ function renderInventory() {
         (invFilter.karat === 'All' || s.karat === invFilter.karat) &&
         (invFilter.type === 'All' || s.itemType === invFilter.type) &&
         (invFilter.status === 'All' || s.status === invFilter.status)).sort((a, b) => b.date.localeCompare(a.date));
-    const currentStock = db.stock.filter(activeInventoryRecord);
+    const currentStock = allActiveStock;
     const breakdownSource = currentStock.filter(item => invFilter.metal === 'All' || item.metal === invFilter.metal);
     const breakdownMap = new Map();
     breakdownSource.forEach(item => {
@@ -2092,24 +2110,25 @@ function renderInventory() {
   </section>
 
   <section class="block">
-    <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Monday through Sunday</p><h2 class="block-title" style="margin:0;">Inventory by purchase date</h2><p class="form-note">Choose a dated day to see and select its stock.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
+    <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Complete stock or daily view</p><h2 class="block-title" style="margin:0;">Inventory records</h2><p class="form-note">Use All dates to see everything together, or choose a day for a focused view.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
     <div class="inventory-days">
+      <button class="inventory-day inventory-all-dates ${inventorySelectedDate === 'All' ? 'active' : ''}" onclick="selectAllInventoryDates()"><strong>All dates</strong><span>Complete current stock</span><small>${allActiveStock.length} record${allActiveStock.length === 1 ? '' : 's'}<br>${fmtWeight(allAvailableStock.reduce((sum, item) => sum + Number(item.currentWeight), 0))} available</small></button>
       ${dailyRows.map(day => `<button class="inventory-day ${day.date === inventorySelectedDate ? 'active' : ''}" onclick="selectInventoryDate('${day.date}')"><strong>${new Date(day.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}</strong><span>${fmtDate(day.date)}</span><small>${day.stock.length} record${day.stock.length === 1 ? '' : 's'}<br>${fmtWeight(day.weight)} available</small></button>`).join('')}
     </div>
-    <h2 class="block-title">${new Date(selectedDay.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}, ${fmtDate(selectedDay.date)}</h2>
+    <h2 class="block-title">${inventorySelectedDate === 'All' ? 'All purchase dates' : `${new Date(selectedDay.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}, ${fmtDate(selectedDay.date)}`}</h2>
     <div class="stat-row">
-      <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines on this date</div></div>
+      <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines ${inventorySelectedDate === 'All' ? 'across all dates' : 'on this date'}</div></div>
       <div class="stat"><div class="label">Available stock lines</div><div class="value">${selectedDay.available.length}</div><div class="sub">eligible for selling or refining</div></div>
-      <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from this date's purchases</div></div>
-      <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost for this purchase date</div></div>
+      <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from ${inventorySelectedDate === 'All' ? 'all purchases' : "this date's purchases"}</div></div>
+      <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost ${inventorySelectedDate === 'All' ? 'across all dates' : 'for this purchase date'}</div></div>
     </div>
   </section>
 
   <section class="block" id="inventory_stock_list">
-    <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${activeFilterLabels.length ? `Showing: ${activeFilterLabels.map(esc).join(' · ')}` : 'Showing all records'} for ${fmtDate(selectedDay.date)}.</p></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div>
-    ${isAdmin() ? `<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length ? '' : ' · choose another date or change filters'}</span>${selectedGradeCounts.size ? `<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade, count]) => `<span>${esc(grade)} · ${count}</span>`).join('')}</div>` : ''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount ? '' : 'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['For Selling', 'For Refining', 'On Hold'].map(status => `<option ${inventoryBulkStatus === status ? 'selected' : ''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount ? '' : 'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected ? '' : 'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock ? '' : 'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount ? '' : 'disabled'}>Refine selected</button></div></div>` : ''}
+    <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${activeFilterLabels.length ? `Showing: ${activeFilterLabels.map(esc).join(' · ')}` : 'Showing all records'} across ${inventoryDateLabel()}.</p></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div>
+    ${isAdmin() ? `<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible ${inventorySelectedDate === 'All' ? 'across all dates' : 'on this date'}</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length ? '' : ' · change the date or filters'}</span>${selectedGradeCounts.size ? `<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade, count]) => `<span>${esc(grade)} · ${count}</span>`).join('')}</div>` : ''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount ? '' : 'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['For Selling', 'For Refining', 'On Hold'].map(status => `<option ${inventoryBulkStatus === status ? 'selected' : ''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount ? '' : 'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected ? '' : 'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock ? '' : 'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount ? '' : 'disabled'}>Refine selected</button></div></div>` : ''}
     ${tableOrEmpty(rows, s => `<tr>${isAdmin() ? `<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id) ? 'Already moved' : 'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id) ? 'checked' : ''} ${categorizableInventory(s) ? '' : 'disabled'}></td>` : ''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
-      <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td><div class="form-actions">${movableInventory(s) ? `<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>` : ''}${adminEditButton('Inventory', s.id)}</div></td>` : ''}</tr>`, [...(isAdmin() ? ['Select'] : []), 'Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], `No stock matches this filter on ${fmtDate(selectedDay.date)}.`)}
+      <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td><div class="form-actions">${movableInventory(s) ? `<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>` : ''}${adminEditButton('Inventory', s.id)}</div></td>` : ''}</tr>`, [...(isAdmin() ? ['Select'] : []), 'Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], `No stock matches this filter ${inventorySelectedDate === 'All' ? 'across all purchase dates' : `on ${fmtDate(selectedDay.date)}`}.`)}
   </section>
   `;
 }
