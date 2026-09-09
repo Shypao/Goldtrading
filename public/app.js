@@ -71,7 +71,8 @@ function ensureShape() {
     db.pricing.silver.overrides = db.pricing.silver.overrides || {};
     db.pricing.platinum = db.pricing.platinum || { base: 0, overrides: {} };
     db.pricing.platinum.overrides = db.pricing.platinum.overrides || {};
-    db.pricing.auto = Object.assign({ enabled: true, payoutPct: 94, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', usdPhp: 0, spotUsd: {}, draft: null }, db.pricing.auto || {});
+    db.pricing.auto = Object.assign({ enabled: true, payoutPct: 94, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', marketPhp: {}, goldSource: '', draft: null }, db.pricing.auto || {});
+    db.pricing.gradeMultipliers = db.pricing.gradeMultipliers || {};
 }
 function openLedgerDB() {
     return new Promise((resolve, reject) => {
@@ -315,11 +316,14 @@ const GOLD_GRADES = [
     { key: '20K', label: '20K', mult: 0.79 },
     { key: '18K', label: '18K', mult: 0.75 },
     { key: '18K-BUO', label: '18K-Buo', mult: 0.75 },
+    { key: '17K', label: '17K', mult: 0.7 },
     { key: '16K', label: '16K', mult: 0.667 },
     { key: '14K', label: '14K', mult: 0.585 },
     { key: '12K', label: '12K', mult: 0.375 },
     { key: '10K', label: '10K', mult: 0.35 },
+    { key: '9K', label: '9K', mult: 0.335 },
     { key: '8K', label: '8K', mult: 0.25 },
+    { key: '5K', label: '5K', mult: 0.06 },
     { key: '98%', label: '98%', mult: 0.98 },
     { key: '73%', label: '73%', mult: 0.73 },
 ];
@@ -342,9 +346,14 @@ const GRADES = Object.fromEntries(Object.entries(GRADE_META).map(([metal, grades
 function gradeMeta(metal, key) {
     return (GRADE_META[metal] || []).find(g => g.key === key) || null;
 }
+function configuredMultiplier(metal, key) {
+    const fallback = Number(gradeMeta(metal, key)?.mult) || 0;
+    const configured = Number(db.pricing?.gradeMultipliers?.[metal]?.[key]);
+    return Number.isFinite(configured) && configured > 0 ? configured : fallback;
+}
 function computedRate(metal, key) {
     const grade = gradeMeta(metal, key);
-    return grade ? +(bucketFor(metal).base * grade.mult).toFixed(2) : 0;
+    return grade ? +(bucketFor(metal).base * configuredMultiplier(metal, key)).toFixed(2) : 0;
 }
 function bucketFor(metal) { return metal === 'Gold' ? db.pricing.gold : metal === 'Silver' ? db.pricing.silver : db.pricing.platinum; }
 function metalRate(metal, key) {
@@ -424,12 +433,13 @@ async function refreshPhilippineRates(silent) {
             if (!usdPhp || Object.values(spotUsd).some(v => !v))
                 throw new Error('Incomplete market data');
             const factor = Math.max(0, Math.min(100, Number(db.pricing.auto.payoutPct) || 0)) / 100;
-            proposal = { effectiveDate: todayStr(), fetchedAt: new Date().toISOString(), usdPhp, spotUsd, draft: { effectiveDate: todayStr(), gold: +(spotUsd.Gold * usdPhp / TROY_OUNCE_GRAMS * factor).toFixed(2), silver: +(spotUsd.Silver * usdPhp / TROY_OUNCE_GRAMS * factor).toFixed(2), platinum: +(spotUsd.Platinum * usdPhp / TROY_OUNCE_GRAMS * factor).toFixed(2) } };
+            const marketPhp = { Gold: +(spotUsd.Gold * usdPhp / TROY_OUNCE_GRAMS).toFixed(2), Silver: +(spotUsd.Silver * usdPhp / TROY_OUNCE_GRAMS).toFixed(2), Platinum: +(spotUsd.Platinum * usdPhp / TROY_OUNCE_GRAMS).toFixed(2) };
+            proposal = { effectiveDate: todayStr(), fetchedAt: new Date().toISOString(), marketPhp, goldSource: 'Converted international spot fallback', draft: { effectiveDate: todayStr(), gold: +(marketPhp.Gold * factor).toFixed(2), silver: +(marketPhp.Silver * factor).toFixed(2), platinum: +(marketPhp.Platinum * factor).toFixed(2) } };
         }
         db.pricing.auto.lastFetchDate = proposal.effectiveDate;
         db.pricing.auto.lastFetchedAt = proposal.fetchedAt;
-        db.pricing.auto.usdPhp = proposal.usdPhp;
-        db.pricing.auto.spotUsd = proposal.spotUsd;
+        db.pricing.auto.marketPhp = proposal.marketPhp || {};
+        db.pricing.auto.goldSource = proposal.goldSource || '';
         activateMarketRates(proposal.draft, silent ? 'Automatic 5-second internet update' : 'Manual internet refresh', !silent);
         if (isAdmin())
             await saveDB();
@@ -656,8 +666,8 @@ function renderRates() {
     <div class="auto-panel-head">
       <div>
         <h3>Automatic Philippine internet pricing</h3>
-        <div class="metal-section-desc" style="margin:0;">Live USD metal prices are converted to PHP per gram, adjusted by your buying payout percentage, and activated automatically once per Philippine day.</div>
-        <div class="auto-status">${pricingFetchBusy ? '<span class="spinner"></span>Updating market data…' : `Last checked: ${esc(fetched)}${auto.usdPhp ? ` · USD/PHP ${Number(auto.usdPhp).toFixed(4)}` : ''}`}</div>
+        <div class="metal-section-desc" style="margin:0;">Philippine market prices are shown in PHP per gram, adjusted by your buying payout percentage, and activated automatically.</div>
+        <div class="auto-status">${pricingFetchBusy ? '<span class="spinner"></span>Updating Philippine market data…' : `Last checked: ${esc(fetched)}${auto.goldSource ? ` · Gold source: ${esc(auto.goldSource)}` : ''}`}</div>
       </div>
       <div class="auto-controls">
         <label class="switch-line"><input type="checkbox" ${auto.enabled ? 'checked' : ''} onchange="setAutoEnabled(this.checked)"> Update automatically every 5 seconds</label>
@@ -666,15 +676,15 @@ function renderRates() {
       </div>
     </div>
     <div class="stat-row" style="margin-top:16px">
-      <div class="stat"><div class="label">Active Gold 24K</div><div class="value">${fmtMoney(db.pricing.gold.base)}/g</div></div>
-      <div class="stat"><div class="label">Active Silver 999</div><div class="value">${fmtMoney(db.pricing.silver.base)}/g</div></div>
-      <div class="stat"><div class="label">Active Platinum 999</div><div class="value">${fmtMoney(db.pricing.platinum.base)}/g</div></div>
+      <div class="stat"><div class="label">Gold 24K buying rate</div><div class="value">${fmtMoney(db.pricing.gold.base)}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Gold)}/g</div></div>
+      <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(db.pricing.silver.base)}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
+      <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(db.pricing.platinum.base)}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
     </div>
-    <p class="source-note">Formula: USD spot/oz × USD/PHP ÷ 31.1034768 × payout %. Indicative sources: <a href="https://gold-api.com" target="_blank" rel="noopener">Gold API</a> and <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">ExchangeRate-API</a>. Verify high-value payouts independently.</p>
+    <p class="source-note">PHP formula: Philippine market price per gram × buying payout % × grade multiplier. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
   </section>
   <section class="block">
     <h2 class="block-title">How automated pricing works</h2>
-    <p class="metal-section-desc">The live pure-metal rates calculate every karat or purity automatically. Click <strong>Override price</strong> on an individual grade to enter your own rate. That grade stays overridden through future internet updates until you reset it.</p>
+    <p class="metal-section-desc">The live PHP market price calculates every karat or purity automatically. Administrators can configure each grade multiplier; <strong>Override price</strong> temporarily pins an exact PHP rate until reset.</p>
   </section>
 
   <section class="metal-section">
@@ -748,15 +758,81 @@ function renderGradeCard(metal, key, label, mult) {
     const ov = isOverridden(metal, key);
     const editing = overrideEditors.has(overrideEditorId(metal, key));
     const rate = metalRate(metal, key);
-    const multTxt = `×${Number(mult ?? 0).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}`;
+    const appliedMultiplier = configuredMultiplier(metal, key);
+    const formulaChanged = Math.abs(appliedMultiplier - Number(mult || 0)) >= 0.000001;
+    const multTxt = `×${Number(appliedMultiplier).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}`;
     const rateControl = editing || ov
         ? `<input data-rate-editor="${metal}-${key}" type="text" inputmode="decimal" value="${rate}" onchange="commitOverride('${metal}','${key}', this.value)">`
         : `<span class="gc-value">${rate}</span>`;
+    const rateAction = ov ? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset PHP rate</button>` : editing ? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override PHP rate</button>`;
+    const formulaAction = isAdmin() ? ` · <button onclick="openGradeFormulaEditor('${metal}','${key}')">${formulaChanged ? 'edit formula' : 'Configure formula'}</button>` : '';
     return `<div class="grade-card ${ov ? 'is-override' : ''}">
     <div class="gc-top"><span>${esc(label)}</span><span>${multTxt}</span></div>
     <div class="gc-rate"><span class="unit">₱</span>${rateControl}<span class="unit">/g</span></div>
-    <div class="gc-foot">${ov ? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset to live price</button>` : editing ? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override price</button>`}</div>
+    <div class="gc-foot">${rateAction}${formulaAction}${formulaChanged ? ' <span class="formula-tag">custom formula</span>' : ''}</div>
   </div>`;
+}
+let formulaEditTarget = null;
+function openGradeFormulaEditor(metal, key) {
+    if (!adminEditGuard())
+        return;
+    const grade = gradeMeta(metal, key);
+    if (!grade)
+        return;
+    formulaEditTarget = { metal, key };
+    document.getElementById('formula_edit_modal')?.remove();
+    const multiplier = configuredMultiplier(metal, key), base = Number(bucketFor(metal).base) || 0;
+    const customized = Math.abs(multiplier - Number(grade.mult)) >= 0.000001;
+    const modal = document.createElement('div');
+    modal.id = 'formula_edit_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<form class="summary-modal" onsubmit="saveGradeFormula(event)" role="dialog" aria-modal="true" aria-labelledby="formula_edit_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">PHP rate formula</div><h2 id="formula_edit_title">${esc(metal)} ${esc(grade.label)}</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">Buying rate = PHP base rate × grade multiplier. Internet updates change the PHP base rate; this multiplier remains configured.</p>
+    <div class="form-grid"><div class="field"><label>PHP base rate</label><input value="${base.toFixed(2)}" readonly></div><div class="field"><label>Grade multiplier</label><input id="formula_multiplier" type="number" min="0.001" max="2" step="0.001" value="${multiplier}" oninput="updateGradeFormulaPreview()" required></div></div>
+    <div class="stat" style="margin-top:14px"><div class="label">Calculated buying rate</div><div class="value" id="formula_preview">${fmtMoney(base * multiplier)}/g</div></div>
+    <div class="form-actions">${customized ? '<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use default formula</button>' : ''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save formula</button></div>
+  </form>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeGradeFormulaEditor(); });
+    document.body.appendChild(modal);
+    document.getElementById('formula_multiplier')?.focus();
+}
+function updateGradeFormulaPreview() {
+    if (!formulaEditTarget)
+        return;
+    const multiplier = Number(val('formula_multiplier')), base = Number(bucketFor(formulaEditTarget.metal).base) || 0, preview = document.getElementById('formula_preview');
+    if (preview)
+        preview.textContent = Number.isFinite(multiplier) && multiplier > 0 ? `${fmtMoney(base * multiplier)}/g` : 'Enter a valid multiplier';
+}
+function closeGradeFormulaEditor() { document.getElementById('formula_edit_modal')?.remove(); formulaEditTarget = null; }
+async function saveGradeFormula(event) {
+    event.preventDefault();
+    if (!formulaEditTarget || !adminEditGuard())
+        return;
+    const multiplier = Number(val('formula_multiplier'));
+    if (!Number.isFinite(multiplier) || multiplier <= 0 || multiplier > 2) {
+        toast('Enter a multiplier from 0.001 to 2.000');
+        return;
+    }
+    const { metal, key } = formulaEditTarget;
+    db.pricing.gradeMultipliers[metal] = db.pricing.gradeMultipliers[metal] || {};
+    db.pricing.gradeMultipliers[metal][key] = multiplier;
+    closeGradeFormulaEditor();
+    await saveDB();
+    render();
+    toast(`${metal} ${gradeLabel(metal, key)} PHP formula updated`);
+}
+async function resetGradeFormula() {
+    if (!formulaEditTarget || !adminEditGuard())
+        return;
+    const { metal, key } = formulaEditTarget;
+    if (db.pricing.gradeMultipliers?.[metal])
+        delete db.pricing.gradeMultipliers[metal][key];
+    closeGradeFormulaEditor();
+    await saveDB();
+    render();
+    toast(`${metal} ${gradeLabel(metal, key)} formula reset`);
 }
 function renderFeaturedBox() {
     const f = db.pricing.featured;
@@ -932,7 +1008,11 @@ function renderBuying() {
     const rateObj = karat ? activeRate(metal, karat) : null;
     const gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
     const net = Math.max(roundWeight(gross - ded), 0);
-    const rate = rateObj ? rateObj.rate : 0;
+    const systemRate = rateObj ? rateObj.rate : 0;
+    const enteredRate = val('b_rate');
+    const parsedRate = Number(enteredRate);
+    const rate = enteredRate !== '' && Number.isFinite(parsedRate) ? parsedRate : systemRate;
+    const rateOverridden = Boolean(rateObj && Math.abs(rate - systemRate) >= 0.005);
     const suggested = roundMoney(net * rate);
     return `
   <section class="block buying-workflow">
@@ -953,7 +1033,7 @@ function renderBuying() {
         <select id="b_itemtype"><option>Scrap</option><option>Jewelry</option></select>
       </div>
       <div class="field"><label>Karat / purity</label>
-        <select id="b_karat" onchange="recalcBuying()">
+        <select id="b_karat" onchange="resetBuyingRate()">
           ${karats.length ? karats.map(k => `<option value="${k}" ${k === karat ? 'selected' : ''}>${esc(gradeLabel(metal, k))}</option>`).join('') : `<option value="">No rate set</option>`}
         </select>
         ${!karats.length ? `<span class="hint">Add a buying rate for ${metal} first.</span>` : ''}
@@ -964,11 +1044,11 @@ function renderBuying() {
 
         <div class="payout-calculator">
           <div><span>Net weight</span><strong id="b_net_display">${fmtWeight(net)}</strong></div>
-          <div><span id="b_rate_label">Buying rate (${Number(db.pricing.auto.payoutPct)}%)</span><strong id="b_rate_display">${rateObj ? fmtMoney(rate) + '/g' : 'No active rate'}</strong></div>
+          <div class="buying-rate ${rateOverridden ? 'is-overridden' : ''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (${Number(db.pricing.auto.payoutPct)}%)</label><div><span>₱</span><input id="b_rate" type="number" min="0.01" step="0.01" value="${rateObj ? rate.toFixed(2) : ''}" placeholder="0.00" oninput="recalcBuying()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden ? '' : 'is-hidden'}" onclick="resetBuyingRate()">Use system rate</button></div>
           <div class="suggested"><span>Calculated amount</span><strong id="b_suggested_display">${fmtMoney(suggested)}</strong></div>
           <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="0.01" placeholder="${suggested.toFixed(2)}" oninput="togglePayoutOverride()"></div></div>
         </div>
-        <div class="field override-reason is-hidden" id="b_override_field"><label>Why is the final payout different?</label><input id="b_override" placeholder="Enter a short reason"></div>
+        <div class="field override-reason is-hidden" id="b_override_field"><label id="b_override_label">Why was the rate or payout changed?</label><input id="b_override" placeholder="Enter a short reason"></div>
 
         <details class="buying-more">
           <summary>More details <span>optional</span></summary>
@@ -1007,18 +1087,26 @@ function renderBuying() {
 function updateBuyingGrades() {
     const metal = val('b_metal'), select = document.getElementById('b_karat'), grades = distinctKarats(metal);
     select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('');
+    resetBuyingRate();
+}
+function resetBuyingRate() {
+    const metal = val('b_metal'), karat = val('b_karat'), active = karat ? activeRate(metal, karat) : null, input = document.getElementById('b_rate');
+    if (input)
+        input.value = active ? Number(active.rate).toFixed(2) : '';
     recalcBuying();
 }
 function recalcBuying() {
     const metal = val('b_metal'), karat = val('b_karat'), gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
-    const net = Math.max(roundWeight(gross - ded), 0), rateObj = karat ? activeRate(metal, karat) : null, rate = rateObj ? rateObj.rate : 0;
-    const netEl = document.getElementById('b_net_display'), rateEl = document.getElementById('b_rate_display'), rateLabel = document.getElementById('b_rate_label'), suggestedEl = document.getElementById('b_suggested_display'), payoutEl = document.getElementById('b_payout');
+    const net = Math.max(roundWeight(gross - ded), 0), rateObj = karat ? activeRate(metal, karat) : null, systemRate = rateObj ? rateObj.rate : 0;
+    const rateInput = document.getElementById('b_rate'), enteredRate = Number(rateInput?.value), rate = rateInput?.value !== '' && Number.isFinite(enteredRate) ? enteredRate : 0;
+    const rateOverridden = Boolean(rateObj && Number.isFinite(rate) && Math.abs(rate - systemRate) >= 0.005);
+    const netEl = document.getElementById('b_net_display'), rateLabel = document.getElementById('b_rate_label'), ratePanel = document.getElementById('b_rate_panel'), rateReset = document.getElementById('b_rate_reset'), suggestedEl = document.getElementById('b_suggested_display'), payoutEl = document.getElementById('b_payout');
     if (netEl)
         netEl.textContent = fmtWeight(net);
-    if (rateEl)
-        rateEl.textContent = rateObj ? fmtMoney(rate) + '/g' : 'No active rate';
     if (rateLabel)
-        rateLabel.textContent = `Buying rate (${Number(db.pricing.auto.payoutPct)}%)`;
+        rateLabel.textContent = rateOverridden ? 'Buying rate (overridden)' : `Buying rate (${Number(db.pricing.auto.payoutPct)}%)`;
+    ratePanel?.classList.toggle('is-overridden', rateOverridden);
+    rateReset?.classList.toggle('is-hidden', !rateOverridden);
     const suggested = roundMoney(net * rate);
     if (suggestedEl)
         suggestedEl.textContent = fmtMoney(suggested);
@@ -1027,16 +1115,18 @@ function recalcBuying() {
     togglePayoutOverride();
 }
 function togglePayoutOverride() {
-    const payout = val('b_payout'), field = document.getElementById('b_override_field');
+    const payout = val('b_payout'), field = document.getElementById('b_override_field'), label = document.getElementById('b_override_label');
     if (!field)
         return;
-    if (!payout) {
-        field.classList.add('is-hidden');
-        return;
-    }
     const metal = val('b_metal'), karat = val('b_karat'), gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
-    const active = karat ? activeRate(metal, karat) : null, suggested = roundMoney(Math.max(roundWeight(gross - ded), 0) * (active ? active.rate : 0));
-    field.classList.toggle('is-hidden', Math.abs(parseFloat(payout) - suggested) < 0.005);
+    const active = karat ? activeRate(metal, karat) : null, systemRate = active ? active.rate : 0, enteredRate = Number(val('b_rate'));
+    const rate = val('b_rate') !== '' && Number.isFinite(enteredRate) ? enteredRate : 0;
+    const suggested = roundMoney(Math.max(roundWeight(gross - ded), 0) * rate);
+    const rateChanged = Boolean(active && Math.abs(rate - systemRate) >= 0.005);
+    const payoutChanged = Boolean(payout && Number.isFinite(parseFloat(payout)) && Math.abs(parseFloat(payout) - suggested) >= 0.005);
+    field.classList.toggle('is-hidden', !rateChanged && !payoutChanged);
+    if (label)
+        label.textContent = rateChanged && payoutChanged ? 'Why were the buying rate and final payout changed?' : rateChanged ? 'Why was the buying rate changed?' : 'Why is the final payout different?';
 }
 function purchaseItemFromForm() {
     const metal = val('b_metal'), karat = val('b_karat');
@@ -1051,21 +1141,28 @@ function purchaseItemFromForm() {
         return null;
     }
     const rateObj = activeRate(metal, karat);
-    const rate = rateObj ? rateObj.rate : 0;
+    const systemRate = rateObj ? rateObj.rate : 0;
+    const rate = Number(val('b_rate'));
+    if (!Number.isFinite(rate) || rate <= 0) {
+        toast('Enter a valid buying rate');
+        return null;
+    }
+    const rateOverridden = Boolean(rateObj && Math.abs(rate - systemRate) >= 0.005);
     const suggested = roundMoney(net * rate);
     const payoutInput = val('b_payout');
     const payout = payoutInput ? roundMoney(parseFloat(payoutInput)) : suggested;
-    const overrideReason = (payout !== suggested) ? val('b_override').trim() : '';
+    const payoutOverridden = Math.abs(payout - suggested) >= 0.005;
+    const overrideReason = (rateOverridden || payoutOverridden) ? val('b_override').trim() : '';
     if (!Number.isFinite(payout) || payout < 0) {
         toast('Enter a valid final payout');
         return null;
     }
-    if (payout !== suggested && !overrideReason) {
-        toast('Enter an override reason — payout differs from suggested');
+    if ((rateOverridden || payoutOverridden) && !overrideReason) {
+        toast('Enter an override reason for the changed rate or payout');
         return null;
     }
     return { id: uid('line'), metal, itemType: val('b_itemtype'), karat, grossWeight: gross, deductions: ded,
-        netWeight: net, currentWeight: net, rate, suggestedAmount: suggested, payout, overrideReason };
+        netWeight: net, currentWeight: net, rate, systemRate, rateOverridden, payoutOverridden, suggestedAmount: suggested, payout, overrideReason };
 }
 function addPurchaseItem() {
     const item = purchaseItemFromForm();
@@ -1074,7 +1171,7 @@ function addPurchaseItem() {
     purchaseBatch.push(item);
     ['b_gross', 'b_ded', 'b_payout', 'b_override'].forEach(id => { const e = document.getElementById(id); if (e)
         e.value = ''; });
-    recalcBuying();
+    resetBuyingRate();
     renderPurchaseBatchPanel();
     openPurchaseNextStep(item);
 }
@@ -1167,7 +1264,7 @@ function renderPurchaseBatchPanelMarkup() {
         return `<h2 class="block-title">Current payout</h2><div class="empty-note">Start by adding an item above. You can review the combined total before choosing the seller.</div>`;
     return `<div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</span><strong>${fmtMoney(total)}</strong></div><div class="form-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div></div>
     <details class="purchase-batch-details"><summary>View or remove ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</summary><div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
-    ${purchaseBatch.map((item, index) => `<tr><td>${index + 1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
+    ${purchaseBatch.map((item, index) => `<tr><td>${index + 1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g${item.rateOverridden ? '<br><span class="override-note">Overridden</span>' : ''}</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
     </tbody></table></div></details>`;
 }
 function purchaseCustomer() {

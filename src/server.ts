@@ -199,8 +199,10 @@ function saveStaffAdditions(candidate: LedgerState): void {
   if (!candidate.pricing || !current.pricing) throw new Error('Pricing settings are unavailable');
   const candidatePricing = JSON.parse(JSON.stringify(candidate.pricing)) as Record<string, any>;
   const currentPricing = JSON.parse(JSON.stringify(current.pricing)) as Record<string, any>;
+  candidatePricing.gradeMultipliers = candidatePricing.gradeMultipliers ?? {};
+  currentPricing.gradeMultipliers = currentPricing.gradeMultipliers ?? {};
   const permittedGrades: Record<string, Set<string>> = {
-    gold: new Set(['24K', '23K', '22K', '21K', '20K', '18K', '18K-BUO', '16K', '14K', '12K', '10K', '8K', '98%', '73%']),
+    gold: new Set(['24K', '23K', '22K', '21K', '20K', '18K', '18K-BUO', '17K', '16K', '14K', '12K', '10K', '9K', '8K', '5K', '98%', '73%']),
     silver: new Set(['999', '925', '900', '800', '750', '600']),
     platinum: new Set(['999', '950', '900', '850'])
   };
@@ -324,26 +326,50 @@ async function fetchJson<T>(url: string): Promise<T> {
   return response.json() as Promise<T>;
 }
 
+async function fetchPhilippineGoldPhpPerGram(): Promise<number | null> {
+  try {
+    const response = await fetch('https://www.livepriceofgold.com/philippines-gold-price-per-gram.html', {
+      headers: { 'User-Agent': 'Mozilla/5.0 (compatible; ZPP-Gold-Trading/1.0)' },
+      signal: AbortSignal.timeout(8000)
+    });
+    if (!response.ok) return null;
+    const html = await response.text();
+    const match = html.match(/Philippines Gold Price per Gram:\s*([\d,]+(?:\.\d+)?)\s+Philippine pesos/i);
+    const value = match ? Number(match[1].replace(/,/g, '')) : 0;
+    return Number.isFinite(value) && value > 0 ? value : null;
+  } catch {
+    return null;
+  }
+}
+
 async function createMarketProposal(payoutPercentage: number) {
-  const [gold, silver, platinum, exchange] = await Promise.all([
+  const [gold, silver, platinum, exchange, philippineGold] = await Promise.all([
     fetchJson<GoldApiResponse>('https://api.gold-api.com/price/XAU'),
     fetchJson<GoldApiResponse>('https://api.gold-api.com/price/XAG'),
     fetchJson<GoldApiResponse>('https://api.gold-api.com/price/XPT'),
-    fetchJson<ExchangeApiResponse>('https://open.er-api.com/v6/latest/USD')
+    fetchJson<ExchangeApiResponse>('https://open.er-api.com/v6/latest/USD'),
+    fetchPhilippineGoldPhpPerGram()
   ]);
   const usdPhp = Number(exchange.rates?.PHP);
   const spotUsd = { Gold: Number(gold.price), Silver: Number(silver.price), Platinum: Number(platinum.price) };
   if (!usdPhp || Object.values(spotUsd).some(value => !value)) throw new Error('Incomplete market response');
   const safePercentage = Math.max(0, Math.min(100, payoutPercentage));
   const factor = safePercentage / 100;
-  const perGram = (price: number) => +(price * usdPhp / gramsPerTroyOunce * factor).toFixed(2);
+  const convertedPhp = (price: number) => +(price * usdPhp / gramsPerTroyOunce).toFixed(2);
+  const marketPhp = {
+    Gold: philippineGold ?? convertedPhp(spotUsd.Gold),
+    Silver: convertedPhp(spotUsd.Silver),
+    Platinum: convertedPhp(spotUsd.Platinum)
+  };
+  const buyingPhp = (price: number) => +(price * factor).toFixed(2);
   const now = new Date();
   const effectiveDate = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
   }).format(now);
   return {
-    effectiveDate, fetchedAt: now.toISOString(), payoutPct: safePercentage, usdPhp, spotUsd,
-    draft: { effectiveDate, gold: perGram(spotUsd.Gold), silver: perGram(spotUsd.Silver), platinum: perGram(spotUsd.Platinum) }
+    effectiveDate, fetchedAt: now.toISOString(), payoutPct: safePercentage, marketPhp,
+    goldSource: philippineGold ? 'LivePriceOfGold Philippines' : 'Converted international spot fallback',
+    draft: { effectiveDate, gold: buyingPhp(marketPhp.Gold), silver: buyingPhp(marketPhp.Silver), platinum: buyingPhp(marketPhp.Platinum) }
   };
 }
 
@@ -356,7 +382,7 @@ function applyMarketProposal(proposal: Awaited<ReturnType<typeof createMarketPro
   pricing.platinum.base = proposal.draft.platinum;
   pricing.effectiveDate = proposal.effectiveDate;
   pricing.auto = { ...(pricing.auto ?? {}), lastFetchDate: proposal.effectiveDate, lastAppliedDate: proposal.effectiveDate,
-    lastFetchedAt: proposal.fetchedAt, usdPhp: proposal.usdPhp, spotUsd: proposal.spotUsd, draft: null };
+    lastFetchedAt: proposal.fetchedAt, marketPhp: proposal.marketPhp, goldSource: proposal.goldSource, draft: null };
   database.prepare("UPDATE settings SET value = ? WHERE key = 'pricing'").run(JSON.stringify(pricing));
 }
 

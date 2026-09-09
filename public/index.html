@@ -420,9 +420,10 @@
   }
   .grade-card .gc-rate input:focus{outline:none;border-bottom:1.5px solid var(--brass-bright);}
   .grade-card .gc-rate .unit{flex:0 0 auto;font-size:11px;color:var(--ink-soft);}
-  .grade-card .gc-foot{font-size:10.5px;height:14px;}
+  .grade-card .gc-foot{font-size:10.5px;min-height:14px;line-height:1.5;}
   .grade-card .gc-foot .ov-tag{color:var(--brass-deep);}
   .grade-card .gc-foot button{all:unset;cursor:pointer;color:var(--ink-soft);text-decoration:underline;font-size:10.5px;}
+  .grade-card .gc-foot .formula-tag{display:inline-block;margin-left:5px;color:var(--brass-deep);font-size:9px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;}
 
   .filter-row{display:flex;gap:10px;flex-wrap:wrap;margin-bottom:12px;align-items:flex-end;}
   .filter-row .field{min-width:130px;}
@@ -499,6 +500,13 @@
   .payout-calculator strong{font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;font-size:16px;}
   .payout-calculator .suggested{background:#E8D9AE;}
   .payout-calculator .suggested strong{font-size:19px;color:var(--brass-deep);}
+  .buying-rate>div{display:flex;align-items:baseline;gap:6px;}
+  .buying-rate>div span:first-child{font-family:'Fraunces',serif;font-size:17px;color:var(--brass-deep);}
+  .buying-rate input{min-width:0;width:100%;padding:2px 0;border:0;border-bottom:1px solid var(--line);background:transparent;color:var(--ink);font-family:'Inter',sans-serif;font-variant-numeric:tabular-nums;font-size:17px;font-weight:700;}
+  .buying-rate.is-overridden{background:#F5E8C7;}
+  .buying-rate.is-overridden label{color:var(--brass-deep);font-weight:700;}
+  .rate-reset{all:unset;cursor:pointer;width:max-content;color:var(--brass-deep);font-size:10.5px;text-decoration:underline;}
+  .override-note{color:var(--brass-deep);font-size:10px;font-weight:700;text-transform:uppercase;letter-spacing:.04em;}
   .final-payout{background:var(--ink);color:var(--cream-text);}
   .final-payout label{color:#C9BE9F;}
   .final-payout>div{display:flex;align-items:center;gap:7px;}
