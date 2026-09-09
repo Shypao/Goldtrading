@@ -15,9 +15,10 @@ let storageLocationCleanupNeeded = false;
 function uid(p) { return (p || 'id') + '_' + Math.random().toString(36).slice(2, 9); }
 function todayStr() { const d = new Date(), off = d.getTimezoneOffset(); return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10); }
 function monthStr() { return todayStr().slice(0, 7); }
-function fmtMoney(n) { n = Number(n) || 0; return 'PHP ' + n.toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function fmtMoney(n) { n = Number(n) || 0; return 'PHP ' + Math.round(n).toLocaleString('en-PH', { maximumFractionDigits: 0 }); }
 function fmtWeight(n) { return (Number(n) || 0).toFixed(2) + ' g'; }
 function roundMoney(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
+function roundPeso(n) { return Math.round(Number(n) || 0); }
 function roundWeight(n) { return Math.round((Number(n) + Number.EPSILON) * 100) / 100; }
 function fmtDate(d) { if (!d)
     return '—'; const dt = new Date(d + 'T00:00:00'); return dt.toLocaleDateString('en-PH', { year: 'numeric', month: 'short', day: '2-digit' }); }
@@ -71,7 +72,10 @@ function ensureShape() {
     db.pricing.silver.overrides = db.pricing.silver.overrides || {};
     db.pricing.platinum = db.pricing.platinum || { base: 0, overrides: {} };
     db.pricing.platinum.overrides = db.pricing.platinum.overrides || {};
-    db.pricing.auto = Object.assign({ enabled: true, payoutPct: 94, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', usdPhp: 0, spotUsd: {}, draft: null }, db.pricing.auto || {});
+    db.pricing.auto = Object.assign({ enabled: true, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', marketPhp: {}, goldSource: '', draft: null }, db.pricing.auto || {});
+    db.pricing.gradeMultipliers = db.pricing.gradeMultipliers || {};
+    db.pricing.dailyFormula = db.pricing.dailyFormula || { effectiveDate: '', baseRates: {} };
+    db.pricing.dailyFormula.baseRates = db.pricing.dailyFormula.baseRates || {};
 }
 function openLedgerDB() {
     return new Promise((resolve, reject) => {
@@ -112,8 +116,13 @@ async function saveDB() {
                 showLogin();
                 throw new Error('Session expired');
             }
+            const result = await response.json().catch(() => null);
+            if (response.status === 409)
+                throw new Error(result?.error || 'The database changed in another session. Refresh and try again.');
             if (!response.ok)
-                throw new Error('Database server returned HTTP ' + response.status);
+                throw new Error(result?.error || 'Database server returned HTTP ' + response.status);
+            if (Number.isInteger(result?.revision))
+                db._revision = result.revision;
             storageLocationCleanupNeeded = false;
             return true;
         }
@@ -141,26 +150,19 @@ async function saveDB() {
         return false;
     }
 }
-function seedDemo() {
-    const c1 = uid('cust');
-    db.customers = [{ id: c1, name: 'Maria Santos', contact: '0917 555 2210', notes: 'Regular seller, mostly 18K scrap.' }];
+function seedEmptyLedger() {
+    db.customers = [];
     db.pricing = {
         effectiveDate: todayStr(),
-        gold: { base: 8350, overrides: {} },
-        silver: { base: 70, overrides: {} },
-        platinum: { base: 2300, overrides: {} },
-        auto: { enabled: true, payoutPct: 94, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', usdPhp: 0, spotUsd: {}, draft: null },
+        gold: { base: 8500, overrides: {} },
+        silver: { base: 105, overrides: {} },
+        platinum: { base: 2450, overrides: {} },
+        auto: { enabled: true, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', usdPhp: 0, spotUsd: {}, draft: null },
+        dailyFormula: { effectiveDate: todayStr(), baseRates: { Gold: 8500, Silver: 105, Platinum: 2450 } },
         featured: { metal: 'Gold', key: '18K-BUO', low: 6360, high: 6560 }
     };
     db.pricingHistory = [{ id: uid('rate'), ts: Date.now(), effectiveDate: todayStr(), enteredBy: 'Admin', snapshot: JSON.parse(JSON.stringify(db.pricing)) }];
-    const netW = 15.00, rate = 6260, amt = netW * rate;
-    db.stock = [{
-            id: uid('stk'), date: todayStr(), customerId: c1, customerName: 'Maria Santos',
-            metal: 'Gold', itemType: 'Scrap', karat: '18K', grossWeight: 15.25, deductions: 0.25,
-            netWeight: netW, currentWeight: netW, rate: rate, suggestedAmount: amt, payout: amt,
-            overrideReason: '', paymentMethod: 'Cash', staff: 'Joseph Reyes', status: 'For Refining',
-            remarks: 'Sample entry from proposal illustration', cost: amt
-        }];
+    db.stock = [];
     db.liquidations = [];
     db.refiningBatches = [];
     db.retailSales = [];
@@ -183,10 +185,13 @@ async function loadDB() {
                     await saveDB();
             }
             else {
-                seedDemo();
+                const revision = serverState._revision;
+                seedEmptyLedger();
+                db._revision = revision;
                 ensureShape();
                 await saveDB();
             }
+            await loadBuyingDraft();
             boot();
             if (isAdmin() && db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
                 refreshPhilippineRates(true);
@@ -212,13 +217,13 @@ async function loadDB() {
                 ensureShape();
             }
             else
-                seedDemo();
+                seedEmptyLedger();
             await saveDB();
         }
     }
     catch (e) {
         console.error('Database load failed', e);
-        seedDemo();
+        seedEmptyLedger();
         ensureShape();
     }
     boot();
@@ -292,9 +297,9 @@ async function signOut() {
     showLogin();
 }
 async function resetDemo() {
-    if (!confirm('This replaces all current data with the sample dataset. Continue?'))
+    if (!confirm('This clears the ledger and restores the default rates. Continue?'))
         return;
-    seedDemo();
+    seedEmptyLedger();
     await saveDB();
     render();
     toast('Sample data restored');
@@ -309,43 +314,87 @@ function toast(msg) {
 /* ============================= PRICING / RATES ============================= */
 const GOLD_GRADES = [
     { key: '24K', label: '24K', mult: 1 },
-    { key: '23K', label: '23K', mult: 0.965 },
+    { key: '23K', label: '23K', mult: 0.95 },
     { key: '22K', label: '22K', mult: 0.916 },
     { key: '21K', label: '21K', mult: 0.875 },
+    { key: '20K', label: '20K', mult: 0.79 },
     { key: '18K', label: '18K', mult: 0.75 },
     { key: '18K-BUO', label: '18K-Buo', mult: 0.75 },
-    { key: '16K', label: '16K', mult: 0.667 },
+    { key: '17K', label: '17K', mult: 0.7 },
+    { key: '16K', label: '16K', mult: 0.645 },
     { key: '14K', label: '14K', mult: 0.585 },
-    { key: '12K', label: '12K', mult: 0.375 },
+    { key: '12K', label: '12K', mult: 0.4789 },
     { key: '10K', label: '10K', mult: 0.35 },
-    { key: '8K', label: '8K', mult: 0.25 },
+    { key: '9K', label: '9K', mult: 0.335 },
+    { key: '8K', label: '8K', mult: 0.24 },
+    { key: '5K', label: '5K', mult: 0.06 },
     { key: '98%', label: '98%', mult: 0.98 },
     { key: '73%', label: '73%', mult: 0.73 },
 ];
-const SILVER_GRADES = ['999', '925', '900', '800'];
-const PLATINUM_GRADES = ['999', '950', '900', '850'];
-const GRADES = { Gold: GOLD_GRADES.map(g => g.key), Silver: SILVER_GRADES, Platinum: PLATINUM_GRADES };
+const SILVER_GRADES = [
+    { key: '999', label: '999', mult: 1 },
+    { key: '925', label: '925', mult: 925 / 999 },
+    { key: '900', label: '900', mult: 0.9 },
+    { key: '800', label: '800', mult: 0.8 },
+    { key: '750', label: '75%', mult: 0.75 },
+    { key: '600', label: '60%', mult: 0.6 },
+];
+const PLATINUM_GRADES = [
+    { key: '999', label: '999', mult: 1 },
+    { key: '950', label: '950', mult: 950 / 999 },
+    { key: '900', label: '900', mult: 900 / 999 },
+    { key: '850', label: '850', mult: 850 / 999 },
+];
+const GRADE_META = { Gold: GOLD_GRADES, Silver: SILVER_GRADES, Platinum: PLATINUM_GRADES };
+const GRADES = Object.fromEntries(Object.entries(GRADE_META).map(([metal, grades]) => [metal, grades.map(g => g.key)]));
 function gradeMeta(metal, key) {
-    if (metal === 'Gold')
-        return GOLD_GRADES.find(g => g.key === key) || null;
-    return { key, label: key, mult: 1 };
+    return (GRADE_META[metal] || []).find(g => g.key === key) || null;
+}
+function configuredGradeMultiplier(metal, key) {
+    const saved = Number(db.pricing?.gradeMultipliers?.[metal]?.[key]);
+    return Number.isFinite(saved) && saved >= 0 ? saved : (Number(gradeMeta(metal, key)?.mult) || 0);
+}
+function configuredBaseRate(metal) {
+    const liveBase = Number(bucketFor(metal).base) || 0;
+    const daily = db.pricing?.dailyFormula;
+    const configured = Number(daily?.effectiveDate === todayStr() ? daily?.baseRates?.[metal] : NaN);
+    return Number.isFinite(configured) && configured > 0 ? configured : liveBase;
+}
+function configuredSilver925Rate(silver999Base = configuredBaseRate('Silver')) {
+    const daily = db.pricing?.dailyFormula;
+    const configured = Number(daily?.effectiveDate === todayStr() ? daily?.baseRates?.Silver925 : NaN);
+    if (Number.isFinite(configured) && configured > 0)
+        return roundPeso(configured);
+    const legacyOverride = Number(db.pricing?.silver?.overrides?.['925']);
+    if (Number.isFinite(legacyOverride) && legacyOverride > 0)
+        return roundPeso(legacyOverride);
+    return roundPeso(Math.max(Number(silver999Base || 0) - 10, 0));
+}
+function calculatedRateFromBase(metal, key, base) {
+    if (!Number.isFinite(base) || base <= 0 || !gradeMeta(metal, key))
+        return 0;
+    let rate = 0;
+    if (metal === 'Gold') {
+        rate = base * configuredGradeMultiplier(metal, key);
+    }
+    else if (metal === 'Silver') {
+        const sterlingRate = configuredSilver925Rate(base);
+        rate = key === '999' ? base : key === '925' ? sterlingRate : sterlingRate * Number(key) / 925;
+    }
+    else if (metal === 'Platinum') {
+        const deductions = { 999: 0, 950: 100, 900: 150, 850: 200 };
+        rate = Math.max(base - Number(deductions[key] ?? 0), 0);
+    }
+    return roundPeso(rate);
 }
 function computedRate(metal, key) {
-    if (metal === 'Gold') {
-        const g = GOLD_GRADES.find(x => x.key === key);
-        return g ? +(db.pricing.gold.base * g.mult).toFixed(2) : 0;
-    }
-    if (metal === 'Silver')
-        return +(db.pricing.silver.base * (parseInt(key, 10) / 999)).toFixed(2);
-    if (metal === 'Platinum')
-        return +(db.pricing.platinum.base * (parseInt(key, 10) / 999)).toFixed(2);
-    return 0;
+    return calculatedRateFromBase(metal, key, configuredBaseRate(metal));
 }
 function bucketFor(metal) { return metal === 'Gold' ? db.pricing.gold : metal === 'Silver' ? db.pricing.silver : db.pricing.platinum; }
 function metalRate(metal, key) {
     const b = bucketFor(metal);
     const ov = b.overrides[key];
-    return (ov != null && ov !== '') ? +ov : computedRate(metal, key);
+    return (ov != null && ov !== '') ? roundPeso(ov) : computedRate(metal, key);
 }
 function isOverridden(metal, key) {
     const b = bucketFor(metal);
@@ -358,11 +407,34 @@ function activeRate(metal, karat) {
         return null;
     return { rate: metalRate(metal, karat), effectiveDate: db.pricing.effectiveDate };
 }
-function setBase(metal, value) {
-    const v = parseFloat(value);
-    bucketFor(metal).base = isNaN(v) ? 0 : v;
-    saveDB();
+async function setBase(metal, value) {
+    const v = roundPeso(parseFloat(value));
+    if (!Number.isFinite(v) || v <= 0) {
+        toast('Enter a valid PHP base rate');
+        render();
+        return;
+    }
+    if (db.pricing.dailyFormula.effectiveDate !== todayStr())
+        db.pricing.dailyFormula = { effectiveDate: todayStr(), baseRates: {} };
+    db.pricing.dailyFormula.baseRates[metal] = v;
+    await saveDB();
     render();
+    toast(`${metal} PHP base rate updated for today`);
+}
+async function setSilver925Base(value) {
+    const rate = roundPeso(parseFloat(value));
+    if (!Number.isFinite(rate) || rate <= 0) {
+        toast('Enter a valid 925 Silver rate');
+        render();
+        return;
+    }
+    if (db.pricing.dailyFormula.effectiveDate !== todayStr())
+        db.pricing.dailyFormula = { effectiveDate: todayStr(), baseRates: {} };
+    db.pricing.dailyFormula.baseRates.Silver925 = rate;
+    delete db.pricing.silver.overrides['925'];
+    await saveDB();
+    render();
+    toast('Silver 925 basis rate updated for today');
 }
 function setOverride(metal, key, value) {
     const b = bucketFor(metal);
@@ -370,7 +442,7 @@ function setOverride(metal, key, value) {
         delete b.overrides[key];
     }
     else {
-        b.overrides[key] = parseFloat(value);
+        b.overrides[key] = roundPeso(parseFloat(value));
     }
     saveDB();
     render();
@@ -408,7 +480,7 @@ async function refreshPhilippineRates(silent) {
     try {
         let proposal;
         if (location.protocol === 'http:' || location.protocol === 'https:') {
-            proposal = await fetchJson('/api/market?apply=1&payoutPct=' + encodeURIComponent(db.pricing.auto.payoutPct));
+            proposal = await fetchJson('/api/market?apply=1');
         }
         else {
             const [gold, silver, platinum, fx] = await Promise.all([
@@ -418,15 +490,15 @@ async function refreshPhilippineRates(silent) {
             const usdPhp = Number(fx.rates && fx.rates.PHP), spotUsd = { Gold: Number(gold.price), Silver: Number(silver.price), Platinum: Number(platinum.price) };
             if (!usdPhp || Object.values(spotUsd).some(v => !v))
                 throw new Error('Incomplete market data');
-            const factor = Math.max(0, Math.min(100, Number(db.pricing.auto.payoutPct) || 0)) / 100;
-            proposal = { effectiveDate: todayStr(), fetchedAt: new Date().toISOString(), usdPhp, spotUsd, draft: { effectiveDate: todayStr(), gold: +(spotUsd.Gold * usdPhp / TROY_OUNCE_GRAMS * factor).toFixed(2), silver: +(spotUsd.Silver * usdPhp / TROY_OUNCE_GRAMS * factor).toFixed(2), platinum: +(spotUsd.Platinum * usdPhp / TROY_OUNCE_GRAMS * factor).toFixed(2) } };
+            const marketPhp = { Gold: +(spotUsd.Gold * usdPhp / TROY_OUNCE_GRAMS).toFixed(2), Silver: +(spotUsd.Silver * usdPhp / TROY_OUNCE_GRAMS).toFixed(2), Platinum: +(spotUsd.Platinum * usdPhp / TROY_OUNCE_GRAMS).toFixed(2) };
+            proposal = { effectiveDate: todayStr(), fetchedAt: new Date().toISOString(), marketPhp, goldSource: 'Converted international spot fallback', draft: { effectiveDate: todayStr(), gold: marketPhp.Gold, silver: marketPhp.Silver, platinum: marketPhp.Platinum } };
         }
         db.pricing.auto.lastFetchDate = proposal.effectiveDate;
         db.pricing.auto.lastFetchedAt = proposal.fetchedAt;
-        db.pricing.auto.usdPhp = proposal.usdPhp;
-        db.pricing.auto.spotUsd = proposal.spotUsd;
+        db.pricing.auto.marketPhp = proposal.marketPhp || {};
+        db.pricing.auto.goldSource = proposal.goldSource || '';
         activateMarketRates(proposal.draft, silent ? 'Automatic 5-second internet update' : 'Manual internet refresh', !silent);
-        if (isAdmin())
+        if (isAdmin() && !silent)
             await saveDB();
         if (!silent)
             toast('Live internet prices refreshed and activated');
@@ -471,14 +543,6 @@ function visiblePricingHistory() {
     });
 }
 function setAutoEnabled(checked) { db.pricing.auto.enabled = checked; saveDB(); render(); }
-function setPayoutPct(value) {
-    const n = parseFloat(value);
-    if (!isNaN(n))
-        db.pricing.auto.payoutPct = Math.max(0, Math.min(100, n));
-    db.pricing.auto.draft = null;
-    saveDB();
-    render();
-}
 function overrideEditorId(metal, key) { return metal + '|' + key; }
 function beginOverride(metal, key) {
     const id = overrideEditorId(metal, key);
@@ -512,6 +576,55 @@ function savePricingSnapshot() {
     render();
     toast('Rate sheet saved to history');
 }
+async function saveGoldMultipliers() {
+    if (!adminEditGuard())
+        return;
+    const values = {};
+    for (const grade of GOLD_GRADES) {
+        const inputId = `multiplier_gold_${grade.key.replace(/[^a-z0-9]/gi, '_')}`;
+        const value = Number(val(inputId));
+        if (!Number.isFinite(value) || value < 0 || value > 1.5) {
+            toast(`Enter a valid multiplier for ${grade.label}`);
+            return;
+        }
+        values[grade.key] = value;
+    }
+    db.pricing.gradeMultipliers = db.pricing.gradeMultipliers || {};
+    db.pricing.gradeMultipliers.Gold = values;
+    closeGoldMultiplierEditor();
+    await saveDB();
+    render();
+    toast('Gold karat multipliers updated');
+}
+async function resetGoldMultipliers() {
+    if (!adminEditGuard() || !confirm('Reset every Gold multiplier to the original rate-sheet values?'))
+        return;
+    if (db.pricing.gradeMultipliers)
+        delete db.pricing.gradeMultipliers.Gold;
+    closeGoldMultiplierEditor();
+    await saveDB();
+    render();
+    toast('Gold multipliers reset');
+}
+function openGoldMultiplierEditor() {
+    if (!adminEditGuard())
+        return;
+    closeGoldMultiplierEditor();
+    const modal = document.createElement('div');
+    modal.id = 'gold_multiplier_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="summary-modal multiplier-modal" role="dialog" aria-modal="true" aria-labelledby="gold_multiplier_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Daily rate setup</div><h2 id="gold_multiplier_title">Gold karat multipliers</h2></div><button type="button" class="modal-close" onclick="closeGoldMultiplierEditor()" aria-label="Close">×</button></div>
+    <p class="form-note multiplier-modal-note">Change how each Gold grade is calculated from today's 24K PHP base. Example: 0.750 means 75% of the base.</p>
+    <div class="multiplier-grid">${GOLD_GRADES.map(grade => `<div class="field"><label>${esc(grade.label)}</label><input id="multiplier_gold_${grade.key.replace(/[^a-z0-9]/gi, '_')}" type="number" min="0" max="1.5" step="0.001" value="${configuredGradeMultiplier('Gold', grade.key)}"></div>`).join('')}</div>
+    <div class="form-actions multiplier-modal-actions"><button type="button" class="btn secondary" onclick="resetGoldMultipliers()">Reset multipliers</button><button type="button" class="btn secondary" onclick="closeGoldMultiplierEditor()">Cancel</button><button type="button" class="btn" onclick="saveGoldMultipliers()">Save multipliers</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeGoldMultiplierEditor(); });
+    document.body.appendChild(modal);
+    modal.querySelector('input')?.focus();
+}
+function closeGoldMultiplierEditor() { document.getElementById('gold_multiplier_modal')?.remove(); }
 /* ============================= NAV / BOOT ============================= */
 const TABS = [
     { id: 'dashboard', label: 'Dashboard & reports' },
@@ -579,6 +692,10 @@ function render() {
 }
 /* ============================= DASHBOARD ============================= */
 let dashboardReportPanel = '';
+let purchaseHistoryFrom = '';
+let purchaseHistoryTo = '';
+let liquidationHistoryFrom = '';
+let liquidationHistoryTo = '';
 function toggleDashboardReport(panel) {
     dashboardReportPanel = dashboardReportPanel === panel ? '' : panel;
     render();
@@ -604,6 +721,90 @@ function dashboardReportSearch(placeholder, total) {
     return `<div class="dashboard-report-search"><div class="field"><label for="dashboard_report_search">Search records</label><input id="dashboard_report_search" type="search" autocomplete="off" placeholder="${esc(placeholder)}" oninput="filterDashboardReport(this.value)"></div><span id="dashboard_search_result_count">Showing ${total} of ${total}</span></div><div id="dashboard_search_empty" class="empty-note is-hidden">No records match your search.</div>`;
 }
 function dashboardSearchValue(...values) { return esc(values.filter(value => value != null).join(' ').toLowerCase()); }
+function purchaseHistoryDateMatch(item) {
+    return (!purchaseHistoryFrom || item.date >= purchaseHistoryFrom) && (!purchaseHistoryTo || item.date <= purchaseHistoryTo);
+}
+function purchaseHistoryRecords() {
+    return db.stock.filter(item => !item.sourceRefiningBatchId && purchaseHistoryDateMatch(item)).slice().sort((a, b) => b.date.localeCompare(a.date));
+}
+function applyPurchaseHistoryDates() {
+    const from = val('purchase_history_from'), to = val('purchase_history_to');
+    if (from && to && from > to) {
+        toast('The From date must be before the To date');
+        return;
+    }
+    purchaseHistoryFrom = from;
+    purchaseHistoryTo = to;
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function setPurchaseHistoryDatePreset(preset) {
+    if (preset === 'today') {
+        purchaseHistoryFrom = todayStr();
+        purchaseHistoryTo = todayStr();
+    }
+    else if (preset === 'month') {
+        purchaseHistoryFrom = `${monthStr()}-01`;
+        purchaseHistoryTo = todayStr();
+    }
+    else {
+        purchaseHistoryFrom = '';
+        purchaseHistoryTo = '';
+    }
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function purchaseHistoryFilterLabel() {
+    if (purchaseHistoryFrom && purchaseHistoryTo)
+        return purchaseHistoryFrom === purchaseHistoryTo ? fmtDate(purchaseHistoryFrom) : `${fmtDate(purchaseHistoryFrom)} to ${fmtDate(purchaseHistoryTo)}`;
+    if (purchaseHistoryFrom)
+        return `From ${fmtDate(purchaseHistoryFrom)}`;
+    if (purchaseHistoryTo)
+        return `Through ${fmtDate(purchaseHistoryTo)}`;
+    return 'All purchase dates';
+}
+function liquidationHistoryDateMatch(item) {
+    return (!liquidationHistoryFrom || item.date >= liquidationHistoryFrom) && (!liquidationHistoryTo || item.date <= liquidationHistoryTo);
+}
+function liquidationHistoryRecords() {
+    return db.liquidations.filter(liquidationHistoryDateMatch).slice().sort((a, b) => b.date.localeCompare(a.date));
+}
+function applyLiquidationHistoryDates() {
+    const from = val('liquidation_history_from'), to = val('liquidation_history_to');
+    if (from && to && from > to) {
+        toast('The From date must be before the To date');
+        return;
+    }
+    liquidationHistoryFrom = from;
+    liquidationHistoryTo = to;
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function setLiquidationHistoryDatePreset(preset) {
+    if (preset === 'today') {
+        liquidationHistoryFrom = todayStr();
+        liquidationHistoryTo = todayStr();
+    }
+    else if (preset === 'month') {
+        liquidationHistoryFrom = `${monthStr()}-01`;
+        liquidationHistoryTo = todayStr();
+    }
+    else {
+        liquidationHistoryFrom = '';
+        liquidationHistoryTo = '';
+    }
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function liquidationHistoryFilterLabel() {
+    if (liquidationHistoryFrom && liquidationHistoryTo)
+        return liquidationHistoryFrom === liquidationHistoryTo ? fmtDate(liquidationHistoryFrom) : `${fmtDate(liquidationHistoryFrom)} to ${fmtDate(liquidationHistoryTo)}`;
+    if (liquidationHistoryFrom)
+        return `From ${fmtDate(liquidationHistoryFrom)}`;
+    if (liquidationHistoryTo)
+        return `Through ${fmtDate(liquidationHistoryTo)}`;
+    return 'All liquidation dates';
+}
 function renderDashboard() {
     const today = todayStr(), mon = monthStr();
     const purchases = db.stock.filter(s => !s.sourceRefiningBatchId);
@@ -636,7 +837,11 @@ function statusPill(status) {
 function tableOrEmpty(rows, rowFn, headers, emptyMsg) {
     if (!rows.length)
         return `<div class="empty-note">${emptyMsg}</div>`;
-    const numericHeaders = new Set(['Net weight', 'Payout']);
+    const numericHeaders = new Set([
+        'Net weight', 'Weight', 'Weight available', 'Gross weight', 'Available weight', 'Output weight',
+        'Rate', 'Payout', 'Cost', 'Total cost', 'Total sold', 'Profit', 'Margin', 'Charges',
+        'Items', 'Transactions', 'Total weight sold', 'Total payout', 'Expected yield', 'Actual yield', 'Variance'
+    ]);
     return `<div class="table-wrap"><table><thead><tr>${headers.map(h => `<th class="${numericHeaders.has(h) ? 'num-head' : ''}">${h}</th>`).join('')}</tr></thead><tbody>${rows.map(rowFn).join('')}</tbody></table></div>`;
 }
 /* ============================= RATES ============================= */
@@ -651,25 +856,24 @@ function renderRates() {
     <div class="auto-panel-head">
       <div>
         <h3>Automatic Philippine internet pricing</h3>
-        <div class="metal-section-desc" style="margin:0;">Live USD metal prices are converted to PHP per gram, adjusted by your buying payout percentage, and activated automatically once per Philippine day.</div>
-        <div class="auto-status">${pricingFetchBusy ? '<span class="spinner"></span>Updating market data…' : `Last checked: ${esc(fetched)}${auto.usdPhp ? ` · USD/PHP ${Number(auto.usdPhp).toFixed(4)}` : ''}`}</div>
+        <div class="metal-section-desc" style="margin:0;">Philippine market prices are shown in PHP per gram and activated automatically. You can set today's exact PHP base rate for each metal.</div>
+        <div class="auto-status">${pricingFetchBusy ? '<span class="spinner"></span>Updating Philippine market data…' : `Last checked: ${esc(fetched)}${auto.goldSource ? ` · Gold source: ${esc(auto.goldSource)}` : ''}`}</div>
       </div>
       <div class="auto-controls">
         <label class="switch-line"><input type="checkbox" ${auto.enabled ? 'checked' : ''} onchange="setAutoEnabled(this.checked)"> Update automatically every 5 seconds</label>
-        <div class="field"><label>Buying payout</label><div style="display:flex;align-items:center;gap:5px"><input style="width:82px" type="number" min="0" max="100" step="0.1" value="${auto.payoutPct}" onchange="setPayoutPct(this.value)"><span>%</span></div></div>
         <button class="btn small" onclick="refreshPhilippineRates(false)" ${pricingFetchBusy ? 'disabled' : ''}>Refresh &amp; apply now</button>
+        <button class="btn secondary small" onclick="openDailyBaseEditor('Gold')">Edit today's PHP base</button>
       </div>
     </div>
     <div class="stat-row" style="margin-top:16px">
-      <div class="stat"><div class="label">Active Gold 24K</div><div class="value">${fmtMoney(db.pricing.gold.base)}/g</div></div>
-      <div class="stat"><div class="label">Active Silver 999</div><div class="value">${fmtMoney(db.pricing.silver.base)}/g</div></div>
-      <div class="stat"><div class="label">Active Platinum 999</div><div class="value">${fmtMoney(db.pricing.platinum.base)}/g</div></div>
+      <div class="stat"><div class="label">Gold 24K buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Gold'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Gold)}/g</div></div>
+      <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Silver'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
+      <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Platinum'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
     </div>
-    <p class="source-note">Formula: USD spot/oz × USD/PHP ÷ 31.1034768 × payout %. Indicative sources: <a href="https://gold-api.com" target="_blank" rel="noopener">Gold API</a> and <a href="https://www.exchangerate-api.com" target="_blank" rel="noopener">ExchangeRate-API</a>. Verify high-value payouts independently.</p>
+    <p class="source-note">The internet price supplies the PHP base rate. Use <strong>Edit Gold multipliers</strong> to configure each Gold grade. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
   </section>
   <section class="block">
-    <h2 class="block-title">How automated pricing works</h2>
-    <p class="metal-section-desc">The live pure-metal rates calculate every karat or purity automatically. Click <strong>Override price</strong> on an individual grade to enter your own rate. That grade stays overridden through future internet updates until you reset it.</p>
+    <div class="batch-head"><div><h2 class="block-title">How automated pricing works</h2><p class="metal-section-desc">Use <strong>Edit today's PHP base</strong> to set a metal's base rate for this Philippine date. Gold grades recalculate using your saved karat multipliers. Use <strong>Override PHP rate</strong> only when one specific grade needs a different exact rate.</p></div><button class="btn secondary" onclick="openGoldMultiplierEditor()">Edit Gold multipliers</button></div>
   </section>
 
   <section class="metal-section">
@@ -677,22 +881,26 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">24K rate — pure gold</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.gold.base || ''}" onchange="setBase('Gold', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${roundPeso(configuredBaseRate('Gold')) || ''}" onchange="setBase('Gold', this.value)"></div>
       </div>
       ${renderFeaturedBox()}
     </div>
-    <div class="grade-grid">${goldGrid.map(g => renderGradeCard('Gold', g.key, g.label, g.mult)).join('')}</div>
+    <div class="grade-grid">${goldGrid.map(g => renderGradeCard('Gold', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot silver"></span><h3>Silver</h3><span class="count">${SILVER_GRADES.length} grades</span></div>
     <div class="base-row">
       <div class="base-box">
-        <div class="base-label">999 rate — pure silver</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.silver.base || ''}" onchange="setBase('Silver', this.value)"></div>
+        <div class="base-label">999 rate — independent silver rate</div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${roundPeso(configuredBaseRate('Silver')) || ''}" onchange="setBase('Silver', this.value)"></div>
+      </div>
+      <div class="base-box">
+        <div class="base-label">925 basis — calculates 900, 800, 75% and 60%</div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${configuredSilver925Rate() || ''}" onchange="setSilver925Base(this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${SILVER_GRADES.map(k => renderGradeCard('Silver', k, k, null)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.filter(g => g.key !== '999' && g.key !== '925').map(g => renderGradeCard('Silver', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="metal-section">
@@ -700,10 +908,10 @@ function renderRates() {
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">999 rate — pure platinum</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.platinum.base || ''}" onchange="setBase('Platinum', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="numeric" value="${roundPeso(configuredBaseRate('Platinum')) || ''}" onchange="setBase('Platinum', this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${PLATINUM_GRADES.map(k => renderGradeCard('Platinum', k, k, null)).join('')}</div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(g => renderGradeCard('Platinum', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="block">
@@ -728,30 +936,110 @@ function renderStaffRates() {
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>
-    <div class="grade-grid">${GOLD_GRADES.map(g => renderGradeCard('Gold', g.key, g.label, g.mult)).join('')}</div>
+    <div class="grade-grid">${GOLD_GRADES.map(g => renderGradeCard('Gold', g.key, g.label)).join('')}</div>
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot silver"></span><h3>Silver</h3><span class="count">${SILVER_GRADES.length} grades</span></div>
-    <div class="grade-grid">${SILVER_GRADES.map(key => renderGradeCard('Silver', key, key, null)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.map(g => renderGradeCard('Silver', g.key, g.label)).join('')}</div>
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot platinum"></span><h3>Platinum</h3><span class="count">${PLATINUM_GRADES.length} grades</span></div>
-    <div class="grade-grid">${PLATINUM_GRADES.map(key => renderGradeCard('Platinum', key, key, null)).join('')}</div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(g => renderGradeCard('Platinum', g.key, g.label)).join('')}</div>
   </section>`;
 }
-function renderGradeCard(metal, key, label, mult) {
+function renderGradeCard(metal, key, label) {
     const ov = isOverridden(metal, key);
     const editing = overrideEditors.has(overrideEditorId(metal, key));
     const rate = metalRate(metal, key);
-    const multTxt = (mult != null) ? `×${mult}` : `×${(parseInt(key, 10) / 999).toFixed(3)}`;
     const rateControl = editing || ov
         ? `<input data-rate-editor="${metal}-${key}" type="text" inputmode="decimal" value="${rate}" onchange="commitOverride('${metal}','${key}', this.value)">`
         : `<span class="gc-value">${rate}</span>`;
+    const rateAction = ov ? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset PHP rate</button>` : editing ? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override PHP rate</button>`;
     return `<div class="grade-card ${ov ? 'is-override' : ''}">
-    <div class="gc-top"><span>${esc(label)}</span><span>${multTxt}</span></div>
+    <div class="gc-top"><span>${esc(label)}</span>${metal === 'Gold' ? `<span>×${configuredGradeMultiplier(metal, key).toFixed(3)}</span>` : ''}</div>
     <div class="gc-rate"><span class="unit">₱</span>${rateControl}<span class="unit">/g</span></div>
-    <div class="gc-foot">${ov ? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset to live price</button>` : editing ? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override price</button>`}</div>
+    <div class="gc-foot">${rateAction}</div>
   </div>`;
+}
+let formulaEditTarget = null;
+function openDailyBaseEditor(metal) {
+    if (!adminEditGuard())
+        return;
+    if (!GRADES[metal])
+        return;
+    formulaEditTarget = { metal };
+    document.getElementById('formula_edit_modal')?.remove();
+    const liveBase = Number(bucketFor(metal).base) || 0, base = configuredBaseRate(metal), silver925 = configuredSilver925Rate(base);
+    const customized = Math.abs(base - liveBase) >= 0.005;
+    const modal = document.createElement('div');
+    modal.id = 'formula_edit_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<form class="summary-modal" onsubmit="saveGradeFormula(event)" role="dialog" aria-modal="true" aria-labelledby="formula_edit_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Daily rate setup</div><h2 id="formula_edit_title">Today's PHP base rate</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">${metal === 'Silver' ? 'Set the independent 999 rate and the 925 basis used to calculate 900, 800, 75%, and 60%.' : 'This exact PHP base rate applies to all ' + esc(metal) + ' grades.'} Rates are rounded to whole pesos with no centavos.</p>
+    <div class="form-grid">
+      <div class="field"><label>Metal</label><select id="formula_metal" onchange="changeFormulaEditorMetal(this.value)">${Object.keys(GRADES).map(name => `<option value="${name}" ${name === metal ? 'selected' : ''}>${name}</option>`).join('')}</select></div>
+      <div class="field"><label>Live PHP base rate</label><input value="${roundPeso(liveBase)}" readonly></div>
+      <div class="field"><label>Today's ${metal === 'Silver' ? '999' : 'PHP base'} rate</label><input id="formula_base_rate" type="number" min="1" step="1" value="${roundPeso(base)}" oninput="updateGradeFormulaPreview()" required></div>
+      ${metal === 'Silver' ? `<div class="field"><label>Today's 925 basis rate</label><input id="formula_silver_925_rate" type="number" min="1" step="1" value="${silver925}" oninput="updateGradeFormulaPreview()" required><span class="hint">900, 800, 75%, and 60% calculate from this rate.</span></div>` : ''}
+    </div>
+    <div class="stat" style="margin-top:14px"><div class="label">Active rate${metal === 'Silver' ? 's' : ''} for today</div><div class="value" id="formula_preview">${metal === 'Silver' ? `999: ${fmtMoney(base)}/g · 925: ${fmtMoney(silver925)}/g` : fmtMoney(base) + '/g'}</div></div>
+    <div class="form-actions">${customized ? '<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use live PHP base</button>' : ''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save today's base rate</button></div>
+  </form>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeGradeFormulaEditor(); });
+    document.body.appendChild(modal);
+    document.getElementById('formula_base_rate')?.focus();
+}
+function changeFormulaEditorMetal(metal) { openDailyBaseEditor(metal); }
+function updateGradeFormulaPreview() {
+    if (!formulaEditTarget)
+        return;
+    const base = Number(val('formula_base_rate')), preview = document.getElementById('formula_preview');
+    const silver925 = Number(val('formula_silver_925_rate'));
+    if (preview)
+        preview.textContent = Number.isFinite(base) && base > 0 ? (formulaEditTarget.metal === 'Silver' && Number.isFinite(silver925) && silver925 > 0 ? `999: ${fmtMoney(base)}/g · 925: ${fmtMoney(silver925)}/g` : `${fmtMoney(base)}/g`) : 'Enter a valid PHP base rate';
+}
+function closeGradeFormulaEditor() { document.getElementById('formula_edit_modal')?.remove(); formulaEditTarget = null; }
+async function saveGradeFormula(event) {
+    event.preventDefault();
+    if (!formulaEditTarget || !adminEditGuard())
+        return;
+    const baseRate = roundPeso(Number(val('formula_base_rate')));
+    if (!Number.isFinite(baseRate) || baseRate <= 0) {
+        toast('Enter a valid PHP base rate');
+        return;
+    }
+    const { metal } = formulaEditTarget;
+    const silver925 = metal === 'Silver' ? roundPeso(Number(val('formula_silver_925_rate'))) : 0;
+    if (metal === 'Silver' && (!Number.isFinite(silver925) || silver925 <= 0)) {
+        toast('Enter a valid Silver 925 basis rate');
+        return;
+    }
+    if (db.pricing.dailyFormula.effectiveDate !== todayStr())
+        db.pricing.dailyFormula = { effectiveDate: todayStr(), baseRates: {} };
+    db.pricing.dailyFormula.baseRates[metal] = baseRate;
+    if (metal === 'Silver') {
+        db.pricing.dailyFormula.baseRates.Silver925 = silver925;
+        delete db.pricing.silver.overrides['925'];
+    }
+    closeGradeFormulaEditor();
+    await saveDB();
+    render();
+    toast(`${metal} PHP base rate updated for today`);
+}
+async function resetGradeFormula() {
+    if (!formulaEditTarget || !adminEditGuard())
+        return;
+    const { metal } = formulaEditTarget;
+    if (db.pricing.dailyFormula?.baseRates)
+        delete db.pricing.dailyFormula.baseRates[metal];
+    if (metal === 'Silver' && db.pricing.dailyFormula?.baseRates)
+        delete db.pricing.dailyFormula.baseRates.Silver925;
+    closeGradeFormulaEditor();
+    await saveDB();
+    render();
+    toast(`${metal} PHP base reset to the live rate`);
 }
 function renderFeaturedBox() {
     const f = db.pricing.featured;
@@ -918,59 +1206,129 @@ async function deleteCustomerRecord() {
 }
 /* ============================= BUYING ============================= */
 let purchaseBatch = [];
+let buyingDraftForm = {};
+let buyingDraftSaveTimer = null;
+function buyingDraftValue(key, fallback = '') {
+    const element = document.getElementById(key);
+    return element ? element.value : String(buyingDraftForm[key] ?? fallback);
+}
+function captureBuyingDraftForm() {
+    ['b_seller_name', 'b_date', 'b_pay', 'b_metal', 'b_itemtype', 'b_karat', 'b_gross', 'b_ded', 'b_rate', 'b_payout', 'b_staff', 'b_status', 'b_remarks'].forEach(key => {
+        const element = document.getElementById(key);
+        if (element)
+            buyingDraftForm[key] = element.value;
+    });
+}
+async function loadBuyingDraft() {
+    try {
+        const response = await fetch('/api/buying-draft', { cache: 'no-store' });
+        if (!response.ok)
+            return;
+        const draft = await response.json();
+        purchaseBatch = Array.isArray(draft.items) ? draft.items : [];
+        buyingDraftForm = draft.form && typeof draft.form === 'object' ? draft.form : {};
+    }
+    catch (error) {
+        console.error('Buying draft load failed', error);
+    }
+}
+async function saveBuyingDraft() {
+    captureBuyingDraftForm();
+    try {
+        const response = await fetch('/api/buying-draft', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: purchaseBatch, form: buyingDraftForm }) });
+        if (!response.ok)
+            throw new Error('Draft save failed');
+    }
+    catch (error) {
+        console.error('Buying draft save failed', error);
+        toast('Could not save the current payout draft');
+    }
+}
+function scheduleBuyingDraftSave() {
+    captureBuyingDraftForm();
+    clearTimeout(buyingDraftSaveTimer);
+    buyingDraftSaveTimer = setTimeout(() => saveBuyingDraft(), 450);
+}
+async function clearBuyingDraft() {
+    clearTimeout(buyingDraftSaveTimer);
+    buyingDraftForm = {};
+    try {
+        await fetch('/api/buying-draft', { method: 'DELETE' });
+    }
+    catch (error) {
+        console.error('Buying draft clear failed', error);
+    }
+}
 function renderBuying() {
-    const sellerName = val('b_seller_name');
-    const metal = val('b_metal') || 'Gold';
+    const sellerName = buyingDraftValue('b_seller_name');
+    const metal = buyingDraftValue('b_metal', 'Gold') || 'Gold';
     const karats = distinctKarats(metal);
-    const requestedKarat = val('b_karat');
+    const requestedKarat = buyingDraftValue('b_karat');
     const karat = (karats.includes(requestedKarat) ? requestedKarat : karats[0]) || '';
     const rateObj = karat ? activeRate(metal, karat) : null;
-    const gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
+    const grossValue = buyingDraftValue('b_gross'), deductionValue = buyingDraftValue('b_ded');
+    const gross = parseFloat(grossValue) || 0, ded = parseFloat(deductionValue) || 0;
     const net = Math.max(roundWeight(gross - ded), 0);
-    const rate = rateObj ? rateObj.rate : 0;
-    const suggested = roundMoney(net * rate);
+    const systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
+    const enteredRate = buyingDraftValue('b_rate');
+    const parsedRate = Number(enteredRate);
+    const rate = enteredRate !== '' && Number.isFinite(parsedRate) ? roundPeso(parsedRate) : systemRate;
+    const rateOverridden = Boolean(rateObj && rate !== systemRate);
+    const suggested = roundPeso(net * rate);
     return `
   <section class="block buying-workflow">
-    <div class="buying-step">
+    <div class="buying-step" id="buying_customer_step">
       <div class="step-number">1</div>
+      <div class="step-content">
+        <h2>Customer Information</h2>
+        <p>Enter the customer's name if available. The name can be left blank.</p>
+        <div class="form-grid buying-customer-grid">
+          <div class="field"><label>Customer name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Enter name or leave blank" autocomplete="off" oninput="scheduleBuyingDraftSave()"></div>
+          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${esc(buyingDraftValue('b_date', todayStr()) || todayStr())}" onchange="scheduleBuyingDraftSave()"></div>
+          <div class="field"><label>Payment method</label><select id="b_pay" onchange="scheduleBuyingDraftSave()">${['Cash', 'Bank transfer', 'GCash'].map(method => `<option ${buyingDraftValue('b_pay', 'Cash') === method ? 'selected' : ''}>${method}</option>`).join('')}</select></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="buying-step buying-item-step">
+      <div class="step-number">2</div>
       <div class="step-content">
         <h2>Add an item</h2>
         <p>Choose the grade and enter its weight. The amount calculates automatically.</p>
         <div class="form-grid buying-item-grid">
       <div class="field"><label>Metal</label>
-        <select id="b_metal" onchange="updateBuyingGrades()">
+        <select id="b_metal" onchange="updateBuyingGrades();scheduleBuyingDraftSave()">
           <option value="Gold" ${metal === 'Gold' ? 'selected' : ''}>Gold</option>
           <option value="Silver" ${metal === 'Silver' ? 'selected' : ''}>Silver</option>
           <option value="Platinum" ${metal === 'Platinum' ? 'selected' : ''}>Platinum</option>
         </select>
       </div>
       <div class="field"><label>Item type</label>
-        <select id="b_itemtype"><option>Scrap</option><option>Jewelry</option></select>
+        <select id="b_itemtype" onchange="scheduleBuyingDraftSave()">${['Scrap', 'Jewelry'].map(type => `<option ${buyingDraftValue('b_itemtype', 'Scrap') === type ? 'selected' : ''}>${type}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Karat / purity</label>
-        <select id="b_karat" onchange="recalcBuying()">
+        <select id="b_karat" onchange="resetBuyingRate();scheduleBuyingDraftSave()">
           ${karats.length ? karats.map(k => `<option value="${k}" ${k === karat ? 'selected' : ''}>${esc(gradeLabel(metal, k))}</option>`).join('') : `<option value="">No rate set</option>`}
         </select>
         ${!karats.length ? `<span class="hint">Add a buying rate for ${metal} first.</span>` : ''}
       </div>
-      <div class="field"><label>Gross weight (g)</label><input id="b_gross" type="number" min="0" step="0.01" value="${val('b_gross')}" oninput="recalcBuying()"></div>
-      <div class="field"><label>Deductions (g)</label><input id="b_ded" type="number" min="0" step="0.01" value="${val('b_ded')}" oninput="recalcBuying()"></div>
+      <div class="field"><label>Gross weight (g)</label><input id="b_gross" type="number" min="0" step="0.01" value="${esc(grossValue)}" oninput="recalcBuying();scheduleBuyingDraftSave()"></div>
+      <div class="field"><label>Deductions (g)</label><input id="b_ded" type="number" min="0" step="0.01" value="${esc(deductionValue)}" oninput="recalcBuying();scheduleBuyingDraftSave()"></div>
         </div>
 
         <div class="payout-calculator">
           <div><span>Net weight</span><strong id="b_net_display">${fmtWeight(net)}</strong></div>
-          <div><span id="b_rate_label">Buying rate (${Number(db.pricing.auto.payoutPct)}%)</span><strong id="b_rate_display">${rateObj ? fmtMoney(rate) + '/g' : 'No active rate'}</strong></div>
+          <div class="buying-rate ${rateOverridden ? 'is-overridden' : ''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="1" step="1" value="${rateObj ? rate : ''}" placeholder="0" oninput="recalcBuying();scheduleBuyingDraftSave()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden ? '' : 'is-hidden'}" onclick="resetBuyingRate();scheduleBuyingDraftSave()">Use daily rate</button></div>
           <div class="suggested"><span>Calculated amount</span><strong id="b_suggested_display">${fmtMoney(suggested)}</strong></div>
-          <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="0.01" placeholder="${suggested.toFixed(2)}" oninput="togglePayoutOverride()"></div></div>
+          <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="1" value="${esc(buyingDraftValue('b_payout'))}" placeholder="${suggested}" oninput="scheduleBuyingDraftSave()"></div></div>
         </div>
-        <div class="field override-reason is-hidden" id="b_override_field"><label>Why is the final payout different?</label><input id="b_override" placeholder="Enter a short reason"></div>
 
         <details class="buying-more">
           <summary>More details <span>optional</span></summary>
           <div class="form-grid buying-more-grid">
-            <div class="field"><label>Staff member</label><input id="b_staff" placeholder="Name"></div>
-            <div class="field"><label>Initial status</label><select id="b_status"><option>For Selling</option><option>For Refining</option><option>On Hold</option></select></div>
-            <div class="field"><label>Remarks</label><textarea id="b_remarks" placeholder="Optional notes"></textarea></div>
+            <div class="field"><label>Staff member</label><input id="b_staff" value="${esc(buyingDraftValue('b_staff'))}" placeholder="Name" oninput="scheduleBuyingDraftSave()"></div>
+            <div class="field"><label>Initial status</label><select id="b_status" onchange="scheduleBuyingDraftSave()">${['For Selling', 'For Refining', 'On Hold'].map(status => `<option ${buyingDraftValue('b_status', 'For Selling') === status ? 'selected' : ''}>${status}</option>`).join('')}</select></div>
+            <div class="field"><label>Remarks</label><textarea id="b_remarks" placeholder="Optional notes" oninput="scheduleBuyingDraftSave()">${esc(buyingDraftValue('b_remarks'))}</textarea></div>
           </div>
         </details>
 
@@ -981,18 +1339,6 @@ function renderBuying() {
       </div>
     </div>
 
-    <div class="buying-step" id="buying_seller_step">
-      <div class="step-number">2</div>
-      <div class="step-content">
-        <h2>Who is selling?</h2>
-        <p>Enter the seller's name if available. The name can be left blank.</p>
-        <div class="form-grid buying-customer-grid">
-          <div class="field"><label>Seller name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Enter name or leave blank" autocomplete="off"></div>
-          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${val('b_date') || todayStr()}"></div>
-          <div class="field"><label>Payment method</label><select id="b_pay"><option>Cash</option><option>Bank transfer</option><option>GCash</option></select></div>
-        </div>
-      </div>
-    </div>
   </section>
 
   <section class="block" id="purchase_batch_panel">${renderPurchaseBatchPanelMarkup()}</section>
@@ -1002,36 +1348,31 @@ function renderBuying() {
 function updateBuyingGrades() {
     const metal = val('b_metal'), select = document.getElementById('b_karat'), grades = distinctKarats(metal);
     select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('');
+    resetBuyingRate();
+}
+function resetBuyingRate() {
+    const metal = val('b_metal'), karat = val('b_karat'), active = karat ? activeRate(metal, karat) : null, input = document.getElementById('b_rate');
+    if (input)
+        input.value = active ? String(roundPeso(active.rate)) : '';
     recalcBuying();
 }
 function recalcBuying() {
     const metal = val('b_metal'), karat = val('b_karat'), gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
-    const net = Math.max(roundWeight(gross - ded), 0), rateObj = karat ? activeRate(metal, karat) : null, rate = rateObj ? rateObj.rate : 0;
-    const netEl = document.getElementById('b_net_display'), rateEl = document.getElementById('b_rate_display'), rateLabel = document.getElementById('b_rate_label'), suggestedEl = document.getElementById('b_suggested_display'), payoutEl = document.getElementById('b_payout');
+    const net = Math.max(roundWeight(gross - ded), 0), rateObj = karat ? activeRate(metal, karat) : null, systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
+    const rateInput = document.getElementById('b_rate'), enteredRate = Number(rateInput?.value), rate = rateInput?.value !== '' && Number.isFinite(enteredRate) ? roundPeso(enteredRate) : 0;
+    const rateOverridden = Boolean(rateObj && Number.isFinite(rate) && rate !== systemRate);
+    const netEl = document.getElementById('b_net_display'), rateLabel = document.getElementById('b_rate_label'), ratePanel = document.getElementById('b_rate_panel'), rateReset = document.getElementById('b_rate_reset'), suggestedEl = document.getElementById('b_suggested_display'), payoutEl = document.getElementById('b_payout');
     if (netEl)
         netEl.textContent = fmtWeight(net);
-    if (rateEl)
-        rateEl.textContent = rateObj ? fmtMoney(rate) + '/g' : 'No active rate';
     if (rateLabel)
-        rateLabel.textContent = `Buying rate (${Number(db.pricing.auto.payoutPct)}%)`;
-    const suggested = roundMoney(net * rate);
+        rateLabel.textContent = rateOverridden ? 'Buying rate (overridden)' : 'Buying rate (Daily Rate Setup)';
+    ratePanel?.classList.toggle('is-overridden', rateOverridden);
+    rateReset?.classList.toggle('is-hidden', !rateOverridden);
+    const suggested = roundPeso(net * rate);
     if (suggestedEl)
         suggestedEl.textContent = fmtMoney(suggested);
     if (payoutEl)
-        payoutEl.placeholder = suggested.toFixed(2);
-    togglePayoutOverride();
-}
-function togglePayoutOverride() {
-    const payout = val('b_payout'), field = document.getElementById('b_override_field');
-    if (!field)
-        return;
-    if (!payout) {
-        field.classList.add('is-hidden');
-        return;
-    }
-    const metal = val('b_metal'), karat = val('b_karat'), gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
-    const active = karat ? activeRate(metal, karat) : null, suggested = roundMoney(Math.max(roundWeight(gross - ded), 0) * (active ? active.rate : 0));
-    field.classList.toggle('is-hidden', Math.abs(parseFloat(payout) - suggested) < 0.005);
+        payoutEl.placeholder = String(suggested);
 }
 function purchaseItemFromForm() {
     const metal = val('b_metal'), karat = val('b_karat');
@@ -1046,69 +1387,51 @@ function purchaseItemFromForm() {
         return null;
     }
     const rateObj = activeRate(metal, karat);
-    const rate = rateObj ? rateObj.rate : 0;
-    const suggested = roundMoney(net * rate);
+    const systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
+    const rate = roundPeso(Number(val('b_rate')));
+    if (!Number.isFinite(rate) || rate <= 0) {
+        toast('Enter a valid buying rate');
+        return null;
+    }
+    const rateOverridden = Boolean(rateObj && rate !== systemRate);
+    const suggested = roundPeso(net * rate);
     const payoutInput = val('b_payout');
-    const payout = payoutInput ? roundMoney(parseFloat(payoutInput)) : suggested;
-    const overrideReason = (payout !== suggested) ? val('b_override').trim() : '';
+    const payout = payoutInput ? roundPeso(parseFloat(payoutInput)) : suggested;
+    const payoutOverridden = payout !== suggested;
     if (!Number.isFinite(payout) || payout < 0) {
         toast('Enter a valid final payout');
         return null;
     }
-    if (payout !== suggested && !overrideReason) {
-        toast('Enter an override reason — payout differs from suggested');
-        return null;
-    }
     return { id: uid('line'), metal, itemType: val('b_itemtype'), karat, grossWeight: gross, deductions: ded,
-        netWeight: net, currentWeight: net, rate, suggestedAmount: suggested, payout, overrideReason };
+        netWeight: net, currentWeight: net, rate, systemRate, rateOverridden, payoutOverridden, suggestedAmount: suggested, payout, overrideReason: '' };
 }
-function addPurchaseItem() {
+async function addPurchaseItem() {
     const item = purchaseItemFromForm();
     if (!item)
         return;
+    captureBuyingDraftForm();
     purchaseBatch.push(item);
-    ['b_gross', 'b_ded', 'b_payout', 'b_override'].forEach(id => { const e = document.getElementById(id); if (e)
+    ['b_gross', 'b_ded', 'b_payout'].forEach(id => { const e = document.getElementById(id); if (e)
         e.value = ''; });
-    recalcBuying();
+    buyingDraftForm.b_gross = '';
+    buyingDraftForm.b_ded = '';
+    buyingDraftForm.b_payout = '';
+    resetBuyingRate();
     renderPurchaseBatchPanel();
-    openPurchaseNextStep(item);
+    await saveBuyingDraft();
+    toast(`${item.metal} ${gradeLabel(item.metal, item.karat)} added to current payout`);
 }
-function closePurchaseNextStep() { document.getElementById('purchase_next_step_modal')?.remove(); }
 function continueAddingPurchaseItems() {
-    closePurchaseNextStep();
-    document.querySelector('.buying-workflow')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+    document.querySelector('.buying-item-step')?.scrollIntoView({ behavior: 'smooth', block: 'start' });
     setTimeout(() => document.getElementById('b_gross')?.focus(), 250);
 }
-function proceedPurchaseToPayout() { closePurchaseNextStep(); openPurchaseSummary(); }
-function openPurchaseNextStep(item) {
-    closePurchaseNextStep();
-    const total = roundMoney(purchaseBatch.reduce((sum, line) => sum + Number(line.payout), 0));
-    const totalWeight = purchaseBatch.reduce((sum, line) => sum + Number(line.netWeight), 0);
-    const modal = document.createElement('div');
-    modal.id = 'purchase_next_step_modal';
-    modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="summary-modal purchase-next-step-modal" role="dialog" aria-modal="true" aria-labelledby="purchase_next_step_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Item added</div><h2 id="purchase_next_step_title">${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))} added</h2></div><button class="modal-close" onclick="closePurchaseNextStep()" aria-label="Close">×</button></div>
-    <div class="purchase-added-item">
-      <div><span>Item</span><strong>${esc(item.itemType)}</strong></div>
-      <div><span>Net weight</span><strong>${fmtWeight(item.netWeight)}</strong></div>
-      <div><span>Item payout</span><strong>${fmtMoney(item.payout)}</strong></div>
-    </div>
-    <div class="summary-grand"><div><span>${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'} · ${fmtWeight(totalWeight)}</span><strong>Current payout</strong></div><div>${fmtMoney(total)}</div></div>
-    <p class="purchase-next-question">Would you like to add another item for this seller or proceed to the payout?</p>
-    <div class="purchase-next-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add more items</button><button class="btn" onclick="proceedPurchaseToPayout()">Proceed to payout</button></div>
-  </div>`;
-    modal.addEventListener('click', event => { if (event.target === modal)
-        closePurchaseNextStep(); });
-    document.body.appendChild(modal);
-    modal.querySelector('.purchase-next-actions .btn:last-child')?.focus();
-}
-function requestPurchaseItemRemoval(id) {
+async function requestPurchaseItemRemoval(id) {
     const item = purchaseBatch.find(line => line.id === id);
     if (!item)
         return;
     purchaseBatch = purchaseBatch.filter(line => line.id !== id);
     renderPurchaseBatchPanel();
+    await saveBuyingDraft();
     toast(`${item.metal} ${gradeLabel(item.metal, item.karat)} removed from the current payout`);
 }
 function renderPurchaseBatchPanel() {
@@ -1119,11 +1442,12 @@ function renderPurchaseBatchPanel() {
 function renderPurchaseBatchPanelMarkup() {
     const total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
     if (!purchaseBatch.length)
-        return `<h2 class="block-title">Current payout</h2><div class="empty-note">Start by adding an item above. You can review the combined total before choosing the seller.</div>`;
-    return `<div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</span><strong>${fmtMoney(total)}</strong></div><div class="form-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div></div>
-    <details class="purchase-batch-details"><summary>View or remove ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</summary><div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
-    ${purchaseBatch.map((item, index) => `<tr><td>${index + 1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
-    </tbody></table></div></details>`;
+        return `<h2 class="block-title">Current payout</h2><div class="empty-note">Add the first item above. Every added item will remain visible here.</div>`;
+    return `<section class="current-payout-card"><div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</span><strong>${fmtMoney(total)}</strong></div></div>
+    <div class="purchase-batch-list"><h3>Items in this payout</h3><div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
+    ${purchaseBatch.map((item, index) => `<tr><td>${index + 1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g${item.rateOverridden ? '<br><span class="override-note">Overridden</span>' : ''}</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
+    </tbody></table></div></div>
+    <div class="form-actions purchase-batch-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div></section>`;
 }
 function purchaseCustomer() {
     const name = val('b_seller_name').trim();
@@ -1136,7 +1460,7 @@ function purchaseCustomer() {
 }
 function focusPurchaseSeller() {
     closePurchaseSummary();
-    document.getElementById('buying_seller_step')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+    document.getElementById('buying_customer_step')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
     setTimeout(() => document.getElementById('b_seller_name')?.focus(), 250);
 }
 function openPurchaseSummary() {
@@ -1166,7 +1490,9 @@ function closePurchaseSummary() { document.getElementById('purchase_summary_moda
 async function commitPurchaseBatch(printAfter = false) {
     if (!purchaseBatch.length)
         return;
+    captureBuyingDraftForm();
     const customer = purchaseCustomer();
+    const previousCustomerCount = db.customers.length, previousStockCount = db.stock.length;
     let customerId = customer.id;
     if (customer.isNew) {
         customerId = uid('cust');
@@ -1177,23 +1503,29 @@ async function commitPurchaseBatch(printAfter = false) {
         status: val('b_status'), remarks: val('b_remarks').trim(), batchId };
     purchaseBatch.forEach(item => db.stock.push({ ...item, ...shared, id: uid('stk'), cost: item.payout }));
     const count = purchaseBatch.length, total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
+    const saved = await saveDB();
+    if (!saved) {
+        db.customers.splice(previousCustomerCount);
+        db.stock.splice(previousStockCount);
+        toast('The purchase was not recorded. Your payout draft is still saved.');
+        return;
+    }
     purchaseBatch = [];
     closePurchaseSummary();
-    await saveDB();
+    await clearBuyingDraft();
     render();
     if (printAfter)
         openPurchaseReceipt(batchId);
     toast(`${count} items recorded · ${fmtMoney(total)}`);
 }
-function receiptNumber(value) {
-    return Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
+function receiptWeightNumber(value) { return Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 2, maximumFractionDigits: 2 }); }
+function receiptMoneyNumber(value) { return Math.round(Number(value) || 0).toLocaleString('en-PH', { maximumFractionDigits: 0 }); }
 function purchaseReceiptMarkup(items) {
     const first = items[0], total = roundMoney(items.reduce((sum, item) => sum + Number(item.payout), 0));
-    const itemLines = items.map(item => `<div class="receipt-item"><div class="receipt-item-name">${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</div><div class="receipt-calc">${receiptNumber(item.netWeight)}g × ${receiptNumber(item.rate)} = ${receiptNumber(item.payout)}</div></div>`).join('');
+    const itemLines = items.map(item => `<div class="receipt-item"><div class="receipt-item-name">${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</div><div class="receipt-calc">${receiptWeightNumber(item.netWeight)}g × ${receiptMoneyNumber(item.rate)} = ${receiptMoneyNumber(item.payout)}</div></div>`).join('');
     return `<header><div class="receipt-shop">ZP GOLD &amp; SILVER</div><div class="receipt-address">Barcelona St, Zone II<br>Zamboanga City</div></header><div class="receipt-rule"></div>
     <div class="receipt-meta"><span>Date:</span><strong>${esc(fmtDate(first.date))}</strong><span>Client:</span><strong>${esc(first.customerName || 'Walk-in')}</strong></div><div class="receipt-rule"></div>
-    ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptNumber(total)}</span></div><div class="receipt-rule"></div>
+    ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptMoneyNumber(total)}</span></div><div class="receipt-rule"></div>
     <div class="receipt-meta"><span>Paid:</span><strong>${esc(first.paymentMethod || '—')}</strong>${first.staff ? `<span>Staff:</span><strong>${esc(first.staff)}</strong>` : ''}</div>
     <div class="receipt-reference">Ref: ${esc(first.batchId || first.id)}</div><div class="receipt-thanks">Thank you.</div>
     <footer class="receipt-quote">“Because gold is honest money it is disliked by dishonest men.”</footer>`;
@@ -1245,6 +1577,7 @@ function printPurchaseReceipt(batchId) {
 }
 /* ============================= INVENTORY ============================= */
 let invFilter = { metal: 'All', karat: 'All', type: 'All', status: 'All' };
+let inventoryBulkStatus = 'For Selling';
 let inventoryWeekOffset = 0;
 let inventorySelectedDate = todayStr();
 const inventoryMoveSelection = new Set();
@@ -1254,6 +1587,7 @@ let liquidationTotalSoldDraft = '';
 let pendingInventoryMove = null;
 let combineLiquidationMetal = '';
 const combineLiquidationDates = new Set();
+const LOW_KARAT_GOLD_KEYS = new Set(['17K', '16K', '14K', '12K', '10K', '9K', '8K', '5K', '73%']);
 function inventoryWeekRange(offset = inventoryWeekOffset) {
     const today = new Date(todayStr() + 'T00:00:00');
     const mondayIndex = (today.getDay() + 6) % 7;
@@ -1282,8 +1616,9 @@ function selectInventoryDate(date) {
     requestAnimationFrame(() => openInventoryFilterModal());
 }
 function closeInventoryFilterModal() { document.getElementById('inventory_filter_modal')?.remove(); }
+function activeInventoryRecord(item) { return Number(item.currentWeight) > 0 && !['Liquidated', 'Refined', 'Sold'].includes(item.status); }
 function inventoryFilterKaratsForDate(metal) {
-    return Array.from(new Set(db.stock.filter(item => item.date === inventorySelectedDate && (metal === 'All' || item.metal === metal)).map(item => item.karat)));
+    return Array.from(new Set(db.stock.filter(item => item.date === inventorySelectedDate && activeInventoryRecord(item) && (metal === 'All' || item.metal === metal)).map(item => item.karat)));
 }
 function updateInventoryFilterModalKarats() {
     const metal = val('modal_inv_metal'), select = document.getElementById('modal_inv_karat');
@@ -1295,7 +1630,7 @@ function updateInventoryFilterModalKarats() {
 }
 function openInventoryFilterModal() {
     closeInventoryFilterModal();
-    const dayStock = db.stock.filter(item => item.date === inventorySelectedDate);
+    const dayStock = db.stock.filter(item => item.date === inventorySelectedDate && activeInventoryRecord(item));
     const available = dayStock.filter(selectableInventory);
     const karats = inventoryFilterKaratsForDate(invFilter.metal);
     const modal = document.createElement('div');
@@ -1330,8 +1665,17 @@ function applyInventoryDateFilters() {
     invFilter = { metal: val('modal_inv_metal'), karat: val('modal_inv_karat'), type: val('modal_inv_type'), status: val('modal_inv_status') };
     finishInventoryDateFilter();
 }
+function selectInventoryMetalCategory(metal) {
+    invFilter.metal = metal;
+    invFilter.karat = 'All';
+    inventoryMoveSelection.clear();
+    render();
+}
 function selectableInventory(item) { return Number(item.currentWeight) > 0 && (item.status === 'For Selling' || item.status === 'For Refining'); }
 function movableInventory(item) { return selectableInventory(item) && !liquidationSelection.has(item.id); }
+function categorizableInventory(item) { return Number(item.currentWeight) > 0 && !['Liquidated', 'Refined', 'Sold'].includes(item.status) && !liquidationSelection.has(item.id); }
+function lowKaratGoldInventory(item) { return item.metal === 'Gold' && LOW_KARAT_GOLD_KEYS.has(item.karat) && activeInventoryRecord(item); }
+function selectedInventoryForCategory() { return db.stock.filter(item => inventoryMoveSelection.has(item.id) && categorizableInventory(item)); }
 function selectedInventoryForMove() { return db.stock.filter(item => inventoryMoveSelection.has(item.id) && movableInventory(item)); }
 function selectedInventoryForLiquidation() { return db.stock.filter(item => liquidationSelection.has(item.id) && selectableInventory(item)); }
 function inventoryPercentagePool() {
@@ -1344,16 +1688,20 @@ function inventoryPercentagePool() {
 function percentageStockCount(percentage, total) { return total ? Math.max(1, Math.ceil(total * (Number(percentage) / 100))) : 0; }
 function toggleInventoryForLiquidation(id, checked) {
     const item = db.stock.find(stock => stock.id === id);
-    if (!item || !movableInventory(item))
+    if (!item || !categorizableInventory(item))
         return;
     if (checked)
         inventoryMoveSelection.add(id);
     else
         inventoryMoveSelection.delete(id);
-    const selected = selectedInventoryForMove();
+    const selected = selectedInventoryForCategory();
     const buttons = document.querySelectorAll('.inventory-move-liquidation');
     const count = document.getElementById('inventory_liq_count');
     buttons.forEach(button => button.disabled = !inventoryPercentagePool().length);
+    document.querySelectorAll('[data-inventory-selection-required]').forEach(button => { button.disabled = !selected.length; });
+    const moveButton = document.getElementById('inventory_move_selected');
+    if (moveButton)
+        moveButton.disabled = !selected.length || selected.some(record => !movableInventory(record));
     if (count)
         count.textContent = String(selected.length);
 }
@@ -1362,8 +1710,61 @@ function syncInventoryMoveCheckboxes() {
         input.checked = inventoryMoveSelection.has(input.dataset.inventoryMoveId);
     });
     const count = document.getElementById('inventory_liq_count');
+    const selected = selectedInventoryForCategory();
+    document.querySelectorAll('[data-inventory-selection-required]').forEach(button => { button.disabled = !selected.length; });
+    const moveButton = document.getElementById('inventory_move_selected');
+    if (moveButton)
+        moveButton.disabled = !selected.length || selected.some(record => !movableInventory(record));
     if (count)
-        count.textContent = String(selectedInventoryForMove().length);
+        count.textContent = String(selected.length);
+}
+function visibleInventoryRecords() {
+    return db.stock.filter(item => item.date === inventorySelectedDate && activeInventoryRecord(item) &&
+        (invFilter.metal === 'All' || item.metal === invFilter.metal) &&
+        (invFilter.karat === 'All' || item.karat === invFilter.karat) &&
+        (invFilter.type === 'All' || item.itemType === invFilter.type) &&
+        (invFilter.status === 'All' || item.status === invFilter.status));
+}
+function selectAllVisibleInventory() {
+    visibleInventoryRecords().filter(categorizableInventory).forEach(item => inventoryMoveSelection.add(item.id));
+    render();
+}
+function selectAllLowKaratGold() {
+    if (!adminEditGuard())
+        return;
+    const records = db.stock.filter(item => lowKaratGoldInventory(item) && categorizableInventory(item));
+    if (!records.length) {
+        toast('There are no available low-karat Gold items to select');
+        return;
+    }
+    inventoryMoveSelection.clear();
+    records.forEach(item => inventoryMoveSelection.add(item.id));
+    inventoryBulkStatus = 'For Refining';
+    invFilter = { ...invFilter, metal: 'Gold', karat: 'All', status: 'All' };
+    render();
+    requestAnimationFrame(() => document.getElementById('inventory_stock_list')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+    toast(`${records.length} low-karat Gold ${records.length === 1 ? 'item' : 'items'} selected across all dates`);
+}
+function clearInventorySelection() { inventoryMoveSelection.clear(); render(); }
+async function categorizeCheckedInventory() {
+    if (!adminEditGuard())
+        return;
+    const selected = selectedInventoryForCategory(), status = val('inventory_bulk_status');
+    if (!selected.length) {
+        toast('Select at least one inventory record');
+        return;
+    }
+    if (!['For Selling', 'For Refining', 'On Hold'].includes(status)) {
+        toast('Choose a valid category');
+        return;
+    }
+    if (!confirm(`Change ${selected.length} selected inventory ${selected.length === 1 ? 'record' : 'records'} to “${status}”?`))
+        return;
+    selected.forEach(item => { item.status = status; });
+    inventoryMoveSelection.clear();
+    await saveDB();
+    render();
+    toast(`${selected.length} inventory ${selected.length === 1 ? 'record' : 'records'} changed to ${status}`);
 }
 function closeInventoryMoveConfirmation() {
     document.getElementById('inventory_move_confirmation')?.remove();
@@ -1396,11 +1797,16 @@ function moveInventorySelectionToLiquidation(percentage) {
     requestAnimationFrame(() => requestAnimationFrame(() => openInventoryMoveReview(selected, { percentage: portion, total: pool.length, automatic: true })));
 }
 function moveCheckedInventoryToLiquidation() {
-    const selected = selectedInventoryForMove();
-    if (!selected.length) {
+    const checked = selectedInventoryForCategory();
+    if (!checked.length) {
         toast('Check at least one inventory record first');
         return;
     }
+    if (checked.some(item => !movableInventory(item))) {
+        toast('On Hold records must be categorized as For Selling or For Refining before liquidation');
+        return;
+    }
+    const selected = checked;
     openInventoryMoveReview(selected, { total: selected.length, automatic: false });
 }
 function availableCombineDates(metal) {
@@ -1587,28 +1993,57 @@ function renderInventory() {
         inventorySelectedDate = week.start;
     const dates = Array.from({ length: 7 }, (_, index) => dateKeyPlusDays(week.start, index));
     const dailyRows = dates.map(date => {
-        const stock = db.stock.filter(item => item.date === date), available = stock.filter(selectableInventory);
+        const stock = db.stock.filter(item => item.date === date && activeInventoryRecord(item)), available = stock.filter(selectableInventory);
         return { date, stock, available, weight: available.reduce((sum, item) => sum + Number(item.currentWeight), 0), cost: available.reduce((sum, item) => sum + Number(item.cost), 0) };
     });
     const selectedDay = dailyRows.find(day => day.date === inventorySelectedDate) || dailyRows[0];
     const percentagePool = inventoryPercentagePool();
-    const selectedMoveCount = selectedInventoryForMove().length;
+    const selectedMoveCount = selectedInventoryForCategory().length;
+    const selectedRecords = selectedInventoryForCategory();
+    const selectedMovableCount = selectedInventoryForMove().length;
+    const canMoveSelected = selectedMoveCount > 0 && selectedMovableCount === selectedMoveCount;
     const hasMovableStock = db.stock.some(movableInventory);
     const activeFilterLabels = [invFilter.metal, invFilter.karat, invFilter.type, invFilter.status].filter(value => value !== 'All');
     const rows = selectedDay.stock.filter(s => (invFilter.metal === 'All' || s.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || s.karat === invFilter.karat) &&
         (invFilter.type === 'All' || s.itemType === invFilter.type) &&
         (invFilter.status === 'All' || s.status === invFilter.status)).sort((a, b) => b.date.localeCompare(a.date));
-    const groups = {};
-    selectedDay.available.forEach(s => {
-        if (s.currentWeight <= 0 || s.status === 'Sold' || s.status === 'Liquidated')
-            return;
-        const key = [s.metal, s.karat, s.itemType, s.status].join(' · ');
-        groups[key] = groups[key] || { weight: 0, cost: 0 };
-        groups[key].weight += Number(s.currentWeight);
-        groups[key].cost += Number(s.cost);
+    const currentStock = db.stock.filter(activeInventoryRecord);
+    const breakdownSource = currentStock.filter(item => invFilter.metal === 'All' || item.metal === invFilter.metal);
+    const breakdownMap = new Map();
+    breakdownSource.forEach(item => {
+        const key = `${item.metal}|${item.karat}`, entry = breakdownMap.get(key) || { metal: item.metal, karat: item.karat, count: 0, weight: 0, cost: 0 };
+        entry.count += 1;
+        entry.weight += Number(item.currentWeight);
+        entry.cost += Number(item.cost);
+        breakdownMap.set(key, entry);
     });
+    const breakdown = Array.from(breakdownMap.values()).sort((a, b) => a.metal.localeCompare(b.metal) || (GRADE_META[a.metal]?.findIndex(grade => grade.key === a.karat) ?? 99) - (GRADE_META[b.metal]?.findIndex(grade => grade.key === b.karat) ?? 99));
+    const breakdownWeight = breakdownSource.reduce((sum, item) => sum + Number(item.currentWeight), 0);
+    const breakdownCost = breakdownSource.reduce((sum, item) => sum + Number(item.cost), 0);
+    const lowKaratGold = currentStock.filter(lowKaratGoldInventory);
+    const lowKaratEligible = lowKaratGold.filter(categorizableInventory);
+    const lowKaratWeight = lowKaratGold.reduce((sum, item) => sum + Number(item.currentWeight), 0);
+    const selectedGradeCounts = new Map();
+    selectedRecords.forEach(item => { const key = `${item.metal} ${gradeLabel(item.metal, item.karat)}`; selectedGradeCounts.set(key, (selectedGradeCounts.get(key) || 0) + 1); });
     return `
+  <section class="block">
+    <div class="page-head inventory-overview-head"><div><p class="eyebrow">Across all purchase dates</p><h2 class="block-title">Current Stock Overview</h2><p class="form-note">See the complete available inventory before opening the daily records.</p></div></div>
+    <div class="inventory-metal-tabs"><strong>View inventory</strong>${['All', 'Gold', 'Silver', 'Platinum'].map(metal => `<button class="${invFilter.metal === metal ? 'active' : ''}" onclick="selectInventoryMetalCategory('${metal}')">${metal}</button>`).join('')}</div>
+    <div class="stat-row inventory-overview-stats">
+      <div class="stat"><div class="label">Current items</div><div class="value">${breakdownSource.length}</div><div class="sub">active records across all dates</div></div>
+      <div class="stat"><div class="label">Total weight</div><div class="value">${fmtWeight(breakdownWeight)}</div><div class="sub">remaining current stock</div></div>
+      <div class="stat"><div class="label">Total inventory cost</div><div class="value">${fmtMoney(breakdownCost)}</div><div class="sub">combined carrying cost</div></div>
+      <div class="stat"><div class="label">Karat / purity groups</div><div class="value">${breakdown.length}</div><div class="sub">shown in the breakdown below</div></div>
+    </div>
+    ${(invFilter.metal === 'All' || invFilter.metal === 'Gold') && isAdmin() ? `<div class="low-karat-card"><div><span class="low-karat-label">Quick refining selection</span><strong>Low-karat Gold</strong><small>Below 18K · ${lowKaratGold.length} item${lowKaratGold.length === 1 ? '' : 's'} · ${fmtWeight(lowKaratWeight)} across all dates</small></div><button class="btn" onclick="selectAllLowKaratGold()" ${lowKaratEligible.length ? '' : 'disabled'}>Select all for refining (${lowKaratEligible.length})</button></div>` : ''}
+    <h2 class="block-title inventory-breakdown-heading">${invFilter.metal === 'All' ? 'All current stock by grade' : `${invFilter.metal} inventory by ${invFilter.metal === 'Gold' ? 'karat' : 'purity'}`}</h2>
+    <p class="form-note inventory-breakdown-caption">Totals below combine every active purchase date.</p>
+    ${breakdown.length ? `<div class="table-wrap inventory-breakdown"><table><thead><tr><th>Metal</th><th>Karat / purity</th><th class="num-head">Items</th><th class="num-head">Total weight</th><th class="num-head">Total cost</th></tr></thead><tbody>${breakdown.map(entry => `<tr><td><span class="metal-tag ${entry.metal.toLowerCase()}">${entry.metal}</span></td><td>${esc(gradeLabel(entry.metal, entry.karat))}</td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.weight)}</td><td class="num">${fmtMoney(entry.cost)}</td></tr>`).join('')}</tbody></table></div><div class="inventory-breakdown-total"><span>${invFilter.metal === 'All' ? 'All current stock' : `${invFilter.metal} total`} · ${breakdownSource.length} item${breakdownSource.length === 1 ? '' : 's'} · ${fmtWeight(breakdownWeight)}</span><strong>${fmtMoney(breakdownCost)}</strong></div>`
+        : `<div class="empty-note">No active ${invFilter.metal === 'All' ? 'inventory' : esc(invFilter.metal) + ' inventory'} remains.</div>`}
+    <p class="form-note inventory-history-note">Liquidated, refined, and sold items remain in reports and transaction history but are hidden here.</p>
+  </section>
+
   <section class="block">
     <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Monday through Sunday</p><h2 class="block-title" style="margin:0;">Inventory by purchase date</h2><p class="form-note">Choose a dated day to see and select its stock.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
     <div class="inventory-days">
@@ -1616,22 +2051,17 @@ function renderInventory() {
     </div>
     <h2 class="block-title">${new Date(selectedDay.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}, ${fmtDate(selectedDay.date)}</h2>
     <div class="stat-row">
-      <div class="stat"><div class="label">Purchases recorded</div><div class="value">${selectedDay.stock.length}</div><div class="sub">inventory lines received on this date</div></div>
+      <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines on this date</div></div>
       <div class="stat"><div class="label">Available stock lines</div><div class="value">${selectedDay.available.length}</div><div class="sub">eligible for selling or refining</div></div>
       <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from this date's purchases</div></div>
       <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost for this purchase date</div></div>
-    </div>
-    <h2 class="block-title" style="margin-top:20px;">Stock by metal, assay, type &amp; status</h2>
-    <div class="stat-row">
-      ${Object.keys(groups).length ? Object.entries(groups).map(([k, v]) => `<div class="stat"><div class="label">${k}</div><div class="value">${fmtWeight(v.weight)}</div><div class="sub">${fmtMoney(v.cost)} cost</div></div>`).join('')
-        : `<div class="empty-note" style="flex:1;">No available inventory was purchased on ${fmtDate(selectedDay.date)}.</div>`}
     </div>
   </section>
 
   <section class="block" id="inventory_stock_list">
     <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${activeFilterLabels.length ? `Showing: ${activeFilterLabels.map(esc).join(' · ')}` : 'Showing all records'} for ${fmtDate(selectedDay.date)}.</p></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div>
-    ${isAdmin() ? `<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> checked across dates${percentagePool.length ? '' : ' · choose another date or change filters'}</span></div><div class="inventory-action-buttons">${[50, 100].map(percent => `<button class="btn ${percent === 100 ? '' : 'secondary'} small inventory-move-liquidation" onclick="moveInventorySelectionToLiquidation(${percent})" ${percentagePool.length ? '' : 'disabled'}>Move ${percent}% (${percentageStockCount(percent, percentagePool.length)})</button>`).join('')}<button class="btn secondary small" onclick="moveCheckedInventoryToLiquidation()" ${selectedMoveCount ? '' : 'disabled'}>Liquidate checked</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock ? '' : 'disabled'}>Combine dates</button><button class="btn secondary small" onclick="prepareInventoryForRefining()" ${selectedMoveCount ? '' : 'disabled'}>Refine checked</button></div></div>` : ''}
-    ${tableOrEmpty(rows, s => `<tr>${isAdmin() ? `<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id) ? 'Already moved' : 'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id) ? 'checked' : ''} ${movableInventory(s) ? '' : 'disabled'}></td>` : ''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
+    ${isAdmin() ? `<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length ? '' : ' · choose another date or change filters'}</span>${selectedGradeCounts.size ? `<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade, count]) => `<span>${esc(grade)} · ${count}</span>`).join('')}</div>` : ''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount ? '' : 'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['For Selling', 'For Refining', 'On Hold'].map(status => `<option ${inventoryBulkStatus === status ? 'selected' : ''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount ? '' : 'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected ? '' : 'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock ? '' : 'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount ? '' : 'disabled'}>Refine selected</button></div></div>` : ''}
+    ${tableOrEmpty(rows, s => `<tr>${isAdmin() ? `<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id) ? 'Already moved' : 'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id) ? 'checked' : ''} ${categorizableInventory(s) ? '' : 'disabled'}></td>` : ''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td><div class="form-actions">${movableInventory(s) ? `<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>` : ''}${adminEditButton('Inventory', s.id)}</div></td>` : ''}</tr>`, [...(isAdmin() ? ['Select'] : []), 'Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], `No stock matches this filter on ${fmtDate(selectedDay.date)}.`)}
   </section>
   `;
@@ -2061,7 +2491,7 @@ function updateRefiningCombinedSummary() {
         costEl.textContent = fmtMoney(cost);
 }
 function prepareInventoryForRefining() {
-    const selected = selectedInventoryForMove();
+    const selected = selectedInventoryForCategory();
     if (!selected.length) {
         toast('Check at least one For Refining inventory record first');
         return;
@@ -2609,7 +3039,7 @@ function exportStock() {
     ]));
 }
 function exportLiquidations() {
-    downloadCSV('zpp_liquidations.csv', toCSV(db.liquidations, [
+    downloadCSV('zpp_liquidations.csv', toCSV(liquidationHistoryRecords(), [
         { label: 'Liquidation ID', key: 'id' }, { label: 'Date', key: 'date' }, { label: 'Metal', key: 'metal' }, { label: 'Buyer/Refiner', key: 'buyer' }, { label: 'Number of items', get: record => (record.lines || []).length || record.itemCount || 0 }, { label: 'Released weight', key: 'releasedWeight' },
         { label: 'Total sold by item', get: record => (record.lines || []).map(line => `${line.assay || 'Item'}: ${Number(line.sellingAmount ?? line.proceeds) || 0}`).join(' | ') },
         { label: 'Total sold', key: 'proceeds' }, { label: 'Payment status', key: 'paymentStatus' }, { label: 'Total cost', key: 'cost' }, { label: 'Profit', key: 'margin' }
@@ -2625,7 +3055,7 @@ function exportRefining() {
     ]));
 }
 function exportPurchases() {
-    downloadCSV('zpp_purchase_history.csv', toCSV(db.stock.filter(s => !s.sourceRefiningBatchId), [
+    downloadCSV('zpp_purchase_history.csv', toCSV(purchaseHistoryRecords(), [
         { label: 'Date', key: 'date' }, { label: 'Seller', key: 'customerName' }, { label: 'Metal', key: 'metal' }, { label: 'Karat / purity', key: 'karat' },
         { label: 'Item type', key: 'itemType' }, { label: 'Net weight', key: 'netWeight' }, { label: 'Rate', key: 'rate' }, { label: 'Payout', key: 'payout' },
         { label: 'Payment method', key: 'paymentMethod' }, { label: 'Staff', key: 'staff' }, { label: 'Status', key: 'status' }
@@ -2647,23 +3077,67 @@ function exportRates() {
         { label: 'Gold 24K base', get: h => h.snapshot.gold.base }, { label: 'Silver base', get: h => h.snapshot.silver.base }, { label: 'Platinum base', get: h => h.snapshot.platinum.base }
     ]));
 }
+function closeCustomerHistoryModal() { document.getElementById('customer_history_modal')?.remove(); }
+function openCustomerHistoryModal() {
+    closeCustomerHistoryModal();
+    const purchases = purchaseHistoryRecords();
+    const customers = db.customers.filter(customer => purchases.some(item => item.customerId === customer.id));
+    const modal = document.createElement('div');
+    modal.id = 'customer_history_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="customer_history_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">${esc(purchaseHistoryFilterLabel())}</div><h2 id="customer_history_title">Customer history</h2><p class="form-note">Purchase totals grouped by customer for the selected dates.</p></div><button class="modal-close" onclick="closeCustomerHistoryModal()" aria-label="Close">×</button></div>
+    <div style="margin-top:18px;">${tableOrEmpty(customers, customer => {
+        const history = purchases.filter(item => item.customerId === customer.id);
+        const totalWeight = history.reduce((sum, item) => sum + Number(item.netWeight || 0), 0);
+        const totalPayout = history.reduce((sum, item) => sum + Number(item.payout || 0), 0);
+        return `<tr><td data-label="Customer"><strong>${esc(customer.name)}</strong></td><td data-label="Transactions" class="num">${history.length}</td><td data-label="Total weight sold" class="num">${fmtWeight(totalWeight)}</td><td data-label="Total payout" class="num">${fmtMoney(totalPayout)}</td></tr>`;
+    }, ['Customer', 'Transactions', 'Total weight sold', 'Total payout'], 'No customer purchases match the selected dates.')}</div>
+    <div class="form-actions" style="justify-content:flex-end;margin-top:18px;"><button class="btn" onclick="closeCustomerHistoryModal()">Close</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeCustomerHistoryModal(); });
+    document.body.appendChild(modal);
+    modal.querySelector('.modal-close')?.focus();
+}
 function renderLiquidationHistory() {
+    const liquidations = liquidationHistoryRecords();
+    const totalCost = liquidations.reduce((sum, item) => sum + Number(item.cost || 0), 0);
+    const totalSold = liquidations.reduce((sum, item) => sum + Number(item.proceeds || 0), 0);
+    const totalProfit = liquidations.reduce((sum, item) => sum + Number(item.margin || 0), 0);
     return `<section class="block">
     <div class="batch-head"><div><h2 class="block-title">Liquidation history</h2><p class="form-note">Administrator record of all completed liquidation batches.</p></div><button class="btn small" onclick="exportLiquidations()">Download liquidation CSV</button></div>
-    ${dashboardReportSearch('Search ID, date, buyer, metal, or status', db.liquidations.length)}
-    ${tableOrEmpty(db.liquidations.slice().sort((a, b) => b.date.localeCompare(a.date)), l => `<tr data-dashboard-search="${dashboardSearchValue(l.id, l.date, fmtDate(l.date), l.buyer, l.metal, l.paymentStatus)}"><td><button class="link-button" onclick="openLiquidationDetails('${l.id}')">${esc(l.id)}</button></td><td>${fmtDate(l.date)}</td><td>${esc(l.buyer)}</td><td class="num">${(l.lines || []).length || l.itemCount || 0}</td>
+    <div class="purchase-history-filter-card">
+      <div class="purchase-history-filter-top"><div><strong>Liquidation date</strong><span>Choose a date range or use a quick option.</span></div><div class="purchase-history-presets"><button class="btn secondary small" onclick="setLiquidationHistoryDatePreset('today')">Today</button><button class="btn secondary small" onclick="setLiquidationHistoryDatePreset('month')">This month</button><button class="btn secondary small" onclick="setLiquidationHistoryDatePreset('all')" ${liquidationHistoryFrom || liquidationHistoryTo ? '' : 'disabled'}>Clear dates</button></div></div>
+      <div class="purchase-history-date-row"><div class="field"><label for="liquidation_history_from">From</label><input id="liquidation_history_from" type="date" value="${esc(liquidationHistoryFrom)}"></div><div class="field"><label for="liquidation_history_to">To</label><input id="liquidation_history_to" type="date" value="${esc(liquidationHistoryTo)}"></div><button class="btn" onclick="applyLiquidationHistoryDates()">Apply dates</button></div>
+      <div class="purchase-history-active-range"><span>Showing:</span><strong>${esc(liquidationHistoryFilterLabel())}</strong></div>
+    </div>
+    ${dashboardReportSearch('Search ID, date, buyer, metal, or status', liquidations.length)}
+    <div class="stat-row" style="margin:16px 0;">
+      <div class="stat"><div class="label">Liquidation batches</div><div class="value">${liquidations.length}</div></div>
+      <div class="stat"><div class="label">Total cost</div><div class="value">${fmtMoney(totalCost)}</div></div>
+      <div class="stat"><div class="label">Total sold</div><div class="value">${fmtMoney(totalSold)}</div></div>
+      <div class="stat"><div class="label">Total profit</div><div class="value" style="color:${totalProfit >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(totalProfit)}</div></div>
+    </div>
+    ${tableOrEmpty(liquidations, l => `<tr data-dashboard-search="${dashboardSearchValue(l.id, l.date, fmtDate(l.date), l.buyer, l.metal, l.paymentStatus)}"><td><button class="link-button" onclick="openLiquidationDetails('${l.id}')">${esc(l.id)}</button></td><td>${fmtDate(l.date)}</td><td>${esc(l.buyer)}</td><td class="num">${(l.lines || []).length || l.itemCount || 0}</td>
       <td class="num">${fmtMoney(l.cost)}</td><td class="num">${fmtMoney(l.proceeds)}</td><td class="num" style="color:${l.margin >= 0 ? 'var(--sage)' : 'var(--rust)'}">${fmtMoney(l.margin)}</td><td>${esc(l.paymentStatus || '—')}</td><td><div class="form-actions"><button class="btn secondary small" onclick="openLiquidationDetails('${l.id}')">Details</button>${adminEditButton('Liquidation', l.id)}</div></td></tr>`, ['ID', 'Date', 'Buyer / refiner', 'Items', 'Total cost', 'Total sold', 'Profit', 'Status', 'Actions'], 'No liquidations recorded yet.')}
   </section>`;
 }
 function renderReports() {
-    const purchases = db.stock.filter(s => !s.sourceRefiningBatchId).slice().sort((a, b) => b.date.localeCompare(a.date));
+    const allPurchases = db.stock.filter(s => !s.sourceRefiningBatchId).slice().sort((a, b) => b.date.localeCompare(a.date));
+    const purchases = allPurchases.filter(purchaseHistoryDateMatch);
     const purchaseWeight = purchases.reduce((sum, item) => sum + Number(item.netWeight || 0), 0);
     const purchasePayout = purchases.reduce((sum, item) => sum + Number(item.payout || 0), 0);
     const readyStock = db.stock.filter(s => (s.status === 'For Selling' || s.status === 'For Refining') && s.currentWeight > 0);
     const purchaseReport = `<div id="dashboard_report_content" class="dashboard-report-content">
   <section class="block recent-purchases purchase-history">
-    <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div>
-    ${dashboardReportSearch('Search seller, date, metal, purity, status, or staff', purchases.length)}
+    <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><div class="form-actions"><button class="btn secondary small" onclick="openCustomerHistoryModal()">View customer history</button><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div></div>
+    <div class="purchase-history-filter-card">
+      <div class="purchase-history-filter-top"><div><strong>Purchase date</strong><span>Choose a date range or use a quick option.</span></div><div class="purchase-history-presets"><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('today')">Today</button><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('month')">This month</button><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('all')" ${purchaseHistoryFrom || purchaseHistoryTo ? '' : 'disabled'}>Clear dates</button></div></div>
+      <div class="purchase-history-date-row"><div class="field"><label for="purchase_history_from">From</label><input id="purchase_history_from" type="date" value="${esc(purchaseHistoryFrom)}"></div><div class="field"><label for="purchase_history_to">To</label><input id="purchase_history_to" type="date" value="${esc(purchaseHistoryTo)}"></div><button class="btn" onclick="applyPurchaseHistoryDates()">Apply dates</button></div>
+      <div class="purchase-history-active-range"><span>Showing:</span><strong>${esc(purchaseHistoryFilterLabel())}</strong></div>
+    </div>
+    ${dashboardReportSearch('Search seller, metal, purity, status, or staff', purchases.length)}
     <div class="stat-row" style="margin:16px 0;">
       <div class="stat"><div class="label">Items purchased</div><div class="value">${purchases.length}</div></div>
       <div class="stat"><div class="label">Total net weight</div><div class="value">${fmtWeight(purchaseWeight)}</div></div>
@@ -2672,15 +3146,6 @@ function renderReports() {
     ${tableOrEmpty(purchases, s => `<tr data-dashboard-search="${dashboardSearchValue(s.date, fmtDate(s.date), s.customerName, s.metal, s.karat, s.itemType, s.status, s.staff, s.batchId)}"><td data-label="Date">${fmtDate(s.date)}</td><td data-label="Seller">${esc(s.customerName)}</td><td data-label="Item"><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)} · ${esc(s.itemType)}</td>
       <td data-label="Net weight" class="num">${fmtWeight(s.netWeight)}</td><td data-label="Payout" class="num">${fmtMoney(s.payout)}</td><td data-label="Status">${statusPill(s.status)}</td>
       <td data-label="Details"><div class="purchase-details"><span class="hint">${esc(s.staff || 'No staff recorded')}</span><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId || s.id}')">Receipt</button>${adminEditButton('Inventory', s.id)}</div></div></td></tr>`, ['Date', 'Seller', 'Item', 'Net weight', 'Payout', 'Status', 'Details'], 'No purchases recorded yet.')}
-  </section>
-  <section class="block">
-    <h2 class="block-title">Customer history (all sellers)</h2>
-    ${tableOrEmpty(db.customers, c => {
-        const hist = db.stock.filter(s => s.customerId === c.id);
-        const totalW = hist.reduce((a, s) => a + Number(s.netWeight), 0);
-        const totalP = hist.reduce((a, s) => a + Number(s.payout), 0);
-        return `<tr><td>${esc(c.name)}</td><td class="num">${hist.length}</td><td class="num">${fmtWeight(totalW)}</td><td class="num">${fmtMoney(totalP)}</td></tr>`;
-    }, ['Customer', 'Transactions', 'Total weight sold', 'Total payout'], 'No customers on file yet.')}
   </section></div>`;
     const liquidationReport = `<div id="dashboard_report_content" class="dashboard-report-content">${renderLiquidationHistory()}</div>`;
     const readinessReport = `<div id="dashboard_report_content" class="dashboard-report-content"><section class="block">
@@ -2693,7 +3158,7 @@ function renderReports() {
     return `<section class="block dashboard-report-menu">
     <div><h2 class="block-title">Dashboard records</h2><p class="form-note">Open only the report you need. Select the active button again to close it.</p></div>
     <div class="dashboard-report-buttons">
-      <button class="btn ${dashboardReportPanel === 'purchases' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'purchases'}" onclick="toggleDashboardReport('purchases')"><span>Purchase history</span><strong>${purchases.length}</strong></button>
+      <button class="btn ${dashboardReportPanel === 'purchases' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'purchases'}" onclick="toggleDashboardReport('purchases')"><span>Purchase history</span><strong>${allPurchases.length}</strong></button>
       <button class="btn ${dashboardReportPanel === 'liquidations' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'liquidations'}" onclick="toggleDashboardReport('liquidations')"><span>Liquidation history</span><strong>${db.liquidations.length}</strong></button>
       <button class="btn ${dashboardReportPanel === 'readiness' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'readiness'}" onclick="toggleDashboardReport('readiness')"><span>Liquidation readiness</span><strong>${readyStock.length}</strong></button>
     </div>
