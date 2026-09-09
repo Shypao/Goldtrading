@@ -371,11 +371,12 @@ function configuredSilver925Rate(silver999Base = configuredBaseRate('Silver')) {
     return roundPeso(Math.max(Number(silver999Base || 0) - 10, 0));
 }
 function calculatedRateFromBase(metal, key, base) {
-    if (!Number.isFinite(base) || base <= 0 || !gradeMeta(metal, key))
+    const customGoldPurity = metal === 'Gold' ? customGoldPurityFromKey(key) : null;
+    if (!Number.isFinite(base) || base <= 0 || (!gradeMeta(metal, key) && customGoldPurity === null))
         return 0;
     let rate = 0;
     if (metal === 'Gold') {
-        rate = base * configuredGradeMultiplier(metal, key);
+        rate = base * (customGoldPurity === null ? configuredGradeMultiplier(metal, key) : customGoldPurity / 100);
     }
     else if (metal === 'Silver') {
         const sterlingRate = configuredSilver925Rate(base);
@@ -400,10 +401,30 @@ function isOverridden(metal, key) {
     const b = bucketFor(metal);
     return b.overrides[key] != null && b.overrides[key] !== '';
 }
-function gradeLabel(metal, key) { const g = gradeMeta(metal, key); return g ? g.label : key; }
+function customGoldPurityFromKey(key) {
+    const match = String(key || '').match(/^(\d+(?:\.\d+)?)%$/);
+    if (!match)
+        return null;
+    const purity = Number(match[1]);
+    return Number.isFinite(purity) && purity > 0 && purity <= 100 ? purity : null;
+}
+function customGoldGradeKey(value) {
+    const purity = Number(value);
+    if (!Number.isFinite(purity) || purity <= 0 || purity > 100)
+        return '';
+    return `${Number(purity.toFixed(2))}%`;
+}
+function gradeLabel(metal, key) {
+    const g = gradeMeta(metal, key);
+    if (g)
+        return g.label;
+    const customPurity = metal === 'Gold' ? customGoldPurityFromKey(key) : null;
+    return customPurity === null ? key : `${Number(customPurity.toFixed(2))}% purity`;
+}
 function distinctKarats(metal) { return GRADES[metal] || []; }
 function activeRate(metal, karat) {
-    if (!GRADES[metal] || !GRADES[metal].includes(karat))
+    const isCustomGold = metal === 'Gold' && customGoldPurityFromKey(karat) !== null;
+    if ((!GRADES[metal] || !GRADES[metal].includes(karat)) && !isCustomGold)
         return null;
     return { rate: metalRate(metal, karat), effectiveDate: db.pricing.effectiveDate };
 }
@@ -838,9 +859,9 @@ function tableOrEmpty(rows, rowFn, headers, emptyMsg) {
     if (!rows.length)
         return `<div class="empty-note">${emptyMsg}</div>`;
     const numericHeaders = new Set([
-        'Net weight', 'Weight', 'Weight available', 'Gross weight', 'Available weight', 'Output weight',
-        'Rate', 'Payout', 'Cost', 'Total cost', 'Total sold', 'Profit', 'Margin', 'Charges',
-        'Items', 'Transactions', 'Total weight sold', 'Total payout', 'Expected yield', 'Actual yield', 'Variance'
+        'Net weight', 'Weight', 'Current weight', 'Weight available', 'Gross weight', 'Available weight', 'Input wt', 'Output weight',
+        'Rate', 'Payout', 'Cost', 'Input cost', 'Output value', 'Total cost', 'Total sold', 'Profit', 'Margin', 'Charges',
+        'Items', 'Transactions', 'Selling history', 'Total weight sold', 'Total payout', 'Expected yield', 'Actual yield', 'Variance'
     ]);
     return `<div class="table-wrap"><table><thead><tr>${headers.map(h => `<th class="${numericHeaders.has(h) ? 'num-head' : ''}">${h}</th>`).join('')}</tr></thead><tbody>${rows.map(rowFn).join('')}</tbody></table></div>`;
 }
@@ -1213,7 +1234,7 @@ function buyingDraftValue(key, fallback = '') {
     return element ? element.value : String(buyingDraftForm[key] ?? fallback);
 }
 function captureBuyingDraftForm() {
-    ['b_seller_name', 'b_date', 'b_pay', 'b_metal', 'b_itemtype', 'b_karat', 'b_gross', 'b_ded', 'b_rate', 'b_payout', 'b_staff', 'b_status', 'b_remarks'].forEach(key => {
+    ['b_seller_name', 'b_date', 'b_pay', 'b_metal', 'b_itemtype', 'b_karat', 'b_custom_purity', 'b_gross', 'b_ded', 'b_rate', 'b_payout', 'b_staff', 'b_status', 'b_remarks'].forEach(key => {
         const element = document.getElementById(key);
         if (element)
             buyingDraftForm[key] = element.value;
@@ -1264,7 +1285,10 @@ function renderBuying() {
     const metal = buyingDraftValue('b_metal', 'Gold') || 'Gold';
     const karats = distinctKarats(metal);
     const requestedKarat = buyingDraftValue('b_karat');
-    const karat = (karats.includes(requestedKarat) ? requestedKarat : karats[0]) || '';
+    const customPurityValue = buyingDraftValue('b_custom_purity');
+    const customSelected = metal === 'Gold' && requestedKarat === '__custom__';
+    const karatSelection = customSelected ? '__custom__' : (karats.includes(requestedKarat) ? requestedKarat : karats[0]) || '';
+    const karat = customSelected ? customGoldGradeKey(customPurityValue) : karatSelection;
     const rateObj = karat ? activeRate(metal, karat) : null;
     const grossValue = buyingDraftValue('b_gross'), deductionValue = buyingDraftValue('b_ded');
     const gross = parseFloat(grossValue) || 0, ded = parseFloat(deductionValue) || 0;
@@ -1307,9 +1331,15 @@ function renderBuying() {
         <select id="b_itemtype" onchange="scheduleBuyingDraftSave()">${['Scrap', 'Jewelry'].map(type => `<option ${buyingDraftValue('b_itemtype', 'Scrap') === type ? 'selected' : ''}>${type}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Karat / purity</label>
-        <select id="b_karat" onchange="resetBuyingRate();scheduleBuyingDraftSave()">
-          ${karats.length ? karats.map(k => `<option value="${k}" ${k === karat ? 'selected' : ''}>${esc(gradeLabel(metal, k))}</option>`).join('') : `<option value="">No rate set</option>`}
+        <select id="b_karat" onchange="handleBuyingGradeChange();scheduleBuyingDraftSave()">
+          ${karats.length ? karats.map(k => `<option value="${k}" ${k === karatSelection ? 'selected' : ''}>${esc(gradeLabel(metal, k))}</option>`).join('') : `<option value="">No rate set</option>`}
+          ${metal === 'Gold' ? `<option value="__custom__" ${customSelected ? 'selected' : ''}>Custom purity (%)</option>` : ''}
         </select>
+        <div id="b_custom_purity_field" class="custom-purity-field ${customSelected ? '' : 'is-hidden'}">
+          <label for="b_custom_purity">Custom gold purity (%)</label>
+          <div class="custom-purity-input"><input id="b_custom_purity" type="number" min="0.01" max="100" step="0.01" value="${esc(customPurityValue)}" placeholder="Example: 89" oninput="resetBuyingRate();scheduleBuyingDraftSave()"><span>%</span></div>
+          <span class="hint">Example: 89% uses 0.89 × today's Gold base rate.</span>
+        </div>
         ${!karats.length ? `<span class="hint">Add a buying rate for ${metal} first.</span>` : ''}
       </div>
       <div class="field"><label>Gross weight (g)</label><input id="b_gross" type="number" min="0" step="0.01" value="${esc(grossValue)}" oninput="recalcBuying();scheduleBuyingDraftSave()"></div>
@@ -1347,17 +1377,30 @@ function renderBuying() {
 }
 function updateBuyingGrades() {
     const metal = val('b_metal'), select = document.getElementById('b_karat'), grades = distinctKarats(metal);
-    select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('');
+    select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('') + (metal === 'Gold' ? '<option value="__custom__">Custom purity (%)</option>' : '');
+    document.getElementById('b_custom_purity_field')?.classList.add('is-hidden');
     resetBuyingRate();
 }
+function handleBuyingGradeChange() {
+    const custom = val('b_metal') === 'Gold' && val('b_karat') === '__custom__';
+    document.getElementById('b_custom_purity_field')?.classList.toggle('is-hidden', !custom);
+    resetBuyingRate();
+    if (custom)
+        document.getElementById('b_custom_purity')?.focus();
+}
+function selectedBuyingGrade() {
+    if (val('b_metal') === 'Gold' && val('b_karat') === '__custom__')
+        return customGoldGradeKey(val('b_custom_purity'));
+    return val('b_karat');
+}
 function resetBuyingRate() {
-    const metal = val('b_metal'), karat = val('b_karat'), active = karat ? activeRate(metal, karat) : null, input = document.getElementById('b_rate');
+    const metal = val('b_metal'), karat = selectedBuyingGrade(), active = karat ? activeRate(metal, karat) : null, input = document.getElementById('b_rate');
     if (input)
         input.value = active ? String(roundPeso(active.rate)) : '';
     recalcBuying();
 }
 function recalcBuying() {
-    const metal = val('b_metal'), karat = val('b_karat'), gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
+    const metal = val('b_metal'), karat = selectedBuyingGrade(), gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
     const net = Math.max(roundWeight(gross - ded), 0), rateObj = karat ? activeRate(metal, karat) : null, systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
     const rateInput = document.getElementById('b_rate'), enteredRate = Number(rateInput?.value), rate = rateInput?.value !== '' && Number.isFinite(enteredRate) ? roundPeso(enteredRate) : 0;
     const rateOverridden = Boolean(rateObj && Number.isFinite(rate) && rate !== systemRate);
@@ -1365,7 +1408,7 @@ function recalcBuying() {
     if (netEl)
         netEl.textContent = fmtWeight(net);
     if (rateLabel)
-        rateLabel.textContent = rateOverridden ? 'Buying rate (overridden)' : 'Buying rate (Daily Rate Setup)';
+        rateLabel.textContent = rateOverridden ? 'Buying rate (overridden)' : karat && customGoldPurityFromKey(karat) !== null ? `Buying rate (${gradeLabel(metal, karat)} × Gold base)` : 'Buying rate (Daily Rate Setup)';
     ratePanel?.classList.toggle('is-overridden', rateOverridden);
     rateReset?.classList.toggle('is-hidden', !rateOverridden);
     const suggested = roundPeso(net * rate);
@@ -1375,7 +1418,11 @@ function recalcBuying() {
         payoutEl.placeholder = String(suggested);
 }
 function purchaseItemFromForm() {
-    const metal = val('b_metal'), karat = val('b_karat');
+    const metal = val('b_metal'), karat = selectedBuyingGrade();
+    if (val('b_karat') === '__custom__' && !karat) {
+        toast('Enter a custom Gold purity between 0.01% and 100%');
+        return null;
+    }
     if (!karat) {
         toast('Add a buying rate for this metal first');
         return null;
@@ -1950,7 +1997,7 @@ function openInventoryMoveReview(selected, context) {
       <div><span>Total weight</span><strong>${fmtWeight(totalWeight)}</strong></div>
       <div><span>Inventory cost</span><strong>${fmtMoney(totalCost)}</strong></div>
     </div>
-    <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th>Status</th><th>Weight moving</th><th>Cost</th></tr></thead><tbody>
+    <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th>Status</th><th class="num-head">Weight moving</th><th class="num-head">Cost</th></tr></thead><tbody>
       ${selected.map(item => `<tr><td><strong>${esc(item.metal)} ${esc(item.karat)}</strong><br><span class="form-note">${esc(item.itemType)}${item.remarks ? ' · ' + esc(item.remarks) : ''}</span></td><td>${esc(item.customerName || '—')}</td><td>${statusPill(item.status)}</td><td class="num"><strong>${fmtWeight(item.currentWeight)}</strong><br><span class="form-note">full available weight</span></td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}
     </tbody></table></div>
     <div class="move-confirmation-note"><strong>What happens next?</strong><span>These records will appear in Selective Liquidation as one batch. Enter one total PHP sold amount, then confirm the final liquidation.</span></div>
@@ -2270,7 +2317,7 @@ function openLiquidationDetails(id) {
       <div><span>Total weight</span><strong>${fmtWeight(record.releasedWeight)}</strong></div><div><span>Total cost</span><strong>${fmtMoney(record.cost)}</strong></div>
       <div><span>Total sold</span><strong>${fmtMoney(record.proceeds)}</strong></div><div><span>Profit</span><strong>${fmtMoney(profit)} · ${profitMargin.toFixed(2)}%</strong></div>
     </div>
-    ${lines.length ? `<div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th>Weight</th><th>Cost</th><th>Total sold</th></tr></thead><tbody>${lines.map(line => {
+    ${lines.length ? `<div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th class="num-head">Weight</th><th class="num-head">Cost</th><th class="num-head">Total sold</th></tr></thead><tbody>${lines.map(line => {
         const item = db.stock.find(stock => stock.id === line.itemId) || {};
         const amount = Number(line.sellingAmount ?? line.proceeds ?? (Number(line.weight) * Number(line.sellingRate || record.sellingRate))) || 0;
         return `<tr><td><strong>${esc(item.metal || record.metal)} ${esc(line.assay || item.karat || '')}</strong><br><span class="form-note">${esc(item.itemType || 'Inventory item')} · ${esc(line.itemId)}</span></td><td>${esc(item.customerName || '—')}</td><td class="num">${fmtWeight(line.weight)}</td><td class="num">${fmtMoney(line.costPortion)}</td><td class="num">${fmtMoney(amount)}</td></tr>`;
@@ -2602,7 +2649,7 @@ function submitRefining() {
     <div class="summary-modal-head"><div><div class="eyebrow">Confirm combined refined item</div><h2 id="refining_confirmation_title">${items.length} ${items.length === 1 ? 'item' : 'items'} will become 1 item</h2></div><button class="modal-close" onclick="closeRefiningConfirmation()" aria-label="Close">×</button></div>
     <p class="move-confirmation-intro">The original records will be marked Refined and replaced by one available ${esc(refMetal)} ${esc(outputPurity)} inventory item.</p>
     <div class="move-confirmation-summary"><div><span>Input items</span><strong>${items.length}</strong></div><div><span>Total input weight</span><strong>${fmtWeight(inputWeight)}</strong></div><div><span>Combined cost</span><strong>${fmtMoney(inputCost)}</strong></div><div><span>New inventory item</span><strong>${esc(outputPurity)} · ${fmtWeight(outputWeight)}</strong></div></div>
-    <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Input item</th><th>Customer</th><th>Weight</th><th>Cost</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${esc(item.metal)} ${esc(item.karat)}</strong><br><span class="form-note">${esc(item.itemType)} · ${fmtDate(item.date)}</span></td><td>${esc(item.customerName || '—')}</td><td class="num">${fmtWeight(item.currentWeight)}</td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}</tbody></table></div>
+    <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Input item</th><th>Customer</th><th class="num-head">Weight</th><th class="num-head">Cost</th></tr></thead><tbody>${items.map(item => `<tr><td><strong>${esc(item.metal)} ${esc(item.karat)}</strong><br><span class="form-note">${esc(item.itemType)} · ${fmtDate(item.date)}</span></td><td>${esc(item.customerName || '—')}</td><td class="num">${fmtWeight(item.currentWeight)}</td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}</tbody></table></div>
     <div class="form-actions"><button class="btn secondary" onclick="closeRefiningConfirmation()">Cancel</button><button class="btn" onclick="confirmRefiningBatch()">Confirm &amp; create one item</button></div>
   </div>`;
     modal.addEventListener('click', event => { if (event.target === modal)

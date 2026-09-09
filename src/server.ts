@@ -15,9 +15,11 @@ const publicDirectory = path.join(projectDirectory, 'public');
 const isVercel = Boolean(process.env.VERCEL);
 const dataDirectory = isVercel ? path.join('/tmp', 'zpp-gold-trading') : path.join(projectDirectory, 'data');
 const databaseFile = path.join(dataDirectory, 'zpp-gold-trading.db');
+const upstreamApiUrl = process.env.ZPP_UPSTREAM_URL?.trim().replace(/\/$/, '') ?? '';
 const tursoDatabaseUrl = process.env.TURSO_DATABASE_URL?.trim() ?? '';
 const tursoAuthToken = process.env.TURSO_AUTH_TOKEN?.trim() ?? '';
-const usesTurso = Boolean(tursoDatabaseUrl);
+const usesUpstream = Boolean(upstreamApiUrl);
+const usesTurso = !usesUpstream && Boolean(tursoDatabaseUrl);
 const host = '127.0.0.1';
 const port = Number(process.env.ZPP_PORT ?? 4177);
 const gramsPerTroyOunce = 31.1034768;
@@ -39,8 +41,8 @@ interface ExchangeApiResponse { rates?: { PHP?: number } }
 type UserRole = 'admin' | 'staff';
 interface AuthUser { id: string; username: string; displayName: string; role: UserRole }
 
-if (!usesTurso) fs.mkdirSync(dataDirectory, { recursive: true });
-const localDatabase = usesTurso ? null : new DatabaseSync(databaseFile);
+if (!usesTurso && !usesUpstream) fs.mkdirSync(dataDirectory, { recursive: true });
+const localDatabase = usesTurso || usesUpstream ? null : new DatabaseSync(databaseFile);
 const tursoClient: Client | null = usesTurso ? createClient({ url: tursoDatabaseUrl, authToken: tursoAuthToken }) : null;
 const schemaStatements = [
   'CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
@@ -141,6 +143,7 @@ async function ensureDefaultUsers(): Promise<void> {
 }
 
 async function initializeDatabase(): Promise<void> {
+  if (usesUpstream) return;
   if (tursoDatabaseUrl && !tursoAuthToken) throw new Error('TURSO_AUTH_TOKEN is required when TURSO_DATABASE_URL is configured');
   if (localDatabase) {
     localDatabase.exec('PRAGMA journal_mode=WAL');
@@ -449,9 +452,47 @@ function serveFile(response: ServerResponse, filename: string, contentType: stri
   fs.createReadStream(filepath).pipe(response);
 }
 
+function readRawBody(request: IncomingMessage): Promise<Buffer> {
+  return new Promise((resolve, reject) => {
+    const chunks: Buffer[]=[];
+    let size=0;
+    request.on('data',(chunk: Buffer)=>{
+      size+=chunk.length;
+      if(size>10_000_000){ reject(new Error('Request is too large')); request.destroy(); return; }
+      chunks.push(chunk);
+    });
+    request.on('end',()=>resolve(Buffer.concat(chunks)));
+    request.on('error',reject);
+  });
+}
+
+async function proxyApiRequest(request: IncomingMessage,response: ServerResponse,url: URL): Promise<void> {
+  const headers=new Headers();
+  for(const [name,value] of Object.entries(request.headers)){
+    if(!value||['host','connection','content-length'].includes(name.toLowerCase())) continue;
+    headers.set(name,Array.isArray(value)?value.join(', '):value);
+  }
+  const method=request.method||'GET';
+  const body=method==='GET'||method==='HEAD'?undefined:await readRawBody(request);
+  const upstreamResponse=await fetch(`${upstreamApiUrl}${url.pathname}${url.search}`,{
+    method,headers,body,redirect:'manual'
+  });
+  const responseHeaders:Record<string,string|string[]>={};
+  upstreamResponse.headers.forEach((value,name)=>{
+    if(!['connection','content-encoding','content-length','transfer-encoding','set-cookie'].includes(name.toLowerCase())) responseHeaders[name]=value;
+  });
+  const cookies=typeof upstreamResponse.headers.getSetCookie==='function'
+    ? upstreamResponse.headers.getSetCookie()
+    : (upstreamResponse.headers.get('set-cookie')?[upstreamResponse.headers.get('set-cookie')!]:[]);
+  if(cookies.length) responseHeaders['set-cookie']=cookies.map(cookie=>cookie.replace(/;\s*Secure/gi,'').replace(/;\s*Domain=[^;]+/gi,''));
+  response.writeHead(upstreamResponse.status,responseHeaders);
+  response.end(Buffer.from(await upstreamResponse.arrayBuffer()));
+}
+
 export async function requestHandler(request: IncomingMessage, response: ServerResponse): Promise<void> {
   const url = new URL(request.url ?? '/', `http://${request.headers.host ?? `${host}:${port}`}`);
   try {
+    if(usesUpstream&&url.pathname.startsWith('/api/')) return await proxyApiRequest(request,response,url);
     await databaseReady;
     if (request.method === 'GET' && url.pathname === '/api/health') {
       return sendJson(response, 200, { ok: true, database: usesTurso ? 'turso' : databaseFile, persistent: usesTurso || !isVercel });
@@ -633,6 +674,6 @@ if (isDirectRun) {
   const server = http.createServer(requestHandler);
   server.listen(port, host, () => {
     console.log(`ZPP Gold Trading: http://${host}:${port}`);
-    console.log(usesTurso ? 'Database: Turso' : `SQLite database: ${databaseFile}`);
+    console.log(usesUpstream ? `Database: live Vercel/Turso via ${upstreamApiUrl}` : usesTurso ? 'Database: Turso' : `SQLite database: ${databaseFile}`);
   });
 }
