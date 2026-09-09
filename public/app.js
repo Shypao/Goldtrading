@@ -1567,7 +1567,8 @@ function purchaseReceiptMarkup(items) {
     <div class="receipt-meta"><span>Date:</span><strong>${esc(fmtDate(first.date))}</strong><span>Client:</span><strong>${esc(first.customerName || 'Walk-in')}</strong></div><div class="receipt-rule"></div>
     ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptMoneyNumber(total)}</span></div><div class="receipt-rule"></div>
     <div class="receipt-meta"><span>Paid:</span><strong>${esc(first.paymentMethod || '—')}</strong>${first.staff ? `<span>Staff:</span><strong>${esc(first.staff)}</strong>` : ''}</div>
-    <div class="receipt-reference">Ref: ${esc(first.batchId || first.id)}</div><div class="receipt-thanks">Thank you.</div>`;
+    <div class="receipt-reference">Ref: ${esc(first.batchId || first.id)}</div><div class="receipt-thanks">Thank you.</div>
+    <footer class="receipt-quote">“Because gold is honest money it is disliked by dishonest men.”</footer>`;
 }
 function cleanupThermalPrintState() {
     document.body.classList.remove('printing-thermal-receipt');
