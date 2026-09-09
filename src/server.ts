@@ -32,6 +32,7 @@ interface LedgerState {
   retailSales: LedgerRecord[];
   pricingHistory: LedgerRecord[];
   pricing: PricingSettings | null;
+  _revision?: number;
 }
 interface GoldApiResponse { price: number }
 interface ExchangeApiResponse { rates?: { PHP?: number } }
@@ -146,6 +147,7 @@ async function initializeDatabase(): Promise<void> {
     localDatabase.exec('PRAGMA foreign_keys=ON');
   }
   for (const statement of schemaStatements) await dbRun(statement);
+  await dbRun("INSERT INTO settings (key, value) VALUES ('ledger_revision', '0') ON CONFLICT(key) DO NOTHING");
   await purgeStoredInventoryLocations();
   await ensureDefaultUsers();
 }
@@ -293,7 +295,8 @@ async function saveStaffAdditions(candidate: LedgerState): Promise<void> {
   await dbBatch([
     ...newCustomers.map(record => ({ sql: 'INSERT INTO customers (id, data) VALUES (?, ?)', args: [record.id, JSON.stringify(record)] })),
     ...newStock.map(record => ({ sql: 'INSERT INTO inventory (id, data) VALUES (?, ?)', args: [record.id, JSON.stringify(record)] })),
-    { sql: "INSERT INTO settings (key, value) VALUES ('pricing', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", args: [JSON.stringify(nextPricing)] }
+    { sql: "INSERT INTO settings (key, value) VALUES ('pricing', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", args: [JSON.stringify(nextPricing)] },
+    { sql: "INSERT INTO settings (key, value) VALUES ('ledger_revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", args: [String(Number(current._revision||0)+1)] }
   ]);
 }
 
@@ -309,8 +312,17 @@ async function loadState(): Promise<LedgerState> {
   }
   const pricingRow = await dbGet<{ value: string }>("SELECT value FROM settings WHERE key = 'pricing'");
   state.pricing = pricingRow ? JSON.parse(pricingRow.value) as PricingSettings | null : null;
+  const revisionRow = await dbGet<{ value: string }>("SELECT value FROM settings WHERE key = 'ledger_revision'");
+  state._revision = Number(revisionRow?.value ?? 0);
   removeInventoryLocationFields(state.stock);
   return state;
+}
+
+class LedgerRevisionConflict extends Error {}
+
+async function currentLedgerRevision(): Promise<number> {
+  const row = await dbGet<{ value: string }>("SELECT value FROM settings WHERE key = 'ledger_revision'");
+  return Number(row?.value ?? 0);
 }
 
 function validateLedgerIntegrity(state: LedgerState): void {
@@ -342,6 +354,11 @@ function validateLedgerIntegrity(state: LedgerState): void {
 async function saveState(state: LedgerState): Promise<void> {
   removeInventoryLocationFields(state.stock);
   validateLedgerIntegrity(state);
+  const currentRevision=await currentLedgerRevision();
+  if (!Number.isInteger(state._revision) || state._revision !== currentRevision) {
+    throw new LedgerRevisionConflict('The ledger changed in another session. Refresh and try again.');
+  }
+  const nextRevision=currentRevision+1;
   const statements: SqlStatement[] = [];
   for (const [key, table] of Object.entries(tableMap) as Array<[keyof typeof tableMap, string]>) {
     statements.push({ sql: `DELETE FROM ${table}` });
@@ -354,7 +371,12 @@ async function saveState(state: LedgerState): Promise<void> {
     sql: "INSERT INTO settings (key, value) VALUES ('pricing', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
     args: [JSON.stringify(state.pricing)]
   });
+  statements.push({
+    sql: "INSERT INTO settings (key, value) VALUES ('ledger_revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+    args: [String(nextRevision)]
+  });
   await dbBatch(statements);
+  state._revision=nextRevision;
 }
 
 async function fetchJson<T>(url: string): Promise<T> {
@@ -502,12 +524,18 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     if (request.method === 'PUT' && url.pathname === '/api/state') {
       const body = await readJsonBody(request);
       if (!isLedgerState(body)) return sendJson(response, 400, { error: 'Invalid ledger state' });
-      if (user!.role === 'admin') await saveState(body);
+      if (user!.role === 'admin') {
+        try { await saveState(body); }
+        catch (error) {
+          if (error instanceof LedgerRevisionConflict) return sendJson(response, 409, { error: error.message });
+          throw error;
+        }
+      }
       else {
         try { await saveStaffAdditions(body); }
         catch (error) { return sendJson(response, 403, { error: error instanceof Error ? error.message : 'Staff action is not permitted' }); }
       }
-      return sendJson(response, 200, { ok: true });
+      return sendJson(response, 200, { ok: true, revision: await currentLedgerRevision() });
     }
     if (request.method === 'GET' && url.pathname === '/api/market') {
       const proposal = await createMarketProposal();

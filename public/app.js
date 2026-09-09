@@ -116,8 +116,13 @@ async function saveDB() {
                 showLogin();
                 throw new Error('Session expired');
             }
+            const result = await response.json().catch(() => null);
+            if (response.status === 409)
+                throw new Error(result?.error || 'The database changed in another session. Refresh and try again.');
             if (!response.ok)
-                throw new Error('Database server returned HTTP ' + response.status);
+                throw new Error(result?.error || 'Database server returned HTTP ' + response.status);
+            if (Number.isInteger(result?.revision))
+                db._revision = result.revision;
             storageLocationCleanupNeeded = false;
             return true;
         }
@@ -180,7 +185,9 @@ async function loadDB() {
                     await saveDB();
             }
             else {
+                const revision = serverState._revision;
                 seedEmptyLedger();
+                db._revision = revision;
                 ensureShape();
                 await saveDB();
             }
@@ -491,7 +498,7 @@ async function refreshPhilippineRates(silent) {
         db.pricing.auto.marketPhp = proposal.marketPhp || {};
         db.pricing.auto.goldSource = proposal.goldSource || '';
         activateMarketRates(proposal.draft, silent ? 'Automatic 5-second internet update' : 'Manual internet refresh', !silent);
-        if (isAdmin())
+        if (isAdmin() && !silent)
             await saveDB();
         if (!silent)
             toast('Live internet prices refreshed and activated');

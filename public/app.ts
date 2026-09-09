@@ -96,7 +96,10 @@ async function saveDB(){
     if(location.protocol==='http:'||location.protocol==='https:'){
       const response=await fetch('/api/state',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(db)});
       if(response.status===401){ showLogin(); throw new Error('Session expired'); }
-      if(!response.ok) throw new Error('Database server returned HTTP '+response.status);
+      const result=await response.json().catch(()=>null);
+      if(response.status===409) throw new Error(result?.error||'The database changed in another session. Refresh and try again.');
+      if(!response.ok) throw new Error(result?.error||'Database server returned HTTP '+response.status);
+      if(Number.isInteger(result?.revision)) db._revision=result.revision;
       storageLocationCleanupNeeded=false;
       return true;
     }
@@ -141,7 +144,7 @@ async function loadDB(){
       if(!response.ok) throw new Error('Database server returned HTTP '+response.status);
       const serverState=await response.json();
       if(serverState.pricing){ db=serverState; ensureShape(); if(storageLocationCleanupNeeded) await saveDB(); }
-      else { seedEmptyLedger(); ensureShape(); await saveDB(); }
+      else { const revision=serverState._revision; seedEmptyLedger(); db._revision=revision; ensureShape(); await saveDB(); }
       await loadBuyingDraft();
       boot();
       if(isAdmin()&&db.pricing.auto.enabled&&db.pricing.auto.lastAppliedDate!==todayStr()) refreshPhilippineRates(true);
@@ -380,7 +383,7 @@ async function refreshPhilippineRates(silent){
     db.pricing.auto.marketPhp=proposal.marketPhp||{};
     db.pricing.auto.goldSource=proposal.goldSource||'';
     activateMarketRates(proposal.draft, silent?'Automatic 5-second internet update':'Manual internet refresh', !silent);
-    if(isAdmin()) await saveDB();
+    if(isAdmin()&&!silent) await saveDB();
     if(!silent) toast('Live internet prices refreshed and activated');
   }catch(e){
     console.error('Automatic pricing failed',e);
