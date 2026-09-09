@@ -918,37 +918,11 @@ function openPurchaseNextStep(item){
   document.body.appendChild(modal);
   modal.querySelector('.purchase-next-actions .btn:last-child')?.focus();
 }
-let pendingPurchaseRemovalId=null;
 function requestPurchaseItemRemoval(id){
   const item=purchaseBatch.find(line=>line.id===id); if(!item) return;
-  pendingPurchaseRemovalId=id; closeAdminVerification();
-  const modal=document.createElement('div'); modal.id='admin_verification_modal'; modal.className='modal-backdrop';
-  modal.innerHTML=`<form class="summary-modal" onsubmit="verifyPurchaseItemRemoval(event)" role="dialog" aria-modal="true" aria-labelledby="admin_verification_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Protected action</div><h2 id="admin_verification_title">Admin verification</h2></div><button type="button" class="modal-close" onclick="closeAdminVerification()" aria-label="Close">×</button></div>
-    <p class="form-note" style="margin:16px 0;">An administrator must approve removing <strong>${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))}</strong> (${fmtWeight(item.netWeight)}) from the current payout.</p>
-    <div class="form-grid">
-      <div class="field"><label>Admin username</label><input id="verify_admin_username" autocomplete="username" value="${isAdmin()?esc(currentUser.username):''}" required></div>
-      <div class="field"><label>Admin password</label><input id="verify_admin_password" type="password" autocomplete="current-password" required></div>
-    </div>
-    <div class="form-note" id="admin_verification_error" style="color:var(--rust);min-height:18px;margin-top:10px;"></div>
-    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeAdminVerification()">Keep item</button><button type="submit" class="btn">Verify &amp; remove</button></div>
-  </form>`;
-  modal.addEventListener('click',event=>{if(event.target===modal)closeAdminVerification();});
-  document.body.appendChild(modal); document.getElementById('verify_admin_password')?.focus();
-}
-function closeAdminVerification(){ document.getElementById('admin_verification_modal')?.remove(); pendingPurchaseRemovalId=null; }
-async function verifyPurchaseItemRemoval(event){
-  event.preventDefault();
-  const itemId=pendingPurchaseRemovalId,errorEl=document.getElementById('admin_verification_error');
-  if(!itemId) return;
-  if(errorEl) errorEl.textContent='Verifying administrator…';
-  try{
-    const response=await fetch('/api/admin/verify',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({username:val('verify_admin_username'),password:val('verify_admin_password')})});
-    const result=await response.json();
-    if(!response.ok) throw new Error(result.error||'Administrator verification failed');
-    purchaseBatch=purchaseBatch.filter(item=>item.id!==itemId);
-    closeAdminVerification(); renderPurchaseBatchPanel(); toast(`Item removed with approval from ${result.admin.displayName}`);
-  }catch(error){ if(errorEl) errorEl.textContent=error.message||'Administrator verification failed'; }
+  purchaseBatch=purchaseBatch.filter(line=>line.id!==id);
+  renderPurchaseBatchPanel();
+  toast(`${item.metal} ${gradeLabel(item.metal,item.karat)} removed from the current payout`);
 }
 function renderPurchaseBatchPanel(){
   const panel=document.getElementById('purchase_batch_panel');
