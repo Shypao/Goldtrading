@@ -1162,6 +1162,7 @@ function printPurchaseReceipt(batchId){
 
 /* ============================= INVENTORY ============================= */
 let invFilter = {metal:'All', karat:'All', type:'All', status:'All'};
+let inventoryBulkStatus='For Selling';
 let inventoryWeekOffset=0;
 let inventorySelectedDate=todayStr();
 const inventoryMoveSelection=new Set();
@@ -1171,6 +1172,7 @@ let liquidationTotalSoldDraft='';
 let pendingInventoryMove=null;
 let combineLiquidationMetal='';
 const combineLiquidationDates=new Set();
+const LOW_KARAT_GOLD_KEYS=new Set(['17K','16K','14K','12K','10K','9K','8K','5K','73%']);
 function inventoryWeekRange(offset=inventoryWeekOffset){
   const today=new Date(todayStr()+'T00:00:00');
   const mondayIndex=(today.getDay()+6)%7;
@@ -1246,6 +1248,7 @@ function selectInventoryMetalCategory(metal){
 function selectableInventory(item){ return Number(item.currentWeight)>0&&(item.status==='For Selling'||item.status==='For Refining'); }
 function movableInventory(item){ return selectableInventory(item)&&!liquidationSelection.has(item.id); }
 function categorizableInventory(item){ return Number(item.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(item.status)&&!liquidationSelection.has(item.id); }
+function lowKaratGoldInventory(item){ return item.metal==='Gold'&&LOW_KARAT_GOLD_KEYS.has(item.karat)&&activeInventoryRecord(item); }
 function selectedInventoryForCategory(){ return db.stock.filter(item=>inventoryMoveSelection.has(item.id)&&categorizableInventory(item)); }
 function selectedInventoryForMove(){ return db.stock.filter(item=>inventoryMoveSelection.has(item.id)&&movableInventory(item)); }
 function selectedInventoryForLiquidation(){ return db.stock.filter(item=>liquidationSelection.has(item.id)&&selectableInventory(item)); }
@@ -1290,6 +1293,18 @@ function visibleInventoryRecords(){
 function selectAllVisibleInventory(){
   visibleInventoryRecords().filter(categorizableInventory).forEach(item=>inventoryMoveSelection.add(item.id));
   render();
+}
+function selectAllLowKaratGold(){
+  if(!adminEditGuard()) return;
+  const records=db.stock.filter(item=>lowKaratGoldInventory(item)&&categorizableInventory(item));
+  if(!records.length){ toast('There are no available low-karat Gold items to select'); return; }
+  inventoryMoveSelection.clear();
+  records.forEach(item=>inventoryMoveSelection.add(item.id));
+  inventoryBulkStatus='For Refining';
+  invFilter={...invFilter,metal:'Gold',karat:'All',status:'All'};
+  render();
+  requestAnimationFrame(()=>document.getElementById('inventory_stock_list')?.scrollIntoView({behavior:'smooth',block:'start'}));
+  toast(`${records.length} low-karat Gold ${records.length===1?'item':'items'} selected across all dates`);
 }
 function clearInventorySelection(){ inventoryMoveSelection.clear(); render(); }
 async function categorizeCheckedInventory(){
@@ -1476,6 +1491,7 @@ function renderInventory(){
   const selectedDay=dailyRows.find(day=>day.date===inventorySelectedDate)||dailyRows[0];
   const percentagePool=inventoryPercentagePool();
   const selectedMoveCount=selectedInventoryForCategory().length;
+  const selectedRecords=selectedInventoryForCategory();
   const selectedMovableCount=selectedInventoryForMove().length;
   const canMoveSelected=selectedMoveCount>0&&selectedMovableCount===selectedMoveCount;
   const hasMovableStock=db.stock.some(movableInventory);
@@ -1487,7 +1503,8 @@ function renderInventory(){
     (invFilter.status==='All'||s.status===invFilter.status)
   ).sort((a,b)=>b.date.localeCompare(a.date));
 
-  const breakdownSource=selectedDay.stock.filter(item=>invFilter.metal==='All'||item.metal===invFilter.metal);
+  const currentStock=db.stock.filter(activeInventoryRecord);
+  const breakdownSource=currentStock.filter(item=>invFilter.metal==='All'||item.metal===invFilter.metal);
   const breakdownMap=new Map();
   breakdownSource.forEach(item=>{
     const key=`${item.metal}|${item.karat}`,entry=breakdownMap.get(key)||{metal:item.metal,karat:item.karat,count:0,weight:0,cost:0};
@@ -1496,14 +1513,35 @@ function renderInventory(){
   const breakdown=Array.from(breakdownMap.values()).sort((a,b)=>a.metal.localeCompare(b.metal)||(GRADE_META[a.metal]?.findIndex(grade=>grade.key===a.karat)??99)-(GRADE_META[b.metal]?.findIndex(grade=>grade.key===b.karat)??99));
   const breakdownWeight=breakdownSource.reduce((sum,item)=>sum+Number(item.currentWeight),0);
   const breakdownCost=breakdownSource.reduce((sum,item)=>sum+Number(item.cost),0);
+  const lowKaratGold=currentStock.filter(lowKaratGoldInventory);
+  const lowKaratEligible=lowKaratGold.filter(categorizableInventory);
+  const lowKaratWeight=lowKaratGold.reduce((sum,item)=>sum+Number(item.currentWeight),0);
+  const selectedGradeCounts=new Map();
+  selectedRecords.forEach(item=>{const key=`${item.metal} ${gradeLabel(item.metal,item.karat)}`;selectedGradeCounts.set(key,(selectedGradeCounts.get(key)||0)+1);});
 
   return `
+  <section class="block">
+    <div class="page-head inventory-overview-head"><div><p class="eyebrow">Across all purchase dates</p><h2 class="block-title">Current Stock Overview</h2><p class="form-note">See the complete available inventory before opening the daily records.</p></div></div>
+    <div class="inventory-metal-tabs"><strong>View inventory</strong>${['All','Gold','Silver','Platinum'].map(metal=>`<button class="${invFilter.metal===metal?'active':''}" onclick="selectInventoryMetalCategory('${metal}')">${metal}</button>`).join('')}</div>
+    <div class="stat-row inventory-overview-stats">
+      <div class="stat"><div class="label">Current items</div><div class="value">${breakdownSource.length}</div><div class="sub">active records across all dates</div></div>
+      <div class="stat"><div class="label">Total weight</div><div class="value">${fmtWeight(breakdownWeight)}</div><div class="sub">remaining current stock</div></div>
+      <div class="stat"><div class="label">Total inventory cost</div><div class="value">${fmtMoney(breakdownCost)}</div><div class="sub">combined carrying cost</div></div>
+      <div class="stat"><div class="label">Karat / purity groups</div><div class="value">${breakdown.length}</div><div class="sub">shown in the breakdown below</div></div>
+    </div>
+    ${(invFilter.metal==='All'||invFilter.metal==='Gold')&&isAdmin()?`<div class="low-karat-card"><div><span class="low-karat-label">Quick refining selection</span><strong>Low-karat Gold</strong><small>Below 18K · ${lowKaratGold.length} item${lowKaratGold.length===1?'':'s'} · ${fmtWeight(lowKaratWeight)} across all dates</small></div><button class="btn" onclick="selectAllLowKaratGold()" ${lowKaratEligible.length?'':'disabled'}>Select all for refining (${lowKaratEligible.length})</button></div>`:''}
+    <h2 class="block-title inventory-breakdown-heading">${invFilter.metal==='All'?'All current stock by grade':`${invFilter.metal} inventory by ${invFilter.metal==='Gold'?'karat':'purity'}`}</h2>
+    <p class="form-note inventory-breakdown-caption">Totals below combine every active purchase date.</p>
+    ${breakdown.length?`<div class="table-wrap inventory-breakdown"><table><thead><tr><th>Metal</th><th>Karat / purity</th><th class="num-head">Items</th><th class="num-head">Total weight</th><th class="num-head">Total cost</th></tr></thead><tbody>${breakdown.map(entry=>`<tr><td><span class="metal-tag ${entry.metal.toLowerCase()}">${entry.metal}</span></td><td>${esc(gradeLabel(entry.metal,entry.karat))}</td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.weight)}</td><td class="num">${fmtMoney(entry.cost)}</td></tr>`).join('')}</tbody></table></div><div class="inventory-breakdown-total"><span>${invFilter.metal==='All'?'All current stock':`${invFilter.metal} total`} · ${breakdownSource.length} item${breakdownSource.length===1?'':'s'} · ${fmtWeight(breakdownWeight)}</span><strong>${fmtMoney(breakdownCost)}</strong></div>`
+      : `<div class="empty-note">No active ${invFilter.metal==='All'?'inventory':esc(invFilter.metal)+' inventory'} remains.</div>`}
+    <p class="form-note inventory-history-note">Liquidated, refined, and sold items remain in reports and transaction history but are hidden here.</p>
+  </section>
+
   <section class="block">
     <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Monday through Sunday</p><h2 class="block-title" style="margin:0;">Inventory by purchase date</h2><p class="form-note">Choose a dated day to see and select its stock.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
     <div class="inventory-days">
       ${dailyRows.map(day=>`<button class="inventory-day ${day.date===inventorySelectedDate?'active':''}" onclick="selectInventoryDate('${day.date}')"><strong>${new Date(day.date+'T00:00:00').toLocaleDateString('en-PH',{weekday:'long'})}</strong><span>${fmtDate(day.date)}</span><small>${day.stock.length} record${day.stock.length===1?'':'s'}<br>${fmtWeight(day.weight)} available</small></button>`).join('')}
     </div>
-    <div class="inventory-metal-tabs"><strong>Current stock</strong>${['All','Gold','Silver','Platinum'].map(metal=>`<button class="${invFilter.metal===metal?'active':''}" onclick="selectInventoryMetalCategory('${metal}')">${metal}</button>`).join('')}</div>
     <h2 class="block-title">${new Date(selectedDay.date+'T00:00:00').toLocaleDateString('en-PH',{weekday:'long'})}, ${fmtDate(selectedDay.date)}</h2>
     <div class="stat-row">
       <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines on this date</div></div>
@@ -1511,15 +1549,11 @@ function renderInventory(){
       <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from this date's purchases</div></div>
       <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost for this purchase date</div></div>
     </div>
-    <h2 class="block-title" style="margin-top:20px;">${invFilter.metal==='All'?'Current stock breakdown':`${invFilter.metal} inventory by ${invFilter.metal==='Gold'?'karat':'purity'}`}</h2>
-    ${breakdown.length?`<div class="table-wrap inventory-breakdown"><table><thead><tr><th>Metal</th><th>Karat / purity</th><th class="num-head">Items</th><th class="num-head">Total weight</th><th class="num-head">Total cost</th></tr></thead><tbody>${breakdown.map(entry=>`<tr><td><span class="metal-tag ${entry.metal.toLowerCase()}">${entry.metal}</span></td><td>${esc(gradeLabel(entry.metal,entry.karat))}</td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.weight)}</td><td class="num">${fmtMoney(entry.cost)}</td></tr>`).join('')}</tbody></table></div><div class="inventory-breakdown-total"><span>${invFilter.metal==='All'?'All current stock':`${invFilter.metal} total`} · ${fmtWeight(breakdownWeight)}</span><strong>${fmtMoney(breakdownCost)}</strong></div>`
-      : `<div class="empty-note">No ${invFilter.metal==='All'?'active':esc(invFilter.metal)} inventory remains on ${fmtDate(selectedDay.date)}.</div>`}
-    <p class="form-note inventory-history-note">Liquidated, refined, and sold items are kept in reports and transaction history, but are hidden from Current Stock.</p>
   </section>
 
   <section class="block" id="inventory_stock_list">
     <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${activeFilterLabels.length?`Showing: ${activeFilterLabels.map(esc).join(' · ')}`:'Showing all records'} for ${fmtDate(selectedDay.date)}.</p></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div>
-    ${isAdmin()?`<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length?'':' · choose another date or change filters'}</span></div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount?'':'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory"><option>For Selling</option><option>For Refining</option><option>On Hold</option></select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount?'':'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected?'':'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock?'':'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount?'':'disabled'}>Refine selected</button></div></div>`:''}
+    ${isAdmin()?`<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length?'':' · choose another date or change filters'}</span>${selectedGradeCounts.size?`<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade,count])=>`<span>${esc(grade)} · ${count}</span>`).join('')}</div>`:''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount?'':'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['For Selling','For Refining','On Hold'].map(status=>`<option ${inventoryBulkStatus===status?'selected':''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount?'':'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected?'':'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock?'':'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount?'':'disabled'}>Refine selected</button></div></div>`:''}
     ${tableOrEmpty(rows, s=>`<tr>${isAdmin()?`<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id)?'Already moved':'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id)?'checked':''} ${categorizableInventory(s)?'':'disabled'}></td>`:''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks||'—')}</td>${isAdmin()?`<td><div class="form-actions">${movableInventory(s)?`<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>`:''}${adminEditButton('Inventory',s.id)}</div></td>`:''}</tr>`,
       [...(isAdmin()?['Select']:[]),'Date','Customer','Metal / karat','Type','Current weight','Cost','Status','Remarks',...(isAdmin()?['Actions']:[])],
