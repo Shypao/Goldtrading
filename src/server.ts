@@ -297,6 +297,10 @@ async function saveStaffAdditions(candidate: LedgerState): Promise<void> {
   ]);
 }
 
+function buyingDraftKey(user: AuthUser): string {
+  return `buying_draft:${user.id}`;
+}
+
 async function loadState(): Promise<LedgerState> {
   const state = {} as LedgerState;
   for (const [key, table] of Object.entries(tableMap) as Array<[keyof typeof tableMap, string]>) {
@@ -459,6 +463,27 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     const user = await sessionUser(request);
     if (url.pathname.startsWith('/api/') && !user) return sendJson(response, 401, { error: 'Sign in required' });
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await publicStateFor(user!));
+    if (request.method === 'GET' && url.pathname === '/api/buying-draft') {
+      const row = await dbGet<{ value: string }>('SELECT value FROM settings WHERE key = ?', [buyingDraftKey(user!)]);
+      if (!row) return sendJson(response, 200, { items: [], form: {} });
+      try { return sendJson(response, 200, JSON.parse(row.value)); }
+      catch { return sendJson(response, 200, { items: [], form: {} }); }
+    }
+    if (request.method === 'PUT' && url.pathname === '/api/buying-draft') {
+      const body = await readJsonBody(request) as Record<string, unknown>;
+      const items = Array.isArray(body.items) ? body.items : [];
+      const form = body.form && typeof body.form === 'object' && !Array.isArray(body.form) ? body.form : {};
+      if (items.length > 100 || items.some(item => !item || typeof item !== 'object')) {
+        return sendJson(response, 400, { error: 'Invalid buying draft' });
+      }
+      await dbRun("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [buyingDraftKey(user!), JSON.stringify({ items, form })]);
+      return sendJson(response, 200, { ok: true });
+    }
+    if (request.method === 'DELETE' && url.pathname === '/api/buying-draft') {
+      await dbRun('DELETE FROM settings WHERE key = ?', [buyingDraftKey(user!)]);
+      return sendJson(response, 200, { ok: true });
+    }
     if (request.method === 'POST' && url.pathname === '/api/admin/verify') {
       const body = await readJsonBody(request) as Record<string, unknown>;
       const username = String(body.username ?? '').trim().toLowerCase();

@@ -145,9 +145,8 @@ async function saveDB() {
         return false;
     }
 }
-function seedDemo() {
-    const c1 = uid('cust');
-    db.customers = [{ id: c1, name: 'Maria Santos', contact: '0917 555 2210', notes: 'Regular seller, mostly 18K scrap.' }];
+function seedEmptyLedger() {
+    db.customers = [];
     db.pricing = {
         effectiveDate: todayStr(),
         gold: { base: 8500, overrides: {} },
@@ -158,14 +157,7 @@ function seedDemo() {
         featured: { metal: 'Gold', key: '18K-BUO', low: 6360, high: 6560 }
     };
     db.pricingHistory = [{ id: uid('rate'), ts: Date.now(), effectiveDate: todayStr(), enteredBy: 'Admin', snapshot: JSON.parse(JSON.stringify(db.pricing)) }];
-    const netW = 15.00, rate = 6260, amt = netW * rate;
-    db.stock = [{
-            id: uid('stk'), date: todayStr(), customerId: c1, customerName: 'Maria Santos',
-            metal: 'Gold', itemType: 'Scrap', karat: '18K', grossWeight: 15.25, deductions: 0.25,
-            netWeight: netW, currentWeight: netW, rate: rate, suggestedAmount: amt, payout: amt,
-            overrideReason: '', paymentMethod: 'Cash', staff: 'Joseph Reyes', status: 'For Refining',
-            remarks: 'Sample entry from proposal illustration', cost: amt
-        }];
+    db.stock = [];
     db.liquidations = [];
     db.refiningBatches = [];
     db.retailSales = [];
@@ -188,10 +180,11 @@ async function loadDB() {
                     await saveDB();
             }
             else {
-                seedDemo();
+                seedEmptyLedger();
                 ensureShape();
                 await saveDB();
             }
+            await loadBuyingDraft();
             boot();
             if (isAdmin() && db.pricing.auto.enabled && db.pricing.auto.lastAppliedDate !== todayStr())
                 refreshPhilippineRates(true);
@@ -217,13 +210,13 @@ async function loadDB() {
                 ensureShape();
             }
             else
-                seedDemo();
+                seedEmptyLedger();
             await saveDB();
         }
     }
     catch (e) {
         console.error('Database load failed', e);
-        seedDemo();
+        seedEmptyLedger();
         ensureShape();
     }
     boot();
@@ -297,9 +290,9 @@ async function signOut() {
     showLogin();
 }
 async function resetDemo() {
-    if (!confirm('This replaces all current data with the sample dataset. Continue?'))
+    if (!confirm('This clears the ledger and restores the default rates. Continue?'))
         return;
-    seedDemo();
+    seedEmptyLedger();
     await saveDB();
     render();
     toast('Sample data restored');
@@ -1206,17 +1199,71 @@ async function deleteCustomerRecord() {
 }
 /* ============================= BUYING ============================= */
 let purchaseBatch = [];
+let buyingDraftForm = {};
+let buyingDraftSaveTimer = null;
+function buyingDraftValue(key, fallback = '') {
+    const element = document.getElementById(key);
+    return element ? element.value : String(buyingDraftForm[key] ?? fallback);
+}
+function captureBuyingDraftForm() {
+    ['b_seller_name', 'b_date', 'b_pay', 'b_metal', 'b_itemtype', 'b_karat', 'b_gross', 'b_ded', 'b_rate', 'b_payout', 'b_staff', 'b_status', 'b_remarks'].forEach(key => {
+        const element = document.getElementById(key);
+        if (element)
+            buyingDraftForm[key] = element.value;
+    });
+}
+async function loadBuyingDraft() {
+    try {
+        const response = await fetch('/api/buying-draft', { cache: 'no-store' });
+        if (!response.ok)
+            return;
+        const draft = await response.json();
+        purchaseBatch = Array.isArray(draft.items) ? draft.items : [];
+        buyingDraftForm = draft.form && typeof draft.form === 'object' ? draft.form : {};
+    }
+    catch (error) {
+        console.error('Buying draft load failed', error);
+    }
+}
+async function saveBuyingDraft() {
+    captureBuyingDraftForm();
+    try {
+        const response = await fetch('/api/buying-draft', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: purchaseBatch, form: buyingDraftForm }) });
+        if (!response.ok)
+            throw new Error('Draft save failed');
+    }
+    catch (error) {
+        console.error('Buying draft save failed', error);
+        toast('Could not save the current payout draft');
+    }
+}
+function scheduleBuyingDraftSave() {
+    captureBuyingDraftForm();
+    clearTimeout(buyingDraftSaveTimer);
+    buyingDraftSaveTimer = setTimeout(() => saveBuyingDraft(), 450);
+}
+async function clearBuyingDraft() {
+    clearTimeout(buyingDraftSaveTimer);
+    buyingDraftForm = {};
+    try {
+        await fetch('/api/buying-draft', { method: 'DELETE' });
+    }
+    catch (error) {
+        console.error('Buying draft clear failed', error);
+    }
+}
 function renderBuying() {
-    const sellerName = val('b_seller_name');
-    const metal = val('b_metal') || 'Gold';
+    const sellerName = buyingDraftValue('b_seller_name');
+    const metal = buyingDraftValue('b_metal', 'Gold') || 'Gold';
     const karats = distinctKarats(metal);
-    const requestedKarat = val('b_karat');
+    const requestedKarat = buyingDraftValue('b_karat');
     const karat = (karats.includes(requestedKarat) ? requestedKarat : karats[0]) || '';
     const rateObj = karat ? activeRate(metal, karat) : null;
-    const gross = parseFloat(val('b_gross')) || 0, ded = parseFloat(val('b_ded')) || 0;
+    const grossValue = buyingDraftValue('b_gross'), deductionValue = buyingDraftValue('b_ded');
+    const gross = parseFloat(grossValue) || 0, ded = parseFloat(deductionValue) || 0;
     const net = Math.max(roundWeight(gross - ded), 0);
     const systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
-    const enteredRate = val('b_rate');
+    const enteredRate = buyingDraftValue('b_rate');
     const parsedRate = Number(enteredRate);
     const rate = enteredRate !== '' && Number.isFinite(parsedRate) ? roundPeso(parsedRate) : systemRate;
     const rateOverridden = Boolean(rateObj && rate !== systemRate);
@@ -1229,9 +1276,9 @@ function renderBuying() {
         <h2>Customer Information</h2>
         <p>Enter the customer's name if available. The name can be left blank.</p>
         <div class="form-grid buying-customer-grid">
-          <div class="field"><label>Customer name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Enter name or leave blank" autocomplete="off"></div>
-          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${val('b_date') || todayStr()}"></div>
-          <div class="field"><label>Payment method</label><select id="b_pay"><option>Cash</option><option>Bank transfer</option><option>GCash</option></select></div>
+          <div class="field"><label>Customer name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Enter name or leave blank" autocomplete="off" oninput="scheduleBuyingDraftSave()"></div>
+          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${esc(buyingDraftValue('b_date', todayStr()) || todayStr())}" onchange="scheduleBuyingDraftSave()"></div>
+          <div class="field"><label>Payment method</label><select id="b_pay" onchange="scheduleBuyingDraftSave()">${['Cash', 'Bank transfer', 'GCash'].map(method => `<option ${buyingDraftValue('b_pay', 'Cash') === method ? 'selected' : ''}>${method}</option>`).join('')}</select></div>
         </div>
       </div>
     </div>
@@ -1243,38 +1290,38 @@ function renderBuying() {
         <p>Choose the grade and enter its weight. The amount calculates automatically.</p>
         <div class="form-grid buying-item-grid">
       <div class="field"><label>Metal</label>
-        <select id="b_metal" onchange="updateBuyingGrades()">
+        <select id="b_metal" onchange="updateBuyingGrades();scheduleBuyingDraftSave()">
           <option value="Gold" ${metal === 'Gold' ? 'selected' : ''}>Gold</option>
           <option value="Silver" ${metal === 'Silver' ? 'selected' : ''}>Silver</option>
           <option value="Platinum" ${metal === 'Platinum' ? 'selected' : ''}>Platinum</option>
         </select>
       </div>
       <div class="field"><label>Item type</label>
-        <select id="b_itemtype"><option>Scrap</option><option>Jewelry</option></select>
+        <select id="b_itemtype" onchange="scheduleBuyingDraftSave()">${['Scrap', 'Jewelry'].map(type => `<option ${buyingDraftValue('b_itemtype', 'Scrap') === type ? 'selected' : ''}>${type}</option>`).join('')}</select>
       </div>
       <div class="field"><label>Karat / purity</label>
-        <select id="b_karat" onchange="resetBuyingRate()">
+        <select id="b_karat" onchange="resetBuyingRate();scheduleBuyingDraftSave()">
           ${karats.length ? karats.map(k => `<option value="${k}" ${k === karat ? 'selected' : ''}>${esc(gradeLabel(metal, k))}</option>`).join('') : `<option value="">No rate set</option>`}
         </select>
         ${!karats.length ? `<span class="hint">Add a buying rate for ${metal} first.</span>` : ''}
       </div>
-      <div class="field"><label>Gross weight (g)</label><input id="b_gross" type="number" min="0" step="0.01" value="${val('b_gross')}" oninput="recalcBuying()"></div>
-      <div class="field"><label>Deductions (g)</label><input id="b_ded" type="number" min="0" step="0.01" value="${val('b_ded')}" oninput="recalcBuying()"></div>
+      <div class="field"><label>Gross weight (g)</label><input id="b_gross" type="number" min="0" step="0.01" value="${esc(grossValue)}" oninput="recalcBuying();scheduleBuyingDraftSave()"></div>
+      <div class="field"><label>Deductions (g)</label><input id="b_ded" type="number" min="0" step="0.01" value="${esc(deductionValue)}" oninput="recalcBuying();scheduleBuyingDraftSave()"></div>
         </div>
 
         <div class="payout-calculator">
           <div><span>Net weight</span><strong id="b_net_display">${fmtWeight(net)}</strong></div>
-          <div class="buying-rate ${rateOverridden ? 'is-overridden' : ''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="1" step="1" value="${rateObj ? rate : ''}" placeholder="0" oninput="recalcBuying()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden ? '' : 'is-hidden'}" onclick="resetBuyingRate()">Use daily rate</button></div>
+          <div class="buying-rate ${rateOverridden ? 'is-overridden' : ''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="1" step="1" value="${rateObj ? rate : ''}" placeholder="0" oninput="recalcBuying();scheduleBuyingDraftSave()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden ? '' : 'is-hidden'}" onclick="resetBuyingRate();scheduleBuyingDraftSave()">Use daily rate</button></div>
           <div class="suggested"><span>Calculated amount</span><strong id="b_suggested_display">${fmtMoney(suggested)}</strong></div>
-          <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="1" placeholder="${suggested}"></div></div>
+          <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="1" value="${esc(buyingDraftValue('b_payout'))}" placeholder="${suggested}" oninput="scheduleBuyingDraftSave()"></div></div>
         </div>
 
         <details class="buying-more">
           <summary>More details <span>optional</span></summary>
           <div class="form-grid buying-more-grid">
-            <div class="field"><label>Staff member</label><input id="b_staff" placeholder="Name"></div>
-            <div class="field"><label>Initial status</label><select id="b_status"><option>For Selling</option><option>For Refining</option><option>On Hold</option></select></div>
-            <div class="field"><label>Remarks</label><textarea id="b_remarks" placeholder="Optional notes"></textarea></div>
+            <div class="field"><label>Staff member</label><input id="b_staff" value="${esc(buyingDraftValue('b_staff'))}" placeholder="Name" oninput="scheduleBuyingDraftSave()"></div>
+            <div class="field"><label>Initial status</label><select id="b_status" onchange="scheduleBuyingDraftSave()">${['For Selling', 'For Refining', 'On Hold'].map(status => `<option ${buyingDraftValue('b_status', 'For Selling') === status ? 'selected' : ''}>${status}</option>`).join('')}</select></div>
+            <div class="field"><label>Remarks</label><textarea id="b_remarks" placeholder="Optional notes" oninput="scheduleBuyingDraftSave()">${esc(buyingDraftValue('b_remarks'))}</textarea></div>
           </div>
         </details>
 
@@ -1351,15 +1398,20 @@ function purchaseItemFromForm() {
     return { id: uid('line'), metal, itemType: val('b_itemtype'), karat, grossWeight: gross, deductions: ded,
         netWeight: net, currentWeight: net, rate, systemRate, rateOverridden, payoutOverridden, suggestedAmount: suggested, payout, overrideReason: '' };
 }
-function addPurchaseItem() {
+async function addPurchaseItem() {
     const item = purchaseItemFromForm();
     if (!item)
         return;
+    captureBuyingDraftForm();
     purchaseBatch.push(item);
     ['b_gross', 'b_ded', 'b_payout'].forEach(id => { const e = document.getElementById(id); if (e)
         e.value = ''; });
+    buyingDraftForm.b_gross = '';
+    buyingDraftForm.b_ded = '';
+    buyingDraftForm.b_payout = '';
     resetBuyingRate();
     renderPurchaseBatchPanel();
+    await saveBuyingDraft();
     toast(`${item.metal} ${gradeLabel(item.metal, item.karat)} added to current payout`);
 }
 function continueAddingPurchaseItems() {
@@ -1407,6 +1459,7 @@ async function verifyPurchaseItemRemoval(event) {
         purchaseBatch = purchaseBatch.filter(item => item.id !== itemId);
         closeAdminVerification();
         renderPurchaseBatchPanel();
+        await saveBuyingDraft();
         toast(`Item removed with approval from ${result.admin.displayName}`);
     }
     catch (error) {
@@ -1470,7 +1523,9 @@ function closePurchaseSummary() { document.getElementById('purchase_summary_moda
 async function commitPurchaseBatch(printAfter = false) {
     if (!purchaseBatch.length)
         return;
+    captureBuyingDraftForm();
     const customer = purchaseCustomer();
+    const previousCustomerCount = db.customers.length, previousStockCount = db.stock.length;
     let customerId = customer.id;
     if (customer.isNew) {
         customerId = uid('cust');
@@ -1481,9 +1536,16 @@ async function commitPurchaseBatch(printAfter = false) {
         status: val('b_status'), remarks: val('b_remarks').trim(), batchId };
     purchaseBatch.forEach(item => db.stock.push({ ...item, ...shared, id: uid('stk'), cost: item.payout }));
     const count = purchaseBatch.length, total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
+    const saved = await saveDB();
+    if (!saved) {
+        db.customers.splice(previousCustomerCount);
+        db.stock.splice(previousStockCount);
+        toast('The purchase was not recorded. Your payout draft is still saved.');
+        return;
+    }
     purchaseBatch = [];
     closePurchaseSummary();
-    await saveDB();
+    await clearBuyingDraft();
     render();
     if (printAfter)
         openPurchaseReceipt(batchId);
