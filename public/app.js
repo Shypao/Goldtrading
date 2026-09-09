@@ -1664,6 +1664,7 @@ let invFilter = { metal: 'All', karat: 'All', type: 'All', status: 'All' };
 let inventoryBulkStatus = 'For Selling';
 let inventoryWeekOffset = 0;
 let inventorySelectedDate = 'All';
+let inventorySearch = '';
 const inventoryMoveSelection = new Set();
 const liquidationSelection = new Set();
 const liquidationDraft = new Map();
@@ -1707,6 +1708,22 @@ function selectAllInventoryDates() {
 }
 function inventoryDateScope(item) { return inventorySelectedDate === 'All' || item.date === inventorySelectedDate; }
 function inventoryDateLabel() { return inventorySelectedDate === 'All' ? 'all purchase dates' : fmtDate(inventorySelectedDate); }
+function inventorySearchText(item) {
+    return [item.date, fmtDate(item.date), item.customerName, item.metal, item.karat, gradeLabel(item.metal, item.karat), item.itemType, item.status, item.remarks, item.staff]
+        .filter(Boolean).join(' ').toLowerCase();
+}
+function inventorySearchMatch(item) { const query = inventorySearch.trim().toLowerCase(); return !query || inventorySearchText(item).includes(query); }
+function updateInventorySearch(value) {
+    inventorySearch = String(value || '');
+    render();
+    requestAnimationFrame(() => {
+        const input = document.getElementById('inventory_stock_search');
+        if (input) {
+            input.focus();
+            input.setSelectionRange?.(input.value.length, input.value.length);
+        }
+    });
+}
 function closeInventoryFilterModal() { document.getElementById('inventory_filter_modal')?.remove(); }
 function activeInventoryRecord(item) { return Number(item.currentWeight) > 0 && !['Liquidated', 'Refined', 'Sold'].includes(item.status); }
 function inventoryFilterKaratsForDate(metal) {
@@ -1815,7 +1832,7 @@ function visibleInventoryRecords() {
         (invFilter.metal === 'All' || item.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || item.karat === invFilter.karat) &&
         (invFilter.type === 'All' || item.itemType === invFilter.type) &&
-        (invFilter.status === 'All' || item.status === invFilter.status));
+        (invFilter.status === 'All' || item.status === invFilter.status) && inventorySearchMatch(item));
 }
 function selectAllVisibleInventory() {
     visibleInventoryRecords().filter(categorizableInventory).forEach(item => inventoryMoveSelection.add(item.id));
@@ -2104,7 +2121,8 @@ function renderInventory() {
     const rows = selectedDay.stock.filter(s => (invFilter.metal === 'All' || s.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || s.karat === invFilter.karat) &&
         (invFilter.type === 'All' || s.itemType === invFilter.type) &&
-        (invFilter.status === 'All' || s.status === invFilter.status)).sort((a, b) => b.date.localeCompare(a.date));
+        (invFilter.status === 'All' || s.status === invFilter.status) &&
+        inventorySearchMatch(s)).sort((a, b) => b.date.localeCompare(a.date));
     const currentStock = allActiveStock;
     const breakdownSource = currentStock.filter(item => invFilter.metal === 'All' || item.metal === invFilter.metal);
     const breakdownMap = new Map();
@@ -2157,7 +2175,7 @@ function renderInventory() {
   </section>
 
   <section class="block" id="inventory_stock_list">
-    <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${activeFilterLabels.length ? `Showing: ${activeFilterLabels.map(esc).join(' · ')}` : 'Showing all records'} across ${inventoryDateLabel()}.</p></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div>
+    <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${inventorySearch ? `${rows.length} matching record${rows.length === 1 ? '' : 's'}` : activeFilterLabels.length ? `Showing: ${activeFilterLabels.map(esc).join(' · ')}` : 'Showing all records'} across ${inventoryDateLabel()}.</p></div><div class="inventory-stock-tools"><div class="field inventory-stock-search"><label for="inventory_stock_search">Search stock records</label><input id="inventory_stock_search" type="search" autocomplete="off" value="${esc(inventorySearch)}" placeholder="Customer, date, metal, karat, or status" oninput="updateInventorySearch(this.value)"></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div></div>
     ${isAdmin() ? `<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible ${inventorySelectedDate === 'All' ? 'across all dates' : 'on this date'}</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length ? '' : ' · change the date or filters'}</span>${selectedGradeCounts.size ? `<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade, count]) => `<span>${esc(grade)} · ${count}</span>`).join('')}</div>` : ''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount ? '' : 'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['For Selling', 'For Refining', 'On Hold'].map(status => `<option ${inventoryBulkStatus === status ? 'selected' : ''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount ? '' : 'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected ? '' : 'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock ? '' : 'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount ? '' : 'disabled'}>Refine selected</button></div></div>` : ''}
     ${tableOrEmpty(rows, s => `<tr>${isAdmin() ? `<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id) ? 'Already moved' : 'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id) ? 'checked' : ''} ${categorizableInventory(s) ? '' : 'disabled'}></td>` : ''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks || '—')}</td>${isAdmin() ? `<td><div class="form-actions">${movableInventory(s) ? `<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>` : ''}${adminEditButton('Inventory', s.id)}</div></td>` : ''}</tr>`, [...(isAdmin() ? ['Select'] : []), 'Date', 'Customer', 'Metal / karat', 'Type', 'Current weight', 'Cost', 'Status', 'Remarks', ...(isAdmin() ? ['Actions'] : [])], `No stock matches this filter ${inventorySelectedDate === 'All' ? 'across all purchase dates' : `on ${fmtDate(selectedDay.date)}`}.`)}
