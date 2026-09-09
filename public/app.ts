@@ -16,9 +16,10 @@ let storageLocationCleanupNeeded=false;
 function uid(p){ return (p||'id')+'_'+Math.random().toString(36).slice(2,9); }
 function todayStr(){ const d=new Date(), off=d.getTimezoneOffset(); return new Date(d.getTime()-off*60000).toISOString().slice(0,10); }
 function monthStr(){ return todayStr().slice(0,7); }
-function fmtMoney(n){ n=Number(n)||0; return 'PHP ' + n.toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function fmtMoney(n){ n=Number(n)||0; return 'PHP ' + Math.round(n).toLocaleString('en-PH',{maximumFractionDigits:0}); }
 function fmtWeight(n){ return (Number(n)||0).toFixed(2) + ' g'; }
 function roundMoney(n){ return Math.round((Number(n)+Number.EPSILON)*100)/100; }
+function roundPeso(n){ return Math.round(Number(n)||0); }
 function roundWeight(n){ return Math.round((Number(n)+Number.EPSILON)*100)/100; }
 function fmtDate(d){ if(!d) return '—'; const dt=new Date(d+'T00:00:00'); return dt.toLocaleDateString('en-PH',{year:'numeric',month:'short',day:'2-digit'}); }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"']/g, c=>({"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;","'":"&#39;"}[c])); }
@@ -270,6 +271,10 @@ const GRADES = Object.fromEntries(Object.entries(GRADE_META).map(([metal,grades]
 function gradeMeta(metal, key){
   return (GRADE_META[metal]||[]).find(g=>g.key===key) || null;
 }
+function configuredGradeMultiplier(metal,key){
+  const saved=Number(db.pricing?.gradeMultipliers?.[metal]?.[key]);
+  return Number.isFinite(saved)&&saved>=0?saved:(Number(gradeMeta(metal,key)?.mult)||0);
+}
 function configuredBaseRate(metal){
   const liveBase=Number(bucketFor(metal).base)||0;
   const daily=db.pricing?.dailyFormula;
@@ -280,7 +285,7 @@ function calculatedRateFromBase(metal,key,base){
   if(!Number.isFinite(base)||base<=0||!gradeMeta(metal,key)) return 0;
   let rate=0;
   if(metal==='Gold'){
-    rate=base*(Number(gradeMeta(metal,key)?.mult)||0);
+    rate=base*configuredGradeMultiplier(metal,key);
   }else if(metal==='Silver'){
     const sterlingRate=Math.max(base-10,0);
     rate=key==='999'?base:key==='925'?sterlingRate:sterlingRate*(Number(key)/10)/92.5;
@@ -430,6 +435,42 @@ function savePricingSnapshot(){
   db.pricingHistory.push({ id:uid('rate'), ts:Date.now(), effectiveDate:date, enteredBy:by, snapshot: JSON.parse(JSON.stringify(db.pricing)) });
   saveDB(); render(); toast('Rate sheet saved to history');
 }
+async function saveGoldMultipliers(){
+  if(!adminEditGuard()) return;
+  const values={};
+  for(const grade of GOLD_GRADES){
+    const inputId=`multiplier_gold_${grade.key.replace(/[^a-z0-9]/gi,'_')}`;
+    const value=Number(val(inputId));
+    if(!Number.isFinite(value)||value<0||value>1.5){ toast(`Enter a valid multiplier for ${grade.label}`); return; }
+    values[grade.key]=value;
+  }
+  db.pricing.gradeMultipliers=db.pricing.gradeMultipliers||{};
+  db.pricing.gradeMultipliers.Gold=values;
+  closeGoldMultiplierEditor();
+  await saveDB(); render(); toast('Gold karat multipliers updated');
+}
+async function resetGoldMultipliers(){
+  if(!adminEditGuard()||!confirm('Reset every Gold multiplier to the original rate-sheet values?')) return;
+  if(db.pricing.gradeMultipliers) delete db.pricing.gradeMultipliers.Gold;
+  closeGoldMultiplierEditor();
+  await saveDB(); render(); toast('Gold multipliers reset');
+}
+function openGoldMultiplierEditor(){
+  if(!adminEditGuard()) return;
+  closeGoldMultiplierEditor();
+  const modal=document.createElement('div');
+  modal.id='gold_multiplier_modal'; modal.className='modal-backdrop';
+  modal.innerHTML=`<div class="summary-modal multiplier-modal" role="dialog" aria-modal="true" aria-labelledby="gold_multiplier_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Daily rate setup</div><h2 id="gold_multiplier_title">Gold karat multipliers</h2></div><button type="button" class="modal-close" onclick="closeGoldMultiplierEditor()" aria-label="Close">×</button></div>
+    <p class="form-note multiplier-modal-note">Change how each Gold grade is calculated from today's 24K PHP base. Example: 0.750 means 75% of the base.</p>
+    <div class="multiplier-grid">${GOLD_GRADES.map(grade=>`<div class="field"><label>${esc(grade.label)}</label><input id="multiplier_gold_${grade.key.replace(/[^a-z0-9]/gi,'_')}" type="number" min="0" max="1.5" step="0.001" value="${configuredGradeMultiplier('Gold',grade.key)}"></div>`).join('')}</div>
+    <div class="form-actions multiplier-modal-actions"><button type="button" class="btn secondary" onclick="resetGoldMultipliers()">Reset multipliers</button><button type="button" class="btn secondary" onclick="closeGoldMultiplierEditor()">Cancel</button><button type="button" class="btn" onclick="saveGoldMultipliers()">Save multipliers</button></div>
+  </div>`;
+  modal.addEventListener('click',event=>{if(event.target===modal)closeGoldMultiplierEditor();});
+  document.body.appendChild(modal);
+  modal.querySelector('input')?.focus();
+}
+function closeGoldMultiplierEditor(){ document.getElementById('gold_multiplier_modal')?.remove(); }
 
 /* ============================= NAV / BOOT ============================= */
 const TABS = [
@@ -582,11 +623,10 @@ function renderRates(){
       <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Silver'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
       <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Platinum'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
     </div>
-    <p class="source-note">The internet price supplies the PHP base rate. Each grade is calculated automatically using the fixed ZP rate-sheet rules. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
+    <p class="source-note">The internet price supplies the PHP base rate. Use <strong>Edit Gold multipliers</strong> to configure each Gold grade. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
   </section>
   <section class="block">
-    <h2 class="block-title">How automated pricing works</h2>
-    <p class="metal-section-desc">Use <strong>Edit today's PHP base</strong> to set a metal's base rate for this Philippine date. All grades recalculate automatically. Use <strong>Override PHP rate</strong> only when one specific grade needs a different exact rate.</p>
+    <div class="batch-head"><div><h2 class="block-title">How automated pricing works</h2><p class="metal-section-desc">Use <strong>Edit today's PHP base</strong> to set a metal's base rate for this Philippine date. Gold grades recalculate using your saved karat multipliers. Use <strong>Override PHP rate</strong> only when one specific grade needs a different exact rate.</p></div><button class="btn secondary" onclick="openGoldMultiplierEditor()">Edit Gold multipliers</button></div>
   </section>
 
   <section class="metal-section">
@@ -665,7 +705,7 @@ function renderGradeCard(metal, key, label){
     : `<span class="gc-value">${rate}</span>`;
   const rateAction=ov? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset PHP rate</button>` : editing? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override PHP rate</button>`;
   return `<div class="grade-card ${ov?'is-override':''}">
-    <div class="gc-top"><span>${esc(label)}</span></div>
+    <div class="gc-top"><span>${esc(label)}</span>${metal==='Gold'?`<span>×${configuredGradeMultiplier(metal,key).toFixed(3)}</span>`:''}</div>
     <div class="gc-rate"><span class="unit">₱</span>${rateControl}<span class="unit">/g</span></div>
     <div class="gc-foot">${rateAction}</div>
   </div>`;
@@ -851,12 +891,12 @@ function renderBuying(){
   const rateObj = karat ? activeRate(metal, karat) : null;
   const gross = parseFloat(val('b_gross'))||0, ded = parseFloat(val('b_ded'))||0;
   const net = Math.max(roundWeight(gross-ded),0);
-  const systemRate = rateObj ? rateObj.rate : 0;
+  const systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
   const enteredRate = val('b_rate');
   const parsedRate = Number(enteredRate);
-  const rate = enteredRate!=='' && Number.isFinite(parsedRate) ? parsedRate : systemRate;
-  const rateOverridden = Boolean(rateObj && Math.abs(rate-systemRate)>=0.005);
-  const suggested = roundMoney(net*rate);
+  const rate = enteredRate!=='' && Number.isFinite(parsedRate) ? roundPeso(parsedRate) : systemRate;
+  const rateOverridden = Boolean(rateObj && rate!==systemRate);
+  const suggested = roundPeso(net*rate);
 
   return `
   <section class="block buying-workflow">
@@ -901,11 +941,10 @@ function renderBuying(){
 
         <div class="payout-calculator">
           <div><span>Net weight</span><strong id="b_net_display">${fmtWeight(net)}</strong></div>
-          <div class="buying-rate ${rateOverridden?'is-overridden':''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="0.01" step="0.01" value="${rateObj?rate.toFixed(2):''}" placeholder="0.00" oninput="recalcBuying()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden?'':'is-hidden'}" onclick="resetBuyingRate()">Use daily rate</button></div>
+          <div class="buying-rate ${rateOverridden?'is-overridden':''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="1" step="1" value="${rateObj?rate:''}" placeholder="0" oninput="recalcBuying()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden?'':'is-hidden'}" onclick="resetBuyingRate()">Use daily rate</button></div>
           <div class="suggested"><span>Calculated amount</span><strong id="b_suggested_display">${fmtMoney(suggested)}</strong></div>
-          <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="0.01" placeholder="${suggested.toFixed(2)}" oninput="togglePayoutOverride()"></div></div>
+          <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="1" placeholder="${suggested}"></div></div>
         </div>
-        <div class="field override-reason is-hidden" id="b_override_field"><label id="b_override_label">Why was the rate or payout changed?</label><input id="b_override" placeholder="Enter a short reason"></div>
 
         <details class="buying-more">
           <summary>More details <span>optional</span></summary>
@@ -936,35 +975,22 @@ function updateBuyingGrades(){
 }
 function resetBuyingRate(){
   const metal=val('b_metal'),karat=val('b_karat'),active=karat?activeRate(metal,karat):null,input=document.getElementById('b_rate');
-  if(input) input.value=active?Number(active.rate).toFixed(2):'';
+  if(input) input.value=active?String(roundPeso(active.rate)):'';
   recalcBuying();
 }
 function recalcBuying(){
   const metal=val('b_metal'),karat=val('b_karat'),gross=parseFloat(val('b_gross'))||0,ded=parseFloat(val('b_ded'))||0;
-  const net=Math.max(roundWeight(gross-ded),0), rateObj=karat?activeRate(metal,karat):null, systemRate=rateObj?rateObj.rate:0;
-  const rateInput=document.getElementById('b_rate'),enteredRate=Number(rateInput?.value),rate=rateInput?.value!==''&&Number.isFinite(enteredRate)?enteredRate:0;
-  const rateOverridden=Boolean(rateObj&&Number.isFinite(rate)&&Math.abs(rate-systemRate)>=0.005);
+  const net=Math.max(roundWeight(gross-ded),0), rateObj=karat?activeRate(metal,karat):null, systemRate=rateObj?roundPeso(rateObj.rate):0;
+  const rateInput=document.getElementById('b_rate'),enteredRate=Number(rateInput?.value),rate=rateInput?.value!==''&&Number.isFinite(enteredRate)?roundPeso(enteredRate):0;
+  const rateOverridden=Boolean(rateObj&&Number.isFinite(rate)&&rate!==systemRate);
   const netEl=document.getElementById('b_net_display'),rateLabel=document.getElementById('b_rate_label'),ratePanel=document.getElementById('b_rate_panel'),rateReset=document.getElementById('b_rate_reset'),suggestedEl=document.getElementById('b_suggested_display'),payoutEl=document.getElementById('b_payout');
   if(netEl) netEl.textContent=fmtWeight(net);
   if(rateLabel) rateLabel.textContent=rateOverridden?'Buying rate (overridden)':'Buying rate (Daily Rate Setup)';
   ratePanel?.classList.toggle('is-overridden',rateOverridden);
   rateReset?.classList.toggle('is-hidden',!rateOverridden);
-  const suggested=roundMoney(net*rate);
+  const suggested=roundPeso(net*rate);
   if(suggestedEl) suggestedEl.textContent=fmtMoney(suggested);
-  if(payoutEl) payoutEl.placeholder=suggested.toFixed(2);
-  togglePayoutOverride();
-}
-function togglePayoutOverride(){
-  const payout=val('b_payout'),field=document.getElementById('b_override_field'),label=document.getElementById('b_override_label');
-  if(!field) return;
-  const metal=val('b_metal'),karat=val('b_karat'),gross=parseFloat(val('b_gross'))||0,ded=parseFloat(val('b_ded'))||0;
-  const active=karat?activeRate(metal,karat):null,systemRate=active?active.rate:0,enteredRate=Number(val('b_rate'));
-  const rate=val('b_rate')!==''&&Number.isFinite(enteredRate)?enteredRate:0;
-  const suggested=roundMoney(Math.max(roundWeight(gross-ded),0)*rate);
-  const rateChanged=Boolean(active&&Math.abs(rate-systemRate)>=0.005);
-  const payoutChanged=Boolean(payout&&Number.isFinite(parseFloat(payout))&&Math.abs(parseFloat(payout)-suggested)>=0.005);
-  field.classList.toggle('is-hidden',!rateChanged&&!payoutChanged);
-  if(label) label.textContent=rateChanged&&payoutChanged?'Why were the buying rate and final payout changed?':rateChanged?'Why was the buying rate changed?':'Why is the final payout different?';
+  if(payoutEl) payoutEl.placeholder=String(suggested);
 }
 function purchaseItemFromForm(){
   const metal = val('b_metal'), karat = val('b_karat');
@@ -973,25 +999,23 @@ function purchaseItemFromForm(){
   const net = Math.max(roundWeight(gross-ded),0);
   if(net<=0){ toast('Enter a valid gross weight'); return null; }
   const rateObj = activeRate(metal, karat);
-  const systemRate = rateObj? rateObj.rate : 0;
-  const rate = Number(val('b_rate'));
+  const systemRate = rateObj? roundPeso(rateObj.rate) : 0;
+  const rate = roundPeso(Number(val('b_rate')));
   if(!Number.isFinite(rate)||rate<=0){ toast('Enter a valid buying rate'); return null; }
-  const rateOverridden = Boolean(rateObj && Math.abs(rate-systemRate)>=0.005);
-  const suggested = roundMoney(net*rate);
+  const rateOverridden = Boolean(rateObj && rate!==systemRate);
+  const suggested = roundPeso(net*rate);
   const payoutInput = val('b_payout');
-  const payout = payoutInput? roundMoney(parseFloat(payoutInput)) : suggested;
-  const payoutOverridden = Math.abs(payout-suggested)>=0.005;
-  const overrideReason = (rateOverridden||payoutOverridden) ? val('b_override').trim() : '';
+  const payout = payoutInput? roundPeso(parseFloat(payoutInput)) : suggested;
+  const payoutOverridden = payout!==suggested;
   if(!Number.isFinite(payout)||payout<0){ toast('Enter a valid final payout'); return null; }
-  if((rateOverridden||payoutOverridden) && !overrideReason){ toast('Enter an override reason for the changed rate or payout'); return null; }
   return {id:uid('line'),metal,itemType:val('b_itemtype'),karat,grossWeight:gross,deductions:ded,
-    netWeight:net,currentWeight:net,rate,systemRate,rateOverridden,payoutOverridden,suggestedAmount:suggested,payout,overrideReason};
+    netWeight:net,currentWeight:net,rate,systemRate,rateOverridden,payoutOverridden,suggestedAmount:suggested,payout,overrideReason:''};
 }
 function addPurchaseItem(){
   const item=purchaseItemFromForm();
   if(!item) return;
   purchaseBatch.push(item);
-  ['b_gross','b_ded','b_payout','b_override'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
+  ['b_gross','b_ded','b_payout'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   resetBuyingRate(); renderPurchaseBatchPanel();
   toast(`${item.metal} ${gradeLabel(item.metal,item.karat)} added to current payout`);
 }
@@ -1089,15 +1113,14 @@ async function commitPurchaseBatch(printAfter=false){
   toast(`${count} items recorded · ${fmtMoney(total)}`);
 }
 
-function receiptNumber(value){
-  return Number(value||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2});
-}
+function receiptWeightNumber(value){ return Number(value||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function receiptMoneyNumber(value){ return Math.round(Number(value)||0).toLocaleString('en-PH',{maximumFractionDigits:0}); }
 function purchaseReceiptMarkup(items){
   const first=items[0],total=roundMoney(items.reduce((sum,item)=>sum+Number(item.payout),0));
-  const itemLines=items.map(item=>`<div class="receipt-item"><div class="receipt-item-name">${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</div><div class="receipt-calc">${receiptNumber(item.netWeight)}g × ${receiptNumber(item.rate)} = ${receiptNumber(item.payout)}</div></div>`).join('');
+  const itemLines=items.map(item=>`<div class="receipt-item"><div class="receipt-item-name">${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</div><div class="receipt-calc">${receiptWeightNumber(item.netWeight)}g × ${receiptMoneyNumber(item.rate)} = ${receiptMoneyNumber(item.payout)}</div></div>`).join('');
   return `<header><div class="receipt-shop">ZP GOLD &amp; SILVER</div><div class="receipt-address">Barcelona St, Zone II<br>Zamboanga City</div></header><div class="receipt-rule"></div>
     <div class="receipt-meta"><span>Date:</span><strong>${esc(fmtDate(first.date))}</strong><span>Client:</span><strong>${esc(first.customerName||'Walk-in')}</strong></div><div class="receipt-rule"></div>
-    ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptNumber(total)}</span></div><div class="receipt-rule"></div>
+    ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptMoneyNumber(total)}</span></div><div class="receipt-rule"></div>
     <div class="receipt-meta"><span>Paid:</span><strong>${esc(first.paymentMethod||'—')}</strong>${first.staff?`<span>Staff:</span><strong>${esc(first.staff)}</strong>`:''}</div>
     <div class="receipt-reference">Ref: ${esc(first.batchId||first.id)}</div><div class="receipt-thanks">Thank you.</div>`;
 }
@@ -1170,8 +1193,9 @@ function selectInventoryDate(date){
   requestAnimationFrame(()=>openInventoryFilterModal());
 }
 function closeInventoryFilterModal(){ document.getElementById('inventory_filter_modal')?.remove(); }
+function activeInventoryRecord(item){ return Number(item.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(item.status); }
 function inventoryFilterKaratsForDate(metal){
-  return Array.from(new Set(db.stock.filter(item=>item.date===inventorySelectedDate&&(metal==='All'||item.metal===metal)).map(item=>item.karat)));
+  return Array.from(new Set(db.stock.filter(item=>item.date===inventorySelectedDate&&activeInventoryRecord(item)&&(metal==='All'||item.metal===metal)).map(item=>item.karat)));
 }
 function updateInventoryFilterModalKarats(){
   const metal=val('modal_inv_metal'),select=document.getElementById('modal_inv_karat');
@@ -1182,7 +1206,7 @@ function updateInventoryFilterModalKarats(){
 }
 function openInventoryFilterModal(){
   closeInventoryFilterModal();
-  const dayStock=db.stock.filter(item=>item.date===inventorySelectedDate);
+  const dayStock=db.stock.filter(item=>item.date===inventorySelectedDate&&activeInventoryRecord(item));
   const available=dayStock.filter(selectableInventory);
   const karats=inventoryFilterKaratsForDate(invFilter.metal);
   const modal=document.createElement('div'); modal.id='inventory_filter_modal'; modal.className='modal-backdrop';
@@ -1213,8 +1237,16 @@ function applyInventoryDateFilters(){
   invFilter={metal:val('modal_inv_metal'),karat:val('modal_inv_karat'),type:val('modal_inv_type'),status:val('modal_inv_status')};
   finishInventoryDateFilter();
 }
+function selectInventoryMetalCategory(metal){
+  invFilter.metal=metal;
+  invFilter.karat='All';
+  inventoryMoveSelection.clear();
+  render();
+}
 function selectableInventory(item){ return Number(item.currentWeight)>0&&(item.status==='For Selling'||item.status==='For Refining'); }
 function movableInventory(item){ return selectableInventory(item)&&!liquidationSelection.has(item.id); }
+function categorizableInventory(item){ return Number(item.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(item.status)&&!liquidationSelection.has(item.id); }
+function selectedInventoryForCategory(){ return db.stock.filter(item=>inventoryMoveSelection.has(item.id)&&categorizableInventory(item)); }
 function selectedInventoryForMove(){ return db.stock.filter(item=>inventoryMoveSelection.has(item.id)&&movableInventory(item)); }
 function selectedInventoryForLiquidation(){ return db.stock.filter(item=>liquidationSelection.has(item.id)&&selectableInventory(item)); }
 function inventoryPercentagePool(){
@@ -1226,12 +1258,15 @@ function inventoryPercentagePool(){
 }
 function percentageStockCount(percentage,total){ return total?Math.max(1,Math.ceil(total*(Number(percentage)/100))):0; }
 function toggleInventoryForLiquidation(id,checked){
-  const item=db.stock.find(stock=>stock.id===id); if(!item||!movableInventory(item)) return;
+  const item=db.stock.find(stock=>stock.id===id); if(!item||!categorizableInventory(item)) return;
   if(checked) inventoryMoveSelection.add(id); else inventoryMoveSelection.delete(id);
-  const selected=selectedInventoryForMove();
+  const selected=selectedInventoryForCategory();
   const buttons=document.querySelectorAll('.inventory-move-liquidation');
   const count=document.getElementById('inventory_liq_count');
   buttons.forEach(button=>button.disabled=!inventoryPercentagePool().length);
+  document.querySelectorAll('[data-inventory-selection-required]').forEach(button=>{button.disabled=!selected.length;});
+  const moveButton=document.getElementById('inventory_move_selected');
+  if(moveButton) moveButton.disabled=!selected.length||selected.some(record=>!movableInventory(record));
   if(count) count.textContent=String(selected.length);
 }
 function syncInventoryMoveCheckboxes(){
@@ -1239,7 +1274,33 @@ function syncInventoryMoveCheckboxes(){
     input.checked=inventoryMoveSelection.has(input.dataset.inventoryMoveId);
   });
   const count=document.getElementById('inventory_liq_count');
-  if(count) count.textContent=String(selectedInventoryForMove().length);
+  const selected=selectedInventoryForCategory();
+  document.querySelectorAll('[data-inventory-selection-required]').forEach(button=>{button.disabled=!selected.length;});
+  const moveButton=document.getElementById('inventory_move_selected');
+  if(moveButton) moveButton.disabled=!selected.length||selected.some(record=>!movableInventory(record));
+  if(count) count.textContent=String(selected.length);
+}
+function visibleInventoryRecords(){
+  return db.stock.filter(item=>item.date===inventorySelectedDate&&activeInventoryRecord(item)&&
+    (invFilter.metal==='All'||item.metal===invFilter.metal)&&
+    (invFilter.karat==='All'||item.karat===invFilter.karat)&&
+    (invFilter.type==='All'||item.itemType===invFilter.type)&&
+    (invFilter.status==='All'||item.status===invFilter.status));
+}
+function selectAllVisibleInventory(){
+  visibleInventoryRecords().filter(categorizableInventory).forEach(item=>inventoryMoveSelection.add(item.id));
+  render();
+}
+function clearInventorySelection(){ inventoryMoveSelection.clear(); render(); }
+async function categorizeCheckedInventory(){
+  if(!adminEditGuard()) return;
+  const selected=selectedInventoryForCategory(),status=val('inventory_bulk_status');
+  if(!selected.length){ toast('Select at least one inventory record'); return; }
+  if(!['For Selling','For Refining','On Hold'].includes(status)){ toast('Choose a valid category'); return; }
+  if(!confirm(`Change ${selected.length} selected inventory ${selected.length===1?'record':'records'} to “${status}”?`)) return;
+  selected.forEach(item=>{item.status=status;});
+  inventoryMoveSelection.clear();
+  await saveDB(); render(); toast(`${selected.length} inventory ${selected.length===1?'record':'records'} changed to ${status}`);
 }
 function closeInventoryMoveConfirmation(){
   document.getElementById('inventory_move_confirmation')?.remove();
@@ -1260,8 +1321,10 @@ function moveInventorySelectionToLiquidation(percentage){
   requestAnimationFrame(()=>requestAnimationFrame(()=>openInventoryMoveReview(selected,{percentage:portion,total:pool.length,automatic:true})));
 }
 function moveCheckedInventoryToLiquidation(){
-  const selected=selectedInventoryForMove();
-  if(!selected.length){ toast('Check at least one inventory record first'); return; }
+  const checked=selectedInventoryForCategory();
+  if(!checked.length){ toast('Check at least one inventory record first'); return; }
+  if(checked.some(item=>!movableInventory(item))){ toast('On Hold records must be categorized as For Selling or For Refining before liquidation'); return; }
+  const selected=checked;
   openInventoryMoveReview(selected,{total:selected.length,automatic:false});
 }
 function availableCombineDates(metal){
@@ -1407,12 +1470,14 @@ function renderInventory(){
   if(inventorySelectedDate<week.start||inventorySelectedDate>week.end) inventorySelectedDate=week.start;
   const dates=Array.from({length:7},(_,index)=>dateKeyPlusDays(week.start,index));
   const dailyRows=dates.map(date=>{
-    const stock=db.stock.filter(item=>item.date===date),available=stock.filter(selectableInventory);
+    const stock=db.stock.filter(item=>item.date===date&&activeInventoryRecord(item)),available=stock.filter(selectableInventory);
     return {date,stock,available,weight:available.reduce((sum,item)=>sum+Number(item.currentWeight),0),cost:available.reduce((sum,item)=>sum+Number(item.cost),0)};
   });
   const selectedDay=dailyRows.find(day=>day.date===inventorySelectedDate)||dailyRows[0];
   const percentagePool=inventoryPercentagePool();
-  const selectedMoveCount=selectedInventoryForMove().length;
+  const selectedMoveCount=selectedInventoryForCategory().length;
+  const selectedMovableCount=selectedInventoryForMove().length;
+  const canMoveSelected=selectedMoveCount>0&&selectedMovableCount===selectedMoveCount;
   const hasMovableStock=db.stock.some(movableInventory);
   const activeFilterLabels=[invFilter.metal,invFilter.karat,invFilter.type,invFilter.status].filter(value=>value!=='All');
   const rows = selectedDay.stock.filter(s=>
@@ -1422,14 +1487,15 @@ function renderInventory(){
     (invFilter.status==='All'||s.status===invFilter.status)
   ).sort((a,b)=>b.date.localeCompare(a.date));
 
-  const groups = {};
-  selectedDay.available.forEach(s=>{
-    if(s.currentWeight<=0||s.status==='Sold'||s.status==='Liquidated') return;
-    const key = [s.metal,s.karat,s.itemType,s.status].join(' · ');
-    groups[key] = groups[key] || {weight:0, cost:0};
-    groups[key].weight += Number(s.currentWeight);
-    groups[key].cost += Number(s.cost);
+  const breakdownSource=selectedDay.stock.filter(item=>invFilter.metal==='All'||item.metal===invFilter.metal);
+  const breakdownMap=new Map();
+  breakdownSource.forEach(item=>{
+    const key=`${item.metal}|${item.karat}`,entry=breakdownMap.get(key)||{metal:item.metal,karat:item.karat,count:0,weight:0,cost:0};
+    entry.count+=1; entry.weight+=Number(item.currentWeight); entry.cost+=Number(item.cost); breakdownMap.set(key,entry);
   });
+  const breakdown=Array.from(breakdownMap.values()).sort((a,b)=>a.metal.localeCompare(b.metal)||(GRADE_META[a.metal]?.findIndex(grade=>grade.key===a.karat)??99)-(GRADE_META[b.metal]?.findIndex(grade=>grade.key===b.karat)??99));
+  const breakdownWeight=breakdownSource.reduce((sum,item)=>sum+Number(item.currentWeight),0);
+  const breakdownCost=breakdownSource.reduce((sum,item)=>sum+Number(item.cost),0);
 
   return `
   <section class="block">
@@ -1437,24 +1503,24 @@ function renderInventory(){
     <div class="inventory-days">
       ${dailyRows.map(day=>`<button class="inventory-day ${day.date===inventorySelectedDate?'active':''}" onclick="selectInventoryDate('${day.date}')"><strong>${new Date(day.date+'T00:00:00').toLocaleDateString('en-PH',{weekday:'long'})}</strong><span>${fmtDate(day.date)}</span><small>${day.stock.length} record${day.stock.length===1?'':'s'}<br>${fmtWeight(day.weight)} available</small></button>`).join('')}
     </div>
+    <div class="inventory-metal-tabs"><strong>Current stock</strong>${['All','Gold','Silver','Platinum'].map(metal=>`<button class="${invFilter.metal===metal?'active':''}" onclick="selectInventoryMetalCategory('${metal}')">${metal}</button>`).join('')}</div>
     <h2 class="block-title">${new Date(selectedDay.date+'T00:00:00').toLocaleDateString('en-PH',{weekday:'long'})}, ${fmtDate(selectedDay.date)}</h2>
     <div class="stat-row">
-      <div class="stat"><div class="label">Purchases recorded</div><div class="value">${selectedDay.stock.length}</div><div class="sub">inventory lines received on this date</div></div>
+      <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines on this date</div></div>
       <div class="stat"><div class="label">Available stock lines</div><div class="value">${selectedDay.available.length}</div><div class="sub">eligible for selling or refining</div></div>
       <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from this date's purchases</div></div>
       <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost for this purchase date</div></div>
     </div>
-    <h2 class="block-title" style="margin-top:20px;">Stock by metal, assay, type &amp; status</h2>
-    <div class="stat-row">
-      ${Object.keys(groups).length? Object.entries(groups).map(([k,v])=>`<div class="stat"><div class="label">${k}</div><div class="value">${fmtWeight(v.weight)}</div><div class="sub">${fmtMoney(v.cost)} cost</div></div>`).join('')
-      : `<div class="empty-note" style="flex:1;">No available inventory was purchased on ${fmtDate(selectedDay.date)}.</div>`}
-    </div>
+    <h2 class="block-title" style="margin-top:20px;">${invFilter.metal==='All'?'Current stock breakdown':`${invFilter.metal} inventory by ${invFilter.metal==='Gold'?'karat':'purity'}`}</h2>
+    ${breakdown.length?`<div class="table-wrap inventory-breakdown"><table><thead><tr><th>Metal</th><th>Karat / purity</th><th class="num-head">Items</th><th class="num-head">Total weight</th><th class="num-head">Total cost</th></tr></thead><tbody>${breakdown.map(entry=>`<tr><td><span class="metal-tag ${entry.metal.toLowerCase()}">${entry.metal}</span></td><td>${esc(gradeLabel(entry.metal,entry.karat))}</td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.weight)}</td><td class="num">${fmtMoney(entry.cost)}</td></tr>`).join('')}</tbody></table></div><div class="inventory-breakdown-total"><span>${invFilter.metal==='All'?'All current stock':`${invFilter.metal} total`} · ${fmtWeight(breakdownWeight)}</span><strong>${fmtMoney(breakdownCost)}</strong></div>`
+      : `<div class="empty-note">No ${invFilter.metal==='All'?'active':esc(invFilter.metal)} inventory remains on ${fmtDate(selectedDay.date)}.</div>`}
+    <p class="form-note inventory-history-note">Liquidated, refined, and sold items are kept in reports and transaction history, but are hidden from Current Stock.</p>
   </section>
 
   <section class="block" id="inventory_stock_list">
     <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${activeFilterLabels.length?`Showing: ${activeFilterLabels.map(esc).join(' · ')}`:'Showing all records'} for ${fmtDate(selectedDay.date)}.</p></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div>
-    ${isAdmin()?`<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> checked across dates${percentagePool.length?'':' · choose another date or change filters'}</span></div><div class="inventory-action-buttons">${[50,100].map(percent=>`<button class="btn ${percent===100?'':'secondary'} small inventory-move-liquidation" onclick="moveInventorySelectionToLiquidation(${percent})" ${percentagePool.length?'':'disabled'}>Move ${percent}% (${percentageStockCount(percent,percentagePool.length)})</button>`).join('')}<button class="btn secondary small" onclick="moveCheckedInventoryToLiquidation()" ${selectedMoveCount?'':'disabled'}>Liquidate checked</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock?'':'disabled'}>Combine dates</button><button class="btn secondary small" onclick="prepareInventoryForRefining()" ${selectedMoveCount?'':'disabled'}>Refine checked</button></div></div>`:''}
-    ${tableOrEmpty(rows, s=>`<tr>${isAdmin()?`<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id)?'Already moved':'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id)?'checked':''} ${movableInventory(s)?'':'disabled'}></td>`:''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
+    ${isAdmin()?`<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible on this date</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length?'':' · choose another date or change filters'}</span></div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount?'':'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory"><option>For Selling</option><option>For Refining</option><option>On Hold</option></select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount?'':'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected?'':'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock?'':'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount?'':'disabled'}>Refine selected</button></div></div>`:''}
+    ${tableOrEmpty(rows, s=>`<tr>${isAdmin()?`<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id)?'Already moved':'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id)?'checked':''} ${categorizableInventory(s)?'':'disabled'}></td>`:''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks||'—')}</td>${isAdmin()?`<td><div class="form-actions">${movableInventory(s)?`<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>`:''}${adminEditButton('Inventory',s.id)}</div></td>`:''}</tr>`,
       [...(isAdmin()?['Select']:[]),'Date','Customer','Metal / karat','Type','Current weight','Cost','Status','Remarks',...(isAdmin()?['Actions']:[])],
       `No stock matches this filter on ${fmtDate(selectedDay.date)}.`)}
@@ -1758,7 +1824,7 @@ function updateRefiningCombinedSummary(){
   if(costEl) costEl.textContent=fmtMoney(cost);
 }
 function prepareInventoryForRefining(){
-  const selected=selectedInventoryForMove();
+  const selected=selectedInventoryForCategory();
   if(!selected.length){ toast('Check at least one For Refining inventory record first'); return; }
   if(selected.some(item=>item.status!=='For Refining')){ toast('Only records classified as For Refining can enter a refining batch'); return; }
   const metals=Array.from(new Set(selected.map(item=>item.metal)));
