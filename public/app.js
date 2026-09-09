@@ -312,19 +312,19 @@ function toast(msg) {
 /* ============================= PRICING / RATES ============================= */
 const GOLD_GRADES = [
     { key: '24K', label: '24K', mult: 1 },
-    { key: '23K', label: '23K', mult: 0.965 },
+    { key: '23K', label: '23K', mult: 0.95 },
     { key: '22K', label: '22K', mult: 0.916 },
     { key: '21K', label: '21K', mult: 0.875 },
     { key: '20K', label: '20K', mult: 0.79 },
     { key: '18K', label: '18K', mult: 0.75 },
     { key: '18K-BUO', label: '18K-Buo', mult: 0.75 },
     { key: '17K', label: '17K', mult: 0.7 },
-    { key: '16K', label: '16K', mult: 0.667 },
+    { key: '16K', label: '16K', mult: 0.645 },
     { key: '14K', label: '14K', mult: 0.585 },
-    { key: '12K', label: '12K', mult: 0.375 },
+    { key: '12K', label: '12K', mult: 0.4789 },
     { key: '10K', label: '10K', mult: 0.35 },
     { key: '9K', label: '9K', mult: 0.335 },
-    { key: '8K', label: '8K', mult: 0.25 },
+    { key: '8K', label: '8K', mult: 0.24 },
     { key: '5K', label: '5K', mult: 0.06 },
     { key: '98%', label: '98%', mult: 0.98 },
     { key: '73%', label: '73%', mult: 0.73 },
@@ -348,18 +348,31 @@ const GRADES = Object.fromEntries(Object.entries(GRADE_META).map(([metal, grades
 function gradeMeta(metal, key) {
     return (GRADE_META[metal] || []).find(g => g.key === key) || null;
 }
-function configuredMultiplier(metal, key) {
-    return Number(gradeMeta(metal, key)?.mult) || 0;
-}
 function configuredBaseRate(metal) {
     const liveBase = Number(bucketFor(metal).base) || 0;
     const daily = db.pricing?.dailyFormula;
     const configured = Number(daily?.effectiveDate === todayStr() ? daily?.baseRates?.[metal] : NaN);
     return Number.isFinite(configured) && configured > 0 ? configured : liveBase;
 }
+function calculatedRateFromBase(metal, key, base) {
+    if (!Number.isFinite(base) || base <= 0 || !gradeMeta(metal, key))
+        return 0;
+    let rate = 0;
+    if (metal === 'Gold') {
+        rate = base * (Number(gradeMeta(metal, key)?.mult) || 0);
+    }
+    else if (metal === 'Silver') {
+        const sterlingRate = Math.max(base - 10, 0);
+        rate = key === '999' ? base : key === '925' ? sterlingRate : sterlingRate * (Number(key) / 10) / 92.5;
+    }
+    else if (metal === 'Platinum') {
+        const deductions = { 999: 0, 950: 100, 900: 150, 850: 200 };
+        rate = Math.max(base - Number(deductions[key] ?? 0), 0);
+    }
+    return +rate.toFixed(2);
+}
 function computedRate(metal, key) {
-    const grade = gradeMeta(metal, key);
-    return grade ? +(configuredBaseRate(metal) * configuredMultiplier(metal, key)).toFixed(2) : 0;
+    return calculatedRateFromBase(metal, key, configuredBaseRate(metal));
 }
 function bucketFor(metal) { return metal === 'Gold' ? db.pricing.gold : metal === 'Silver' ? db.pricing.silver : db.pricing.platinum; }
 function metalRate(metal, key) {
@@ -685,7 +698,7 @@ function renderRates() {
       <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Silver'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
       <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Platinum'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
     </div>
-    <p class="source-note">The internet price supplies the PHP base rate. Each grade is calculated automatically using the system's fixed purity formula. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
+    <p class="source-note">The internet price supplies the PHP base rate. Each grade is calculated automatically using the fixed ZP rate-sheet rules. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
   </section>
   <section class="block">
     <h2 class="block-title">How automated pricing works</h2>
