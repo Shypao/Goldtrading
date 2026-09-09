@@ -856,8 +856,21 @@ function renderBuying(){
 
   return `
   <section class="block buying-workflow">
-    <div class="buying-step">
+    <div class="buying-step" id="buying_customer_step">
       <div class="step-number">1</div>
+      <div class="step-content">
+        <h2>Customer Information</h2>
+        <p>Enter the customer's name if available. The name can be left blank.</p>
+        <div class="form-grid buying-customer-grid">
+          <div class="field"><label>Customer name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Enter name or leave blank" autocomplete="off"></div>
+          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${val('b_date')||todayStr()}"></div>
+          <div class="field"><label>Payment method</label><select id="b_pay"><option>Cash</option><option>Bank transfer</option><option>GCash</option></select></div>
+        </div>
+      </div>
+    </div>
+
+    <div class="buying-step buying-item-step">
+      <div class="step-number">2</div>
       <div class="step-content">
         <h2>Add an item</h2>
         <p>Choose the grade and enter its weight. The amount calculates automatically.</p>
@@ -906,18 +919,6 @@ function renderBuying(){
       </div>
     </div>
 
-    <div class="buying-step" id="buying_seller_step">
-      <div class="step-number">2</div>
-      <div class="step-content">
-        <h2>Who is selling?</h2>
-        <p>Enter the seller's name if available. The name can be left blank.</p>
-        <div class="form-grid buying-customer-grid">
-          <div class="field"><label>Seller name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Enter name or leave blank" autocomplete="off"></div>
-          <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${val('b_date')||todayStr()}"></div>
-          <div class="field"><label>Payment method</label><select id="b_pay"><option>Cash</option><option>Bank transfer</option><option>GCash</option></select></div>
-        </div>
-      </div>
-    </div>
   </section>
 
   <section class="block" id="purchase_batch_panel">${renderPurchaseBatchPanelMarkup()}</section>
@@ -988,34 +989,11 @@ function addPurchaseItem(){
   purchaseBatch.push(item);
   ['b_gross','b_ded','b_payout','b_override'].forEach(id=>{const e=document.getElementById(id);if(e)e.value='';});
   resetBuyingRate(); renderPurchaseBatchPanel();
-  openPurchaseNextStep(item);
+  toast(`${item.metal} ${gradeLabel(item.metal,item.karat)} added to current payout`);
 }
-function closePurchaseNextStep(){ document.getElementById('purchase_next_step_modal')?.remove(); }
 function continueAddingPurchaseItems(){
-  closePurchaseNextStep();
-  document.querySelector('.buying-workflow')?.scrollIntoView({behavior:'smooth',block:'start'});
+  document.querySelector('.buying-item-step')?.scrollIntoView({behavior:'smooth',block:'start'});
   setTimeout(()=>document.getElementById('b_gross')?.focus(),250);
-}
-function proceedPurchaseToPayout(){ closePurchaseNextStep(); openPurchaseSummary(); }
-function openPurchaseNextStep(item){
-  closePurchaseNextStep();
-  const total=roundMoney(purchaseBatch.reduce((sum,line)=>sum+Number(line.payout),0));
-  const totalWeight=purchaseBatch.reduce((sum,line)=>sum+Number(line.netWeight),0);
-  const modal=document.createElement('div'); modal.id='purchase_next_step_modal'; modal.className='modal-backdrop';
-  modal.innerHTML=`<div class="summary-modal purchase-next-step-modal" role="dialog" aria-modal="true" aria-labelledby="purchase_next_step_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Item added</div><h2 id="purchase_next_step_title">${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))} added</h2></div><button class="modal-close" onclick="closePurchaseNextStep()" aria-label="Close">×</button></div>
-    <div class="purchase-added-item">
-      <div><span>Item</span><strong>${esc(item.itemType)}</strong></div>
-      <div><span>Net weight</span><strong>${fmtWeight(item.netWeight)}</strong></div>
-      <div><span>Item payout</span><strong>${fmtMoney(item.payout)}</strong></div>
-    </div>
-    <div class="summary-grand"><div><span>${purchaseBatch.length} item${purchaseBatch.length===1?'':'s'} · ${fmtWeight(totalWeight)}</span><strong>Current payout</strong></div><div>${fmtMoney(total)}</div></div>
-    <p class="purchase-next-question">Would you like to add another item for this seller or proceed to the payout?</p>
-    <div class="purchase-next-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add more items</button><button class="btn" onclick="proceedPurchaseToPayout()">Proceed to payout</button></div>
-  </div>`;
-  modal.addEventListener('click',event=>{if(event.target===modal)closePurchaseNextStep();});
-  document.body.appendChild(modal);
-  modal.querySelector('.purchase-next-actions .btn:last-child')?.focus();
 }
 let pendingPurchaseRemovalId=null;
 function requestPurchaseItemRemoval(id){
@@ -1055,11 +1033,12 @@ function renderPurchaseBatchPanel(){
 }
 function renderPurchaseBatchPanelMarkup(){
   const total=roundMoney(purchaseBatch.reduce((sum,item)=>sum+Number(item.payout),0));
-  if(!purchaseBatch.length) return `<h2 class="block-title">Current payout</h2><div class="empty-note">Start by adding an item above. You can review the combined total before choosing the seller.</div>`;
-  return `<div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length===1?'':'s'}</span><strong>${fmtMoney(total)}</strong></div><div class="form-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div></div>
-    <details class="purchase-batch-details"><summary>View or remove ${purchaseBatch.length} item${purchaseBatch.length===1?'':'s'}</summary><div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
+  if(!purchaseBatch.length) return `<h2 class="block-title">Current payout</h2><div class="empty-note">Add the first item above. Every added item will remain visible here.</div>`;
+  return `<div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length===1?'':'s'}</span><strong>${fmtMoney(total)}</strong></div></div>
+    <div class="purchase-batch-list"><h3>Items in this payout</h3><div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
     ${purchaseBatch.map((item,index)=>`<tr><td>${index+1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g${item.rateOverridden?'<br><span class="override-note">Overridden</span>':''}</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
-    </tbody></table></div></details>`;
+    </tbody></table></div></div>
+    <div class="form-actions purchase-batch-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div>`;
 }
 function purchaseCustomer(){
   const name=val('b_seller_name').trim();
@@ -1070,7 +1049,7 @@ function purchaseCustomer(){
 }
 function focusPurchaseSeller(){
   closePurchaseSummary();
-  document.getElementById('buying_seller_step')?.scrollIntoView({behavior:'smooth',block:'center'});
+  document.getElementById('buying_customer_step')?.scrollIntoView({behavior:'smooth',block:'center'});
   setTimeout(()=>document.getElementById('b_seller_name')?.focus(),250);
 }
 function openPurchaseSummary(){
