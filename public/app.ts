@@ -630,6 +630,10 @@ function renderDashboard(){
   const pMonth = purchases.filter(s=>s.date.startsWith(mon));
   const payoutToday = pToday.reduce((a,s)=>a+Number(s.payout),0);
   const payoutMonth = pMonth.reduce((a,s)=>a+Number(s.payout),0);
+  const monthLabel=new Date(`${mon}-01T00:00:00`).toLocaleDateString('en-PH',{month:'long',year:'numeric'});
+  const inventoryMonth=db.stock.filter(s=>s.date.startsWith(mon)&&Number(s.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(s.status));
+  const inventoryAmountMonth=inventoryMonth.reduce((a,s)=>a+Number(s.cost),0);
+  const inventoryWeightMonth=inventoryMonth.reduce((a,s)=>a+Number(s.currentWeight),0);
 
   const liqMonth = db.liquidations.filter(l=>l.date.startsWith(mon));
   const liqMargin = liqMonth.reduce((a,l)=>a+Number(l.margin),0);
@@ -640,6 +644,7 @@ function renderDashboard(){
     <h2 class="block-title">Today &amp; this month</h2>
     <div class="stat-row">
       <div class="stat"><div class="label">Purchases today</div><div class="value">${pToday.length}</div><div class="sub">${fmtMoney(payoutToday)} paid out</div></div>
+      <div class="stat"><div class="label">${esc(monthLabel)} inventory amount</div><div class="value">${fmtMoney(inventoryAmountMonth)}</div><div class="sub">${inventoryMonth.length} active item${inventoryMonth.length===1?'':'s'} · ${fmtWeight(inventoryWeightMonth)}</div></div>
       <div class="stat"><div class="label">Purchases this month</div><div class="value">${pMonth.length}</div><div class="sub">${fmtMoney(payoutMonth)} paid out</div></div>
       ${isAdmin()?`<div class="stat"><div class="label">Liquidation margin (month)</div><div class="value">${fmtMoney(liqMargin)}</div><div class="sub">${liqMonth.length} batch(es) released</div></div>
       <div class="stat"><div class="label">Retail margin (month)</div><div class="value">${fmtMoney(retailMargin)}</div><div class="sub">${retailMonth.length} item(s) sold</div></div>`:''}
