@@ -121,10 +121,11 @@ function seedDemo(){
   db.customers = [{id:c1, name:'Maria Santos', contact:'0917 555 2210', notes:'Regular seller, mostly 18K scrap.'}];
   db.pricing = {
     effectiveDate: todayStr(),
-    gold:{ base:8350, overrides:{} },
-    silver:{ base:70, overrides:{} },
-    platinum:{ base:2300, overrides:{} },
+    gold:{ base:8500, overrides:{} },
+    silver:{ base:105, overrides:{} },
+    platinum:{ base:2450, overrides:{} },
     auto:{enabled:true,lastFetchDate:'',lastAppliedDate:'',lastFetchedAt:'',usdPhp:0,spotUsd:{},draft:null},
+    dailyFormula:{effectiveDate:todayStr(),baseRates:{Gold:8500,Silver:105,Platinum:2450}},
     featured:{ metal:'Gold', key:'18K-BUO', low:6360, high:6560 }
   };
   db.pricingHistory = [{ id:uid('rate'), ts:Date.now(), effectiveDate: todayStr(), enteredBy:'Admin', snapshot: JSON.parse(JSON.stringify(db.pricing)) }];
