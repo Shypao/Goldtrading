@@ -908,6 +908,33 @@ function closeAdminEditModal(){ document.getElementById('admin_edit_modal')?.rem
 function adminEditButton(kind,id){ return isAdmin()?`<button class="btn secondary small" onclick="open${kind}Edit('${id}')">Edit</button>`:''; }
 function adminEditGuard(){ if(!isAdmin()){ toast('Administrator access required'); return false; } return true; }
 
+let deleteConfirmationResolve=null;
+function closeDeleteConfirmation(confirmed=false){
+  document.getElementById('delete_confirmation_modal')?.remove();
+  const resolve=deleteConfirmationResolve;
+  deleteConfirmationResolve=null;
+  if(resolve) resolve(confirmed);
+}
+function confirmDeletion(title,message,details=[]){
+  closeDeleteConfirmation(false);
+  return new Promise(resolve=>{
+    deleteConfirmationResolve=resolve;
+    const modal=document.createElement('div');
+    modal.id='delete_confirmation_modal'; modal.className='modal-backdrop delete-confirm-backdrop';
+    modal.innerHTML=`<div class="delete-confirm-modal" role="alertdialog" aria-modal="true" aria-labelledby="delete_confirmation_title" aria-describedby="delete_confirmation_message">
+      <div class="delete-confirm-icon" aria-hidden="true">!</div>
+      <div class="delete-confirm-copy"><div class="eyebrow">Administrator confirmation</div><h2 id="delete_confirmation_title">${esc(title)}</h2><p id="delete_confirmation_message">${esc(message)}</p></div>
+      ${details.length?`<div class="delete-confirm-details">${details.map(detail=>`<div><span>${esc(detail.label)}</span><strong>${esc(detail.value)}</strong></div>`).join('')}</div>`:''}
+      <div class="delete-confirm-warning"><strong>This action cannot be undone.</strong><span>Please verify the record before continuing.</span></div>
+      <div class="form-actions delete-confirm-actions"><button class="btn secondary" onclick="closeDeleteConfirmation(false)">Cancel</button><button class="btn danger" id="confirm_delete_button" onclick="closeDeleteConfirmation(true)">Delete permanently</button></div>
+    </div>`;
+    modal.addEventListener('click',event=>{if(event.target===modal)closeDeleteConfirmation(false);});
+    modal.addEventListener('keydown',event=>{if(event.key==='Escape')closeDeleteConfirmation(false);});
+    document.body.appendChild(modal);
+    requestAnimationFrame(()=>modal.querySelector('.btn.secondary')?.focus());
+  });
+}
+
 /* ============================= CUSTOMERS ============================= */
 let custSearch = '', custOpen = null;
 function renderCustomers(){
@@ -977,7 +1004,9 @@ async function deleteCustomerRecord(){
   if(!adminEditGuard()) return;
   const customer=db.customers.find(c=>c.id===editingCustomerId); if(!customer) return;
   if(db.stock.some(item=>item.customerId===customer.id)){ toast('This customer has purchase history and cannot be deleted'); return; }
-  if(!confirm(`Delete customer "${customer.name}"? This cannot be undone.`)) return;
+  if(!await confirmDeletion('Delete customer?',`Permanently remove ${customer.name} from customer management.`,[
+    {label:'Customer',value:customer.name},{label:'Contact',value:customer.contact||'No contact information'}
+  ])) return;
   db.customers=db.customers.filter(c=>c.id!==customer.id);
   closeAdminEditModal(); await saveDB(); render(); toast('Customer deleted');
 }
@@ -1749,7 +1778,10 @@ async function deleteInventoryRecord(){
   const linked=db.liquidations.some(record=>(record.lines||[]).some(line=>line.itemId===item.id)) ||
     db.refiningBatches.some(record=>(record.itemIds||[]).includes(item.id)||record.outputItemId===item.id) || db.retailSales.some(record=>record.itemId===item.id);
   if(linked){ toast('This item is linked to a completed transaction. Delete that transaction first.'); return; }
-  if(!confirm(`Delete this ${item.metal} ${item.karat} inventory record? This cannot be undone.`)) return;
+  if(!await confirmDeletion('Delete inventory record?',`Permanently remove this ${item.metal} ${item.karat} item from inventory.`,[
+    {label:'Item',value:`${item.metal} ${item.karat} · ${item.itemType}`},{label:'Purchase date',value:fmtDate(item.date)},
+    {label:'Current weight',value:fmtWeight(item.currentWeight)},{label:'Remaining cost',value:fmtMoney(item.cost)}
+  ])) return;
   db.stock=db.stock.filter(s=>s.id!==item.id);
   closeAdminEditModal(); await saveDB(); render(); toast('Inventory record deleted');
 }
@@ -1981,7 +2013,10 @@ async function deleteLiquidationRecord(){
   if(items.some(entry=>entry.item.status==='Sold'||db.retailSales.some(sale=>sale.itemId===entry.item.id))){ toast('Delete the later retail sale before reversing this liquidation'); return; }
   if(items.some(entry=>db.refiningBatches.some(batch=>(batch.itemIds||[]).includes(entry.item.id)))){ toast('Delete the later refining batch before reversing this liquidation'); return; }
   if(items.some(({line,item})=>Number(item.currentWeight)+Number(line.weight||0)>Number(item.netWeight)+0.005)){ toast('Inventory weight has changed and this liquidation cannot be reversed safely'); return; }
-  if(!confirm(`Delete this liquidation for ${record.buyer} and restore ${fmtWeight(record.releasedWeight)} to inventory?`)) return;
+  if(!await confirmDeletion('Delete liquidation?',`Remove this liquidation and restore its released stock to inventory.`,[
+    {label:'Buyer',value:record.buyer},{label:'Date',value:fmtDate(record.date)},
+    {label:'Weight restored',value:fmtWeight(record.releasedWeight)},{label:'Proceeds removed',value:fmtMoney(record.proceeds)}
+  ])) return;
   items.forEach(({line,item})=>{
     item.currentWeight=roundWeight(Number(item.currentWeight)+Number(line.weight||0));
     item.cost=roundMoney(Number(item.cost)+Number(line.costPortion||0));
@@ -2175,7 +2210,10 @@ async function deleteRefiningRecord(){
   }
   if(items.some(entry=>entry.item.status==='Sold'||db.retailSales.some(sale=>sale.itemId===entry.item.id))){ toast('Delete the later retail sale before reversing this refining batch'); return; }
   if(items.some(entry=>Number(entry.item.currentWeight)!==0||!['Refined','Liquidated'].includes(entry.item.status))){ toast('Inventory has changed and this refining batch cannot be reversed safely'); return; }
-  if(!confirm(`Delete this refining batch for ${record.refiner}, remove its output item, and restore ${items.length} input ${items.length===1?'item':'items'}?`)) return;
+  if(!await confirmDeletion('Delete refining batch?',`Remove the refined output and restore the original input inventory.`,[
+    {label:'Refiner',value:record.refiner},{label:'Date',value:fmtDate(record.date)},
+    {label:'Input items restored',value:String(items.length)},{label:'Output removed',value:fmtWeight(record.outputWeight??record.returnedMetal)}
+  ])) return;
   if(outputItem) db.stock=db.stock.filter(item=>item.id!==outputItem.id);
   items.forEach(({snapshot,item})=>{ item.currentWeight=roundWeight(snapshot.currentWeight); item.cost=roundMoney(snapshot.cost??item.cost); item.status=snapshot.status||'For Refining'; });
   db.refiningBatches=db.refiningBatches.filter(r=>r.id!==record.id);
@@ -2253,7 +2291,10 @@ async function deleteRetailRecord(){
   const item=db.stock.find(s=>s.id===record.itemId);
   if(!item){ toast('Cannot reverse this sale because its inventory item is missing'); return; }
   if(item.status!=='Sold'||Number(item.currentWeight)!==0){ toast('Inventory has changed and this retail sale cannot be reversed safely'); return; }
-  if(!confirm(`Delete this retail sale to ${record.buyer} and return the item to available inventory?`)) return;
+  if(!await confirmDeletion('Delete retail sale?',`Remove this sale and return the jewelry item to available inventory.`,[
+    {label:'Buyer',value:record.buyer},{label:'Date',value:fmtDate(record.date)},
+    {label:'Item',value:record.itemSummary||`${item.metal} ${item.karat} ${item.itemType}`},{label:'Sale amount',value:fmtMoney(record.salePrice)}
+  ])) return;
   const previouslyReleased=db.liquidations.reduce((sum,batch)=>sum+(batch.lines||[]).filter(line=>line.itemId===item.id).reduce((lineSum,line)=>lineSum+Number(line.weight||0),0),0);
   item.currentWeight=roundWeight(Math.min(Number(record.weight)||Number(item.netWeight),Math.max(0,Number(item.netWeight)-previouslyReleased))); item.status='For Selling';
   db.retailSales=db.retailSales.filter(r=>r.id!==record.id);
@@ -2352,7 +2393,9 @@ async function deleteUserRecord(){
   if(!adminEditGuard()) return;
   const account=userAccounts.find(user=>user.id===editingUserId); if(!account) return;
   if(account.id===currentUser?.id){ toast('You cannot delete the account currently signed in'); return; }
-  if(!confirm(`Permanently delete the account "${account.username}"?`)) return;
+  if(!await confirmDeletion('Delete user account?',`Permanently remove this account and revoke its access.`,[
+    {label:'Username',value:account.username},{label:'Role',value:account.role||'User'}
+  ])) return;
   try{
     const response=await fetch(`/api/users/${encodeURIComponent(account.id)}`,{method:'DELETE'});
     const result=await response.json();
