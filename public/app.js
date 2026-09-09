@@ -1293,11 +1293,11 @@ function renderPurchaseBatchPanelMarkup() {
     const total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
     if (!purchaseBatch.length)
         return `<h2 class="block-title">Current payout</h2><div class="empty-note">Add the first item above. Every added item will remain visible here.</div>`;
-    return `<div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</span><strong>${fmtMoney(total)}</strong></div></div>
+    return `<section class="current-payout-card"><div class="current-payout-compact"><div><span>Current payout · ${purchaseBatch.length} item${purchaseBatch.length === 1 ? '' : 's'}</span><strong>${fmtMoney(total)}</strong></div></div>
     <div class="purchase-batch-list"><h3>Items in this payout</h3><div class="table-wrap"><table class="purchase-batch-table"><thead><tr><th>Item</th><th>Metal / grade</th><th class="num-col">Net weight</th><th class="num-col">Rate</th><th class="num-col">Payout</th><th></th></tr></thead><tbody>
     ${purchaseBatch.map((item, index) => `<tr><td>${index + 1}</td><td><span class="metal-tag ${item.metal.toLowerCase()}">${item.metal}</span> ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.itemType)}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.rate)}/g${item.rateOverridden ? '<br><span class="override-note">Overridden</span>' : ''}</td><td class="num">${fmtMoney(item.payout)}</td><td><button class="btn secondary small" onclick="requestPurchaseItemRemoval('${item.id}')">Remove</button></td></tr>`).join('')}
     </tbody></table></div></div>
-    <div class="form-actions purchase-batch-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div>`;
+    <div class="form-actions purchase-batch-actions"><button class="btn secondary" onclick="continueAddingPurchaseItems()">Add another item</button><button class="btn" onclick="openPurchaseSummary()">Proceed to payout</button></div></section>`;
 }
 function purchaseCustomer() {
     const name = val('b_seller_name').trim();
