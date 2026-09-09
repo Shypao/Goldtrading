@@ -534,6 +534,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     }
     if (request.method === 'GET' && (url.pathname === '/' || url.pathname === '/index.html')) return serveFile(response, 'index.html', 'text/html; charset=utf-8');
     if (request.method === 'GET' && url.pathname === '/app.js') return serveFile(response, 'app.js', 'text/javascript; charset=utf-8');
+    if (request.method === 'GET' && url.pathname === '/zpp-logo.jpg') return serveFile(response, 'zpp-logo.jpg', 'image/jpeg');
     return sendJson(response, 404, { error: 'Not found' });
   } catch (error) {
     console.error(error);
