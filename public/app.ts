@@ -59,10 +59,10 @@ function ensureShape(){
   db.pricing.gold = db.pricing.gold||{base:0,overrides:{}}; db.pricing.gold.overrides = db.pricing.gold.overrides||{};
   db.pricing.silver = db.pricing.silver||{base:0,overrides:{}}; db.pricing.silver.overrides = db.pricing.silver.overrides||{};
   db.pricing.platinum = db.pricing.platinum||{base:0,overrides:{}}; db.pricing.platinum.overrides = db.pricing.platinum.overrides||{};
-  db.pricing.auto = Object.assign({enabled:true,payoutPct:94,lastFetchDate:'',lastAppliedDate:'',lastFetchedAt:'',marketPhp:{},goldSource:'',draft:null},db.pricing.auto||{});
+  db.pricing.auto = Object.assign({enabled:true,lastFetchDate:'',lastAppliedDate:'',lastFetchedAt:'',marketPhp:{},goldSource:'',draft:null},db.pricing.auto||{});
   db.pricing.gradeMultipliers = db.pricing.gradeMultipliers||{};
-  db.pricing.dailyFormula = db.pricing.dailyFormula||{effectiveDate:'',multipliers:{}};
-  db.pricing.dailyFormula.multipliers = db.pricing.dailyFormula.multipliers||{};
+  db.pricing.dailyFormula = db.pricing.dailyFormula||{effectiveDate:'',baseRates:{}};
+  db.pricing.dailyFormula.baseRates = db.pricing.dailyFormula.baseRates||{};
 }
 
 function openLedgerDB(){
@@ -124,7 +124,7 @@ function seedDemo(){
     gold:{ base:8350, overrides:{} },
     silver:{ base:70, overrides:{} },
     platinum:{ base:2300, overrides:{} },
-    auto:{enabled:true,payoutPct:94,lastFetchDate:'',lastAppliedDate:'',lastFetchedAt:'',usdPhp:0,spotUsd:{},draft:null},
+    auto:{enabled:true,lastFetchDate:'',lastAppliedDate:'',lastFetchedAt:'',usdPhp:0,spotUsd:{},draft:null},
     featured:{ metal:'Gold', key:'18K-BUO', low:6360, high:6560 }
   };
   db.pricingHistory = [{ id:uid('rate'), ts:Date.now(), effectiveDate: todayStr(), enteredBy:'Admin', snapshot: JSON.parse(JSON.stringify(db.pricing)) }];
@@ -270,14 +270,17 @@ function gradeMeta(metal, key){
   return (GRADE_META[metal]||[]).find(g=>g.key===key) || null;
 }
 function configuredMultiplier(metal,key){
-  const fallback=Number(gradeMeta(metal,key)?.mult)||0;
+  return Number(gradeMeta(metal,key)?.mult)||0;
+}
+function configuredBaseRate(metal){
+  const liveBase=Number(bucketFor(metal).base)||0;
   const daily=db.pricing?.dailyFormula;
-  const configured=Number(daily?.effectiveDate===todayStr()?daily?.multipliers?.[metal]?.[key]:NaN);
-  return Number.isFinite(configured)&&configured>0 ? configured : fallback;
+  const configured=Number(daily?.effectiveDate===todayStr()?daily?.baseRates?.[metal]:NaN);
+  return Number.isFinite(configured)&&configured>0 ? configured : liveBase;
 }
 function computedRate(metal, key){
   const grade=gradeMeta(metal,key);
-  return grade ? +(bucketFor(metal).base*configuredMultiplier(metal,key)).toFixed(2) : 0;
+  return grade ? +(configuredBaseRate(metal)*configuredMultiplier(metal,key)).toFixed(2) : 0;
 }
 function bucketFor(metal){ return metal==='Gold'?db.pricing.gold : metal==='Silver'?db.pricing.silver : db.pricing.platinum; }
 function metalRate(metal, key){
@@ -296,10 +299,12 @@ function activeRate(metal, karat){
   return { rate: metalRate(metal, karat), effectiveDate: db.pricing.effectiveDate };
 }
 
-function setBase(metal, value){
+async function setBase(metal, value){
   const v = parseFloat(value);
-  bucketFor(metal).base = isNaN(v)? 0 : v;
-  saveDB(); render();
+  if(!Number.isFinite(v)||v<=0){ toast('Enter a valid PHP base rate'); render(); return; }
+  if(db.pricing.dailyFormula.effectiveDate!==todayStr()) db.pricing.dailyFormula={effectiveDate:todayStr(),baseRates:{}};
+  db.pricing.dailyFormula.baseRates[metal]=v;
+  await saveDB(); render(); toast(`${metal} PHP base rate updated for today`);
 }
 function setOverride(metal, key, value){
   const b = bucketFor(metal);
@@ -334,7 +339,7 @@ async function refreshPhilippineRates(silent){
   try{
     let proposal;
     if(location.protocol==='http:'||location.protocol==='https:'){
-      proposal=await fetchJson('/api/market?apply=1&payoutPct='+encodeURIComponent(db.pricing.auto.payoutPct));
+      proposal=await fetchJson('/api/market?apply=1');
     }else{
       const [gold,silver,platinum,fx]=await Promise.all([
         fetchJson('https://api.gold-api.com/price/XAU'),fetchJson('https://api.gold-api.com/price/XAG'),
@@ -342,9 +347,8 @@ async function refreshPhilippineRates(silent){
       ]);
       const usdPhp=Number(fx.rates&&fx.rates.PHP), spotUsd={Gold:Number(gold.price),Silver:Number(silver.price),Platinum:Number(platinum.price)};
       if(!usdPhp||Object.values(spotUsd).some(v=>!v)) throw new Error('Incomplete market data');
-      const factor=Math.max(0,Math.min(100,Number(db.pricing.auto.payoutPct)||0))/100;
       const marketPhp={Gold:+(spotUsd.Gold*usdPhp/TROY_OUNCE_GRAMS).toFixed(2),Silver:+(spotUsd.Silver*usdPhp/TROY_OUNCE_GRAMS).toFixed(2),Platinum:+(spotUsd.Platinum*usdPhp/TROY_OUNCE_GRAMS).toFixed(2)};
-      proposal={effectiveDate:todayStr(),fetchedAt:new Date().toISOString(),marketPhp,goldSource:'Converted international spot fallback',draft:{effectiveDate:todayStr(),gold:+(marketPhp.Gold*factor).toFixed(2),silver:+(marketPhp.Silver*factor).toFixed(2),platinum:+(marketPhp.Platinum*factor).toFixed(2)}};
+      proposal={effectiveDate:todayStr(),fetchedAt:new Date().toISOString(),marketPhp,goldSource:'Converted international spot fallback',draft:{effectiveDate:todayStr(),gold:marketPhp.Gold,silver:marketPhp.Silver,platinum:marketPhp.Platinum}};
     }
     db.pricing.auto.lastFetchDate=proposal.effectiveDate;
     db.pricing.auto.lastFetchedAt=proposal.fetchedAt;
@@ -390,11 +394,6 @@ function visiblePricingHistory(){
   });
 }
 function setAutoEnabled(checked){ db.pricing.auto.enabled=checked; saveDB(); render(); }
-function setPayoutPct(value){
-  const n=parseFloat(value);
-  if(!isNaN(n)) db.pricing.auto.payoutPct=Math.max(0,Math.min(100,n));
-  db.pricing.auto.draft=null; saveDB(); render();
-}
 function overrideEditorId(metal,key){ return metal+'|'+key; }
 function beginOverride(metal,key){
   const id=overrideEditorId(metal,key);
@@ -554,26 +553,25 @@ function renderRates(){
     <div class="auto-panel-head">
       <div>
         <h3>Automatic Philippine internet pricing</h3>
-        <div class="metal-section-desc" style="margin:0;">Philippine market prices are shown in PHP per gram, adjusted by your buying payout percentage, and activated automatically.</div>
+        <div class="metal-section-desc" style="margin:0;">Philippine market prices are shown in PHP per gram and activated automatically. You can set today's exact PHP base rate for each metal.</div>
         <div class="auto-status">${pricingFetchBusy?'<span class="spinner"></span>Updating Philippine market data…':`Last checked: ${esc(fetched)}${auto.goldSource?` · Gold source: ${esc(auto.goldSource)}`:''}`}</div>
       </div>
       <div class="auto-controls">
         <label class="switch-line"><input type="checkbox" ${auto.enabled?'checked':''} onchange="setAutoEnabled(this.checked)"> Update automatically every 5 seconds</label>
-        <div class="field"><label>Buying payout</label><div style="display:flex;align-items:center;gap:5px"><input style="width:82px" type="number" min="0" max="100" step="0.1" value="${auto.payoutPct}" onchange="setPayoutPct(this.value)"><span>%</span></div></div>
         <button class="btn small" onclick="refreshPhilippineRates(false)" ${pricingFetchBusy?'disabled':''}>Refresh &amp; apply now</button>
-        <button class="btn secondary small" onclick="openGradeFormulaEditor('Gold','24K')">Edit today's formula</button>
+        <button class="btn secondary small" onclick="openDailyBaseEditor('Gold')">Edit today's PHP base</button>
       </div>
     </div>
     <div class="stat-row" style="margin-top:16px">
-      <div class="stat"><div class="label">Gold 24K buying rate</div><div class="value">${fmtMoney(db.pricing.gold.base)}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Gold)}/g</div></div>
-      <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(db.pricing.silver.base)}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
-      <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(db.pricing.platinum.base)}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
+      <div class="stat"><div class="label">Gold 24K buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Gold'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Gold)}/g</div></div>
+      <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Silver'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
+      <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Platinum'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
     </div>
-    <p class="source-note">PHP formula: Philippine market price per gram × buying payout % × grade multiplier. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
+    <p class="source-note">The internet price supplies the PHP base rate. Each grade is calculated automatically using the system's fixed purity formula. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
   </section>
   <section class="block">
     <h2 class="block-title">How automated pricing works</h2>
-    <p class="metal-section-desc">The live PHP market price calculates every grade automatically. Use <strong>Edit today's formula</strong> to change a multiplier for this Philippine date only, or <strong>Override PHP rate</strong> to pin an exact rate until reset.</p>
+    <p class="metal-section-desc">Use <strong>Edit today's PHP base</strong> to set a metal's base rate for this Philippine date. All grades recalculate automatically. Use <strong>Override PHP rate</strong> only when one specific grade needs a different exact rate.</p>
   </section>
 
   <section class="metal-section">
@@ -581,11 +579,11 @@ function renderRates(){
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">24K rate — pure gold</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.gold.base||''}" onchange="setBase('Gold', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${configuredBaseRate('Gold')||''}" onchange="setBase('Gold', this.value)"></div>
       </div>
       ${renderFeaturedBox()}
     </div>
-    <div class="grade-grid">${goldGrid.map(g=>renderGradeCard('Gold', g.key, g.label, g.mult)).join('')}</div>
+    <div class="grade-grid">${goldGrid.map(g=>renderGradeCard('Gold', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="metal-section">
@@ -593,10 +591,10 @@ function renderRates(){
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">999 rate — pure silver</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.silver.base||''}" onchange="setBase('Silver', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${configuredBaseRate('Silver')||''}" onchange="setBase('Silver', this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${SILVER_GRADES.map(g=>renderGradeCard('Silver', g.key, g.label, g.mult)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.map(g=>renderGradeCard('Silver', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="metal-section">
@@ -604,10 +602,10 @@ function renderRates(){
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">999 rate — pure platinum</div>
-        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.platinum.base||''}" onchange="setBase('Platinum', this.value)"></div>
+        <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${configuredBaseRate('Platinum')||''}" onchange="setBase('Platinum', this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum', g.key, g.label, g.mult)).join('')}</div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum', g.key, g.label)).join('')}</div>
   </section>
 
   <section class="block">
@@ -632,82 +630,75 @@ function renderStaffRates(){
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>
-    <div class="grade-grid">${GOLD_GRADES.map(g=>renderGradeCard('Gold',g.key,g.label,g.mult)).join('')}</div>
+    <div class="grade-grid">${GOLD_GRADES.map(g=>renderGradeCard('Gold',g.key,g.label)).join('')}</div>
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot silver"></span><h3>Silver</h3><span class="count">${SILVER_GRADES.length} grades</span></div>
-    <div class="grade-grid">${SILVER_GRADES.map(g=>renderGradeCard('Silver',g.key,g.label,g.mult)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.map(g=>renderGradeCard('Silver',g.key,g.label)).join('')}</div>
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot platinum"></span><h3>Platinum</h3><span class="count">${PLATINUM_GRADES.length} grades</span></div>
-    <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum',g.key,g.label,g.mult)).join('')}</div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum',g.key,g.label)).join('')}</div>
   </section>`;
 }
-function renderGradeCard(metal, key, label, mult){
+function renderGradeCard(metal, key, label){
   const ov = isOverridden(metal, key);
   const editing = overrideEditors.has(overrideEditorId(metal,key));
   const rate = metalRate(metal, key);
-  const appliedMultiplier=configuredMultiplier(metal,key);
-  const dailyFormulaActive=db.pricing?.dailyFormula?.effectiveDate===todayStr();
-  const formulaChanged=dailyFormulaActive&&Math.abs(appliedMultiplier-Number(mult||0))>=0.000001;
-  const multTxt = `×${Number(appliedMultiplier).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')}`;
   const rateControl = editing||ov
     ? `<input data-rate-editor="${metal}-${key}" type="text" inputmode="decimal" value="${rate}" onchange="commitOverride('${metal}','${key}', this.value)">`
     : `<span class="gc-value">${rate}</span>`;
   const rateAction=ov? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset PHP rate</button>` : editing? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override PHP rate</button>`;
-  const formulaAction=isAdmin()?` · <button onclick="openGradeFormulaEditor('${metal}','${key}')">Edit today's formula</button>`:'';
   return `<div class="grade-card ${ov?'is-override':''}">
-    <div class="gc-top"><span>${esc(label)}</span><span>${multTxt}</span></div>
+    <div class="gc-top"><span>${esc(label)}</span></div>
     <div class="gc-rate"><span class="unit">₱</span>${rateControl}<span class="unit">/g</span></div>
-    <div class="gc-foot">${rateAction}${formulaAction}${formulaChanged?' <span class="formula-tag">today only</span>':''}</div>
+    <div class="gc-foot">${rateAction}</div>
   </div>`;
 }
 let formulaEditTarget=null;
-function openGradeFormulaEditor(metal,key){
+function openDailyBaseEditor(metal){
   if(!adminEditGuard()) return;
-  const grade=gradeMeta(metal,key); if(!grade) return;
-  formulaEditTarget={metal,key};
+  if(!GRADES[metal]) return;
+  formulaEditTarget={metal};
   document.getElementById('formula_edit_modal')?.remove();
-  const multiplier=configuredMultiplier(metal,key),base=Number(bucketFor(metal).base)||0;
-  const customized=Math.abs(multiplier-Number(grade.mult))>=0.000001;
+  const liveBase=Number(bucketFor(metal).base)||0,base=configuredBaseRate(metal);
+  const customized=Math.abs(base-liveBase)>=0.005;
   const modal=document.createElement('div'); modal.id='formula_edit_modal'; modal.className='modal-backdrop';
   modal.innerHTML=`<form class="summary-modal" onsubmit="saveGradeFormula(event)" role="dialog" aria-modal="true" aria-labelledby="formula_edit_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Today's PHP rate formula</div><h2 id="formula_edit_title">${esc(metal)} ${esc(grade.label)}</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
-    <p class="form-note" style="margin:16px 0;">Buying rate = PHP base rate × grade multiplier. This change applies only on ${fmtDate(todayStr())}; tomorrow the standard multiplier returns automatically.</p>
+    <div class="summary-modal-head"><div><div class="eyebrow">Daily rate setup</div><h2 id="formula_edit_title">Today's PHP base rate</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">This exact PHP base rate applies to all ${esc(metal)} grades on ${fmtDate(todayStr())}. Grade calculations remain automatic and fixed. Tomorrow, the live PHP base returns automatically.</p>
     <div class="form-grid">
       <div class="field"><label>Metal</label><select id="formula_metal" onchange="changeFormulaEditorMetal(this.value)">${Object.keys(GRADES).map(name=>`<option value="${name}" ${name===metal?'selected':''}>${name}</option>`).join('')}</select></div>
-      <div class="field"><label>Grade / purity</label><select id="formula_grade" onchange="openGradeFormulaEditor('${metal}',this.value)">${GRADES[metal].map(gradeKey=>`<option value="${gradeKey}" ${gradeKey===key?'selected':''}>${esc(gradeLabel(metal,gradeKey))}</option>`).join('')}</select></div>
-      <div class="field"><label>PHP base rate</label><input value="${base.toFixed(2)}" readonly></div>
-      <div class="field"><label>Grade multiplier</label><input id="formula_multiplier" type="number" min="0.001" max="2" step="0.001" value="${multiplier}" oninput="updateGradeFormulaPreview()" required></div>
+      <div class="field"><label>Live PHP base rate</label><input value="${liveBase.toFixed(2)}" readonly></div>
+      <div class="field"><label>Today's PHP base rate</label><input id="formula_base_rate" type="number" min="0.01" step="0.01" value="${base.toFixed(2)}" oninput="updateGradeFormulaPreview()" required></div>
     </div>
-    <div class="stat" style="margin-top:14px"><div class="label">Calculated buying rate</div><div class="value" id="formula_preview">${fmtMoney(base*multiplier)}/g</div></div>
-    <div class="form-actions">${customized?'<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use default formula</button>':''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save formula</button></div>
+    <div class="stat" style="margin-top:14px"><div class="label">Active base rate for today</div><div class="value" id="formula_preview">${fmtMoney(base)}/g</div></div>
+    <div class="form-actions">${customized?'<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use live PHP base</button>':''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save today's base rate</button></div>
   </form>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeGradeFormulaEditor();});
-  document.body.appendChild(modal); document.getElementById('formula_multiplier')?.focus();
+  document.body.appendChild(modal); document.getElementById('formula_base_rate')?.focus();
 }
-function changeFormulaEditorMetal(metal){ openGradeFormulaEditor(metal,GRADES[metal]?.[0]||''); }
+function changeFormulaEditorMetal(metal){ openDailyBaseEditor(metal); }
 function updateGradeFormulaPreview(){
   if(!formulaEditTarget) return;
-  const multiplier=Number(val('formula_multiplier')),base=Number(bucketFor(formulaEditTarget.metal).base)||0,preview=document.getElementById('formula_preview');
-  if(preview) preview.textContent=Number.isFinite(multiplier)&&multiplier>0?`${fmtMoney(base*multiplier)}/g`:'Enter a valid multiplier';
+  const base=Number(val('formula_base_rate')),preview=document.getElementById('formula_preview');
+  if(preview) preview.textContent=Number.isFinite(base)&&base>0?`${fmtMoney(base)}/g`:'Enter a valid PHP base rate';
 }
 function closeGradeFormulaEditor(){ document.getElementById('formula_edit_modal')?.remove(); formulaEditTarget=null; }
 async function saveGradeFormula(event){
   event.preventDefault(); if(!formulaEditTarget||!adminEditGuard()) return;
-  const multiplier=Number(val('formula_multiplier'));
-  if(!Number.isFinite(multiplier)||multiplier<=0||multiplier>2){ toast('Enter a multiplier from 0.001 to 2.000'); return; }
-  const {metal,key}=formulaEditTarget;
-  if(db.pricing.dailyFormula.effectiveDate!==todayStr()) db.pricing.dailyFormula={effectiveDate:todayStr(),multipliers:{}};
-  db.pricing.dailyFormula.multipliers[metal]=db.pricing.dailyFormula.multipliers[metal]||{};
-  db.pricing.dailyFormula.multipliers[metal][key]=multiplier;
-  closeGradeFormulaEditor(); await saveDB(); render(); toast(`${metal} ${gradeLabel(metal,key)} formula updated for today`);
+  const baseRate=Number(val('formula_base_rate'));
+  if(!Number.isFinite(baseRate)||baseRate<=0){ toast('Enter a valid PHP base rate'); return; }
+  const {metal}=formulaEditTarget;
+  if(db.pricing.dailyFormula.effectiveDate!==todayStr()) db.pricing.dailyFormula={effectiveDate:todayStr(),baseRates:{}};
+  db.pricing.dailyFormula.baseRates[metal]=baseRate;
+  closeGradeFormulaEditor(); await saveDB(); render(); toast(`${metal} PHP base rate updated for today`);
 }
 async function resetGradeFormula(){
   if(!formulaEditTarget||!adminEditGuard()) return;
-  const {metal,key}=formulaEditTarget;
-  if(db.pricing.dailyFormula?.multipliers?.[metal]) delete db.pricing.dailyFormula.multipliers[metal][key];
-  closeGradeFormulaEditor(); await saveDB(); render(); toast(`${metal} ${gradeLabel(metal,key)} formula reset for today`);
+  const {metal}=formulaEditTarget;
+  if(db.pricing.dailyFormula?.baseRates) delete db.pricing.dailyFormula.baseRates[metal];
+  closeGradeFormulaEditor(); await saveDB(); render(); toast(`${metal} PHP base reset to the live rate`);
 }
 function renderFeaturedBox(){
   const f = db.pricing.featured;
@@ -882,7 +873,7 @@ function renderBuying(){
 
         <div class="payout-calculator">
           <div><span>Net weight</span><strong id="b_net_display">${fmtWeight(net)}</strong></div>
-          <div class="buying-rate ${rateOverridden?'is-overridden':''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (${Number(db.pricing.auto.payoutPct)}%)</label><div><span>₱</span><input id="b_rate" type="number" min="0.01" step="0.01" value="${rateObj?rate.toFixed(2):''}" placeholder="0.00" oninput="recalcBuying()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden?'':'is-hidden'}" onclick="resetBuyingRate()">Use system rate</button></div>
+          <div class="buying-rate ${rateOverridden?'is-overridden':''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="0.01" step="0.01" value="${rateObj?rate.toFixed(2):''}" placeholder="0.00" oninput="recalcBuying()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden?'':'is-hidden'}" onclick="resetBuyingRate()">Use daily rate</button></div>
           <div class="suggested"><span>Calculated amount</span><strong id="b_suggested_display">${fmtMoney(suggested)}</strong></div>
           <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="0.01" placeholder="${suggested.toFixed(2)}" oninput="togglePayoutOverride()"></div></div>
         </div>
@@ -939,7 +930,7 @@ function recalcBuying(){
   const rateOverridden=Boolean(rateObj&&Number.isFinite(rate)&&Math.abs(rate-systemRate)>=0.005);
   const netEl=document.getElementById('b_net_display'),rateLabel=document.getElementById('b_rate_label'),ratePanel=document.getElementById('b_rate_panel'),rateReset=document.getElementById('b_rate_reset'),suggestedEl=document.getElementById('b_suggested_display'),payoutEl=document.getElementById('b_payout');
   if(netEl) netEl.textContent=fmtWeight(net);
-  if(rateLabel) rateLabel.textContent=rateOverridden?'Buying rate (overridden)':`Buying rate (${Number(db.pricing.auto.payoutPct)}%)`;
+  if(rateLabel) rateLabel.textContent=rateOverridden?'Buying rate (overridden)':'Buying rate (Daily Rate Setup)';
   ratePanel?.classList.toggle('is-overridden',rateOverridden);
   rateReset?.classList.toggle('is-hidden',!rateOverridden);
   const suggested=roundMoney(net*rate);

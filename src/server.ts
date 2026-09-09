@@ -201,8 +201,10 @@ function saveStaffAdditions(candidate: LedgerState): void {
   const currentPricing = JSON.parse(JSON.stringify(current.pricing)) as Record<string, any>;
   candidatePricing.gradeMultipliers = candidatePricing.gradeMultipliers ?? {};
   currentPricing.gradeMultipliers = currentPricing.gradeMultipliers ?? {};
-  candidatePricing.dailyFormula = candidatePricing.dailyFormula ?? { effectiveDate: '', multipliers: {} };
-  currentPricing.dailyFormula = currentPricing.dailyFormula ?? { effectiveDate: '', multipliers: {} };
+  candidatePricing.dailyFormula = candidatePricing.dailyFormula ?? { effectiveDate: '', baseRates: {} };
+  currentPricing.dailyFormula = currentPricing.dailyFormula ?? { effectiveDate: '', baseRates: {} };
+  candidatePricing.dailyFormula.baseRates = candidatePricing.dailyFormula.baseRates ?? {};
+  currentPricing.dailyFormula.baseRates = currentPricing.dailyFormula.baseRates ?? {};
   const permittedGrades: Record<string, Set<string>> = {
     gold: new Set(['24K', '23K', '22K', '21K', '20K', '18K', '18K-BUO', '17K', '16K', '14K', '12K', '10K', '9K', '8K', '5K', '98%', '73%']),
     silver: new Set(['999', '925', '900', '800', '750', '600']),
@@ -344,7 +346,7 @@ async function fetchPhilippineGoldPhpPerGram(): Promise<number | null> {
   }
 }
 
-async function createMarketProposal(payoutPercentage: number) {
+async function createMarketProposal() {
   const [gold, silver, platinum, exchange, philippineGold] = await Promise.all([
     fetchJson<GoldApiResponse>('https://api.gold-api.com/price/XAU'),
     fetchJson<GoldApiResponse>('https://api.gold-api.com/price/XAG'),
@@ -355,23 +357,20 @@ async function createMarketProposal(payoutPercentage: number) {
   const usdPhp = Number(exchange.rates?.PHP);
   const spotUsd = { Gold: Number(gold.price), Silver: Number(silver.price), Platinum: Number(platinum.price) };
   if (!usdPhp || Object.values(spotUsd).some(value => !value)) throw new Error('Incomplete market response');
-  const safePercentage = Math.max(0, Math.min(100, payoutPercentage));
-  const factor = safePercentage / 100;
   const convertedPhp = (price: number) => +(price * usdPhp / gramsPerTroyOunce).toFixed(2);
   const marketPhp = {
     Gold: philippineGold ?? convertedPhp(spotUsd.Gold),
     Silver: convertedPhp(spotUsd.Silver),
     Platinum: convertedPhp(spotUsd.Platinum)
   };
-  const buyingPhp = (price: number) => +(price * factor).toFixed(2);
   const now = new Date();
   const effectiveDate = new Intl.DateTimeFormat('en-CA', {
     timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
   }).format(now);
   return {
-    effectiveDate, fetchedAt: now.toISOString(), payoutPct: safePercentage, marketPhp,
+    effectiveDate, fetchedAt: now.toISOString(), marketPhp,
     goldSource: philippineGold ? 'LivePriceOfGold Philippines' : 'Converted international spot fallback',
-    draft: { effectiveDate, gold: buyingPhp(marketPhp.Gold), silver: buyingPhp(marketPhp.Silver), platinum: buyingPhp(marketPhp.Platinum) }
+    draft: { effectiveDate, gold: marketPhp.Gold, silver: marketPhp.Silver, platinum: marketPhp.Platinum }
   };
 }
 
@@ -454,7 +453,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       return sendJson(response, 200, { ok: true });
     }
     if (request.method === 'GET' && url.pathname === '/api/market') {
-      const proposal = await createMarketProposal(Number(url.searchParams.get('payoutPct') ?? 94));
+      const proposal = await createMarketProposal();
       if (url.searchParams.get('apply') === '1') applyMarketProposal(proposal);
       return sendJson(response, 200, proposal);
     }
