@@ -535,6 +535,8 @@ function render(){
 
 /* ============================= DASHBOARD ============================= */
 let dashboardReportPanel='';
+let purchaseHistoryFrom='';
+let purchaseHistoryTo='';
 function toggleDashboardReport(panel){
   dashboardReportPanel=dashboardReportPanel===panel?'':panel;
   render();
@@ -557,6 +559,31 @@ function dashboardReportSearch(placeholder,total){
   return `<div class="dashboard-report-search"><div class="field"><label for="dashboard_report_search">Search records</label><input id="dashboard_report_search" type="search" autocomplete="off" placeholder="${esc(placeholder)}" oninput="filterDashboardReport(this.value)"></div><span id="dashboard_search_result_count">Showing ${total} of ${total}</span></div><div id="dashboard_search_empty" class="empty-note is-hidden">No records match your search.</div>`;
 }
 function dashboardSearchValue(...values){ return esc(values.filter(value=>value!=null).join(' ').toLowerCase()); }
+function purchaseHistoryDateMatch(item){
+  return (!purchaseHistoryFrom||item.date>=purchaseHistoryFrom)&&(!purchaseHistoryTo||item.date<=purchaseHistoryTo);
+}
+function purchaseHistoryRecords(){
+  return db.stock.filter(item=>!item.sourceRefiningBatchId&&purchaseHistoryDateMatch(item)).slice().sort((a,b)=>b.date.localeCompare(a.date));
+}
+function applyPurchaseHistoryDates(){
+  const from=val('purchase_history_from'),to=val('purchase_history_to');
+  if(from&&to&&from>to){ toast('The From date must be before the To date'); return; }
+  purchaseHistoryFrom=from; purchaseHistoryTo=to; render();
+  requestAnimationFrame(()=>document.getElementById('dashboard_report_content')?.scrollIntoView({behavior:'smooth',block:'start'}));
+}
+function setPurchaseHistoryDatePreset(preset){
+  if(preset==='today'){ purchaseHistoryFrom=todayStr(); purchaseHistoryTo=todayStr(); }
+  else if(preset==='month'){ purchaseHistoryFrom=`${monthStr()}-01`; purchaseHistoryTo=todayStr(); }
+  else { purchaseHistoryFrom=''; purchaseHistoryTo=''; }
+  render();
+  requestAnimationFrame(()=>document.getElementById('dashboard_report_content')?.scrollIntoView({behavior:'smooth',block:'start'}));
+}
+function purchaseHistoryFilterLabel(){
+  if(purchaseHistoryFrom&&purchaseHistoryTo) return purchaseHistoryFrom===purchaseHistoryTo?fmtDate(purchaseHistoryFrom):`${fmtDate(purchaseHistoryFrom)} to ${fmtDate(purchaseHistoryTo)}`;
+  if(purchaseHistoryFrom) return `From ${fmtDate(purchaseHistoryFrom)}`;
+  if(purchaseHistoryTo) return `Through ${fmtDate(purchaseHistoryTo)}`;
+  return 'All purchase dates';
+}
 function renderDashboard(){
   const today = todayStr(), mon = monthStr();
   const purchases=db.stock.filter(s=>!s.sourceRefiningBatchId);
@@ -2242,7 +2269,7 @@ function exportRefining(){ downloadCSV('zpp_refining.csv', toCSV(db.refiningBatc
   {label:'Charges',key:'refiningCharges'},{label:'Output purity',key:'outputPurity'},{label:'Output weight',get:r=>r.outputWeight??r.returnedMetal},
   {label:'Output inventory cost',key:'outputCost'},{label:'Status',key:'status'},{label:'Notes',key:'remarks'}
 ])); }
-function exportPurchases(){ downloadCSV('zpp_purchase_history.csv', toCSV(db.stock.filter(s=>!s.sourceRefiningBatchId), [
+function exportPurchases(){ downloadCSV('zpp_purchase_history.csv', toCSV(purchaseHistoryRecords(), [
   {label:'Date',key:'date'},{label:'Seller',key:'customerName'},{label:'Metal',key:'metal'},{label:'Karat / purity',key:'karat'},
   {label:'Item type',key:'itemType'},{label:'Net weight',key:'netWeight'},{label:'Rate',key:'rate'},{label:'Payout',key:'payout'},
   {label:'Payment method',key:'paymentMethod'},{label:'Staff',key:'staff'},{label:'Status',key:'status'}
@@ -2271,14 +2298,20 @@ function renderLiquidationHistory(){
 }
 
 function renderReports(){
-  const purchases=db.stock.filter(s=>!s.sourceRefiningBatchId).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const allPurchases=db.stock.filter(s=>!s.sourceRefiningBatchId).slice().sort((a,b)=>b.date.localeCompare(a.date));
+  const purchases=allPurchases.filter(purchaseHistoryDateMatch);
   const purchaseWeight=purchases.reduce((sum,item)=>sum+Number(item.netWeight||0),0);
   const purchasePayout=purchases.reduce((sum,item)=>sum+Number(item.payout||0),0);
   const readyStock=db.stock.filter(s=>(s.status==='For Selling'||s.status==='For Refining')&&s.currentWeight>0);
   const purchaseReport=`<div id="dashboard_report_content" class="dashboard-report-content">
   <section class="block recent-purchases purchase-history">
     <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div>
-    ${dashboardReportSearch('Search seller, date, metal, purity, status, or staff',purchases.length)}
+    <div class="purchase-history-filter-card">
+      <div class="purchase-history-filter-top"><div><strong>Purchase date</strong><span>Choose a date range or use a quick option.</span></div><div class="purchase-history-presets"><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('today')">Today</button><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('month')">This month</button><button class="btn secondary small" onclick="setPurchaseHistoryDatePreset('all')" ${purchaseHistoryFrom||purchaseHistoryTo?'':'disabled'}>Clear dates</button></div></div>
+      <div class="purchase-history-date-row"><div class="field"><label for="purchase_history_from">From</label><input id="purchase_history_from" type="date" value="${esc(purchaseHistoryFrom)}"></div><div class="field"><label for="purchase_history_to">To</label><input id="purchase_history_to" type="date" value="${esc(purchaseHistoryTo)}"></div><button class="btn" onclick="applyPurchaseHistoryDates()">Apply dates</button></div>
+      <div class="purchase-history-active-range"><span>Showing:</span><strong>${esc(purchaseHistoryFilterLabel())}</strong></div>
+    </div>
+    ${dashboardReportSearch('Search seller, metal, purity, status, or staff',purchases.length)}
     <div class="stat-row" style="margin:16px 0;">
       <div class="stat"><div class="label">Items purchased</div><div class="value">${purchases.length}</div></div>
       <div class="stat"><div class="label">Total net weight</div><div class="value">${fmtWeight(purchaseWeight)}</div></div>
@@ -2291,9 +2324,9 @@ function renderReports(){
       ['Date','Seller','Item','Net weight','Payout','Status','Details'], 'No purchases recorded yet.')}
   </section>
   <section class="block">
-    <h2 class="block-title">Customer history (all sellers)</h2>
-    ${tableOrEmpty(db.customers, c=>{
-      const hist = db.stock.filter(s=>s.customerId===c.id);
+    <h2 class="block-title">Customer history (${esc(purchaseHistoryFilterLabel())})</h2>
+    ${tableOrEmpty(db.customers.filter(c=>purchases.some(s=>s.customerId===c.id)), c=>{
+      const hist = purchases.filter(s=>s.customerId===c.id);
       const totalW = hist.reduce((a,s)=>a+Number(s.netWeight),0);
       const totalP = hist.reduce((a,s)=>a+Number(s.payout),0);
       return `<tr><td>${esc(c.name)}</td><td class="num">${hist.length}</td><td class="num">${fmtWeight(totalW)}</td><td class="num">${fmtMoney(totalP)}</td></tr>`;
@@ -2313,7 +2346,7 @@ function renderReports(){
   return `<section class="block dashboard-report-menu">
     <div><h2 class="block-title">Dashboard records</h2><p class="form-note">Open only the report you need. Select the active button again to close it.</p></div>
     <div class="dashboard-report-buttons">
-      <button class="btn ${dashboardReportPanel==='purchases'?'':'secondary'}" aria-pressed="${dashboardReportPanel==='purchases'}" onclick="toggleDashboardReport('purchases')"><span>Purchase history</span><strong>${purchases.length}</strong></button>
+      <button class="btn ${dashboardReportPanel==='purchases'?'':'secondary'}" aria-pressed="${dashboardReportPanel==='purchases'}" onclick="toggleDashboardReport('purchases')"><span>Purchase history</span><strong>${allPurchases.length}</strong></button>
       <button class="btn ${dashboardReportPanel==='liquidations'?'':'secondary'}" aria-pressed="${dashboardReportPanel==='liquidations'}" onclick="toggleDashboardReport('liquidations')"><span>Liquidation history</span><strong>${db.liquidations.length}</strong></button>
       <button class="btn ${dashboardReportPanel==='readiness'?'':'secondary'}" aria-pressed="${dashboardReportPanel==='readiness'}" onclick="toggleDashboardReport('readiness')"><span>Liquidation readiness</span><strong>${readyStock.length}</strong></button>
     </div>
