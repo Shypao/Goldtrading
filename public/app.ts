@@ -549,7 +549,11 @@ function statusPill(status){
 }
 function tableOrEmpty(rows, rowFn, headers, emptyMsg){
   if(!rows.length) return `<div class="empty-note">${emptyMsg}</div>`;
-  const numericHeaders=new Set(['Net weight','Payout']);
+  const numericHeaders=new Set([
+    'Net weight','Weight','Weight available','Gross weight','Available weight','Output weight',
+    'Rate','Payout','Cost','Total cost','Total sold','Profit','Margin','Charges',
+    'Items','Transactions','Total weight sold','Total payout','Expected yield','Actual yield','Variance'
+  ]);
   return `<div class="table-wrap"><table><thead><tr>${headers.map(h=>`<th class="${numericHeaders.has(h)?'num-head':''}">${h}</th>`).join('')}</tr></thead><tbody>${rows.map(rowFn).join('')}</tbody></table></div>`;
 }
 
