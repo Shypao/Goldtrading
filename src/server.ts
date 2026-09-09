@@ -200,8 +200,8 @@ function saveStaffAdditions(candidate: LedgerState): void {
   const candidatePricing = JSON.parse(JSON.stringify(candidate.pricing)) as Record<string, any>;
   const currentPricing = JSON.parse(JSON.stringify(current.pricing)) as Record<string, any>;
   const permittedGrades: Record<string, Set<string>> = {
-    gold: new Set(['24K', '23K', '22K', '21K', '18K', '18K-BUO', '16K', '14K', '12K', '10K', '8K', '98%', '73%']),
-    silver: new Set(['999', '925', '900', '800']),
+    gold: new Set(['24K', '23K', '22K', '21K', '20K', '18K', '18K-BUO', '16K', '14K', '12K', '10K', '8K', '98%', '73%']),
+    silver: new Set(['999', '925', '900', '800', '750', '600']),
     platinum: new Set(['999', '950', '900', '850'])
   };
   const requestedOverrides: Record<string, Record<string, number>> = {};

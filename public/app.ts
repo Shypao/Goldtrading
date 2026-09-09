@@ -232,6 +232,7 @@ const GOLD_GRADES = [
   {key:'23K', label:'23K', mult:0.965},
   {key:'22K', label:'22K', mult:0.916},
   {key:'21K', label:'21K', mult:0.875},
+  {key:'20K', label:'20K', mult:0.79},
   {key:'18K', label:'18K', mult:0.75},
   {key:'18K-BUO', label:'18K-Buo', mult:0.75},
   {key:'16K', label:'16K', mult:0.667},
@@ -242,19 +243,29 @@ const GOLD_GRADES = [
   {key:'98%', label:'98%', mult:0.98},
   {key:'73%', label:'73%', mult:0.73},
 ];
-const SILVER_GRADES = ['999','925','900','800'];
-const PLATINUM_GRADES = ['999','950','900','850'];
-const GRADES = { Gold: GOLD_GRADES.map(g=>g.key), Silver: SILVER_GRADES, Platinum: PLATINUM_GRADES };
+const SILVER_GRADES = [
+  {key:'999', label:'999', mult:1},
+  {key:'925', label:'925', mult:925/999},
+  {key:'900', label:'90%', mult:0.9},
+  {key:'800', label:'80%', mult:0.8},
+  {key:'750', label:'75%', mult:0.75},
+  {key:'600', label:'60%', mult:0.6},
+];
+const PLATINUM_GRADES = [
+  {key:'999', label:'999', mult:1},
+  {key:'950', label:'950', mult:950/999},
+  {key:'900', label:'900', mult:900/999},
+  {key:'850', label:'850', mult:850/999},
+];
+const GRADE_META = { Gold: GOLD_GRADES, Silver: SILVER_GRADES, Platinum: PLATINUM_GRADES };
+const GRADES = Object.fromEntries(Object.entries(GRADE_META).map(([metal,grades])=>[metal,grades.map(g=>g.key)]));
 
 function gradeMeta(metal, key){
-  if(metal==='Gold') return GOLD_GRADES.find(g=>g.key===key) || null;
-  return {key, label:key, mult:1};
+  return (GRADE_META[metal]||[]).find(g=>g.key===key) || null;
 }
 function computedRate(metal, key){
-  if(metal==='Gold'){ const g=GOLD_GRADES.find(x=>x.key===key); return g? +(db.pricing.gold.base*g.mult).toFixed(2) : 0; }
-  if(metal==='Silver') return +(db.pricing.silver.base*(parseInt(key,10)/999)).toFixed(2);
-  if(metal==='Platinum') return +(db.pricing.platinum.base*(parseInt(key,10)/999)).toFixed(2);
-  return 0;
+  const grade=gradeMeta(metal,key);
+  return grade ? +(bucketFor(metal).base*grade.mult).toFixed(2) : 0;
 }
 function bucketFor(metal){ return metal==='Gold'?db.pricing.gold : metal==='Silver'?db.pricing.silver : db.pricing.platinum; }
 function metalRate(metal, key){
@@ -571,7 +582,7 @@ function renderRates(){
         <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.silver.base||''}" onchange="setBase('Silver', this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${SILVER_GRADES.map(k=>renderGradeCard('Silver', k, k, null)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.map(g=>renderGradeCard('Silver', g.key, g.label, g.mult)).join('')}</div>
   </section>
 
   <section class="metal-section">
@@ -582,7 +593,7 @@ function renderRates(){
         <div class="base-input"><span>₱</span><input type="text" inputmode="decimal" value="${db.pricing.platinum.base||''}" onchange="setBase('Platinum', this.value)"></div>
       </div>
     </div>
-    <div class="grade-grid">${PLATINUM_GRADES.map(k=>renderGradeCard('Platinum', k, k, null)).join('')}</div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum', g.key, g.label, g.mult)).join('')}</div>
   </section>
 
   <section class="block">
@@ -611,18 +622,18 @@ function renderStaffRates(){
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot silver"></span><h3>Silver</h3><span class="count">${SILVER_GRADES.length} grades</span></div>
-    <div class="grade-grid">${SILVER_GRADES.map(key=>renderGradeCard('Silver',key,key,null)).join('')}</div>
+    <div class="grade-grid">${SILVER_GRADES.map(g=>renderGradeCard('Silver',g.key,g.label,g.mult)).join('')}</div>
   </section>
   <section class="metal-section">
     <div class="metal-section-head"><span class="metal-dot platinum"></span><h3>Platinum</h3><span class="count">${PLATINUM_GRADES.length} grades</span></div>
-    <div class="grade-grid">${PLATINUM_GRADES.map(key=>renderGradeCard('Platinum',key,key,null)).join('')}</div>
+    <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum',g.key,g.label,g.mult)).join('')}</div>
   </section>`;
 }
 function renderGradeCard(metal, key, label, mult){
   const ov = isOverridden(metal, key);
   const editing = overrideEditors.has(overrideEditorId(metal,key));
   const rate = metalRate(metal, key);
-  const multTxt = (mult!=null) ? `×${mult}` : `×${(parseInt(key,10)/999).toFixed(3)}`;
+  const multTxt = `×${Number(mult??0).toFixed(3).replace(/0+$/,'').replace(/\.$/,'')}`;
   const rateControl = editing||ov
     ? `<input data-rate-editor="${metal}-${key}" type="text" inputmode="decimal" value="${rate}" onchange="commitOverride('${metal}','${key}', this.value)">`
     : `<span class="gc-value">${rate}</span>`;
