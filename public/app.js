@@ -73,6 +73,8 @@ function ensureShape() {
     db.pricing.platinum.overrides = db.pricing.platinum.overrides || {};
     db.pricing.auto = Object.assign({ enabled: true, payoutPct: 94, lastFetchDate: '', lastAppliedDate: '', lastFetchedAt: '', marketPhp: {}, goldSource: '', draft: null }, db.pricing.auto || {});
     db.pricing.gradeMultipliers = db.pricing.gradeMultipliers || {};
+    db.pricing.dailyFormula = db.pricing.dailyFormula || { effectiveDate: '', multipliers: {} };
+    db.pricing.dailyFormula.multipliers = db.pricing.dailyFormula.multipliers || {};
 }
 function openLedgerDB() {
     return new Promise((resolve, reject) => {
@@ -348,7 +350,8 @@ function gradeMeta(metal, key) {
 }
 function configuredMultiplier(metal, key) {
     const fallback = Number(gradeMeta(metal, key)?.mult) || 0;
-    const configured = Number(db.pricing?.gradeMultipliers?.[metal]?.[key]);
+    const daily = db.pricing?.dailyFormula;
+    const configured = Number(daily?.effectiveDate === todayStr() ? daily?.multipliers?.[metal]?.[key] : NaN);
     return Number.isFinite(configured) && configured > 0 ? configured : fallback;
 }
 function computedRate(metal, key) {
@@ -684,7 +687,7 @@ function renderRates() {
   </section>
   <section class="block">
     <h2 class="block-title">How automated pricing works</h2>
-    <p class="metal-section-desc">The live PHP market price calculates every karat or purity automatically. Administrators can configure each grade multiplier; <strong>Override price</strong> temporarily pins an exact PHP rate until reset.</p>
+    <p class="metal-section-desc">The live PHP market price calculates every grade automatically. Use <strong>Edit today's formula</strong> to change a multiplier for this Philippine date only, or <strong>Override PHP rate</strong> to pin an exact rate until reset.</p>
   </section>
 
   <section class="metal-section">
@@ -759,17 +762,18 @@ function renderGradeCard(metal, key, label, mult) {
     const editing = overrideEditors.has(overrideEditorId(metal, key));
     const rate = metalRate(metal, key);
     const appliedMultiplier = configuredMultiplier(metal, key);
-    const formulaChanged = Math.abs(appliedMultiplier - Number(mult || 0)) >= 0.000001;
+    const dailyFormulaActive = db.pricing?.dailyFormula?.effectiveDate === todayStr();
+    const formulaChanged = dailyFormulaActive && Math.abs(appliedMultiplier - Number(mult || 0)) >= 0.000001;
     const multTxt = `×${Number(appliedMultiplier).toFixed(3).replace(/0+$/, '').replace(/\.$/, '')}`;
     const rateControl = editing || ov
         ? `<input data-rate-editor="${metal}-${key}" type="text" inputmode="decimal" value="${rate}" onchange="commitOverride('${metal}','${key}', this.value)">`
         : `<span class="gc-value">${rate}</span>`;
     const rateAction = ov ? `<span class="ov-tag">overridden</span> · <button onclick="resetOverride('${metal}','${key}')">reset PHP rate</button>` : editing ? `<button onclick="cancelOverride('${metal}','${key}')">cancel override</button>` : `<button onclick="beginOverride('${metal}','${key}')">Override PHP rate</button>`;
-    const formulaAction = isAdmin() ? ` · <button onclick="openGradeFormulaEditor('${metal}','${key}')">${formulaChanged ? 'edit formula' : 'Configure formula'}</button>` : '';
+    const formulaAction = isAdmin() ? ` · <button onclick="openGradeFormulaEditor('${metal}','${key}')">Edit today's formula</button>` : '';
     return `<div class="grade-card ${ov ? 'is-override' : ''}">
     <div class="gc-top"><span>${esc(label)}</span><span>${multTxt}</span></div>
     <div class="gc-rate"><span class="unit">₱</span>${rateControl}<span class="unit">/g</span></div>
-    <div class="gc-foot">${rateAction}${formulaAction}${formulaChanged ? ' <span class="formula-tag">custom formula</span>' : ''}</div>
+    <div class="gc-foot">${rateAction}${formulaAction}${formulaChanged ? ' <span class="formula-tag">today only</span>' : ''}</div>
   </div>`;
 }
 let formulaEditTarget = null;
@@ -787,8 +791,8 @@ function openGradeFormulaEditor(metal, key) {
     modal.id = 'formula_edit_modal';
     modal.className = 'modal-backdrop';
     modal.innerHTML = `<form class="summary-modal" onsubmit="saveGradeFormula(event)" role="dialog" aria-modal="true" aria-labelledby="formula_edit_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">PHP rate formula</div><h2 id="formula_edit_title">${esc(metal)} ${esc(grade.label)}</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
-    <p class="form-note" style="margin:16px 0;">Buying rate = PHP base rate × grade multiplier. Internet updates change the PHP base rate; this multiplier remains configured.</p>
+    <div class="summary-modal-head"><div><div class="eyebrow">Today's PHP rate formula</div><h2 id="formula_edit_title">${esc(metal)} ${esc(grade.label)}</h2></div><button type="button" class="modal-close" onclick="closeGradeFormulaEditor()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">Buying rate = PHP base rate × grade multiplier. This change applies only on ${fmtDate(todayStr())}; tomorrow the standard multiplier returns automatically.</p>
     <div class="form-grid"><div class="field"><label>PHP base rate</label><input value="${base.toFixed(2)}" readonly></div><div class="field"><label>Grade multiplier</label><input id="formula_multiplier" type="number" min="0.001" max="2" step="0.001" value="${multiplier}" oninput="updateGradeFormulaPreview()" required></div></div>
     <div class="stat" style="margin-top:14px"><div class="label">Calculated buying rate</div><div class="value" id="formula_preview">${fmtMoney(base * multiplier)}/g</div></div>
     <div class="form-actions">${customized ? '<button type="button" class="btn secondary" onclick="resetGradeFormula()">Use default formula</button>' : ''}<button type="button" class="btn secondary" onclick="closeGradeFormulaEditor()">Cancel</button><button type="submit" class="btn">Save formula</button></div>
@@ -816,23 +820,25 @@ async function saveGradeFormula(event) {
         return;
     }
     const { metal, key } = formulaEditTarget;
-    db.pricing.gradeMultipliers[metal] = db.pricing.gradeMultipliers[metal] || {};
-    db.pricing.gradeMultipliers[metal][key] = multiplier;
+    if (db.pricing.dailyFormula.effectiveDate !== todayStr())
+        db.pricing.dailyFormula = { effectiveDate: todayStr(), multipliers: {} };
+    db.pricing.dailyFormula.multipliers[metal] = db.pricing.dailyFormula.multipliers[metal] || {};
+    db.pricing.dailyFormula.multipliers[metal][key] = multiplier;
     closeGradeFormulaEditor();
     await saveDB();
     render();
-    toast(`${metal} ${gradeLabel(metal, key)} PHP formula updated`);
+    toast(`${metal} ${gradeLabel(metal, key)} formula updated for today`);
 }
 async function resetGradeFormula() {
     if (!formulaEditTarget || !adminEditGuard())
         return;
     const { metal, key } = formulaEditTarget;
-    if (db.pricing.gradeMultipliers?.[metal])
-        delete db.pricing.gradeMultipliers[metal][key];
+    if (db.pricing.dailyFormula?.multipliers?.[metal])
+        delete db.pricing.dailyFormula.multipliers[metal][key];
     closeGradeFormulaEditor();
     await saveDB();
     render();
-    toast(`${metal} ${gradeLabel(metal, key)} formula reset`);
+    toast(`${metal} ${gradeLabel(metal, key)} formula reset for today`);
 }
 function renderFeaturedBox() {
     const f = db.pricing.featured;

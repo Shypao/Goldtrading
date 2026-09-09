@@ -201,6 +201,8 @@ function saveStaffAdditions(candidate: LedgerState): void {
   const currentPricing = JSON.parse(JSON.stringify(current.pricing)) as Record<string, any>;
   candidatePricing.gradeMultipliers = candidatePricing.gradeMultipliers ?? {};
   currentPricing.gradeMultipliers = currentPricing.gradeMultipliers ?? {};
+  candidatePricing.dailyFormula = candidatePricing.dailyFormula ?? { effectiveDate: '', multipliers: {} };
+  currentPricing.dailyFormula = currentPricing.dailyFormula ?? { effectiveDate: '', multipliers: {} };
   const permittedGrades: Record<string, Set<string>> = {
     gold: new Set(['24K', '23K', '22K', '21K', '20K', '18K', '18K-BUO', '17K', '16K', '14K', '12K', '10K', '9K', '8K', '5K', '98%', '73%']),
     silver: new Set(['999', '925', '900', '800', '750', '600']),
