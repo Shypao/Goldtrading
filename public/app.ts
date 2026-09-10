@@ -120,6 +120,25 @@ async function saveDB(){
   catch(e){ console.error('Save failed', e); toast('Could not save — changes may not persist'); return false; }
 }
 
+async function savePricingDB(includeHistory=false){
+  if(!isAdmin()||!(location.protocol==='http:'||location.protocol==='https:')) return saveDB();
+  try{
+    ensureShape();
+    const body={pricing:db.pricing};
+    if(includeHistory) body.pricingHistory=db.pricingHistory;
+    const response=await fetch('/api/pricing',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+    if(response.status===401){ showLogin(); throw new Error('Session expired'); }
+    const result=await response.json().catch(()=>null);
+    if(!response.ok) throw new Error(result?.error||'Pricing server returned HTTP '+response.status);
+    if(Number.isInteger(result?.revision)) db._revision=result.revision;
+    return true;
+  }catch(error){
+    console.error('Pricing save failed',error);
+    toast('Could not save pricing — please try again');
+    return false;
+  }
+}
+
 function seedEmptyLedger(){
   db.customers = [];
   db.pricing = {
@@ -345,7 +364,7 @@ async function setBase(metal, value){
   if(!Number.isFinite(v)||v<=0){ toast('Enter a valid PHP base rate'); render(); return; }
   if(db.pricing.dailyFormula.effectiveDate!==todayStr()) db.pricing.dailyFormula={effectiveDate:todayStr(),baseRates:{}};
   db.pricing.dailyFormula.baseRates[metal]=v;
-  await saveDB(); render(); toast(`${metal} PHP base rate updated for today`);
+  if(await savePricingDB()){ render(); toast(`${metal} PHP base rate updated for today`); }
 }
 async function setSilver925Base(value){
   const rate=roundPeso(parseFloat(value));
@@ -353,22 +372,22 @@ async function setSilver925Base(value){
   if(db.pricing.dailyFormula.effectiveDate!==todayStr()) db.pricing.dailyFormula={effectiveDate:todayStr(),baseRates:{}};
   db.pricing.dailyFormula.baseRates.Silver925=rate;
   delete db.pricing.silver.overrides['925'];
-  await saveDB(); render(); toast('Silver 925 basis rate updated for today');
+  if(await savePricingDB()){ render(); toast('Silver 925 basis rate updated for today'); }
 }
-function setOverride(metal, key, value){
+async function setOverride(metal, key, value){
   const b = bucketFor(metal);
   if(value===''){ delete b.overrides[key]; } else { b.overrides[key] = roundPeso(parseFloat(value)); }
-  saveDB(); render();
+  await (isAdmin()?savePricingDB():saveDB()); render();
 }
-function resetOverride(metal, key){
+async function resetOverride(metal, key){
   delete bucketFor(metal).overrides[key];
-  saveDB(); render();
+  await (isAdmin()?savePricingDB():saveDB()); render();
 }
-function setFeatured(metal, key, low, high){
+async function setFeatured(metal, key, low, high){
   db.pricing.featured = { metal, key, low: parseFloat(low)||0, high: parseFloat(high)||0 };
-  saveDB(); render();
+  await savePricingDB(); render();
 }
-function clearFeatured(){ db.pricing.featured = null; saveDB(); render(); }
+async function clearFeatured(){ db.pricing.featured = null; await savePricingDB(); render(); }
 let pricingFetchBusy=false;
 const overrideEditors=new Set();
 const TROY_OUNCE_GRAMS=31.1034768;
@@ -442,7 +461,7 @@ function visiblePricingHistory(){
     return true;
   });
 }
-function setAutoEnabled(checked){ db.pricing.auto.enabled=checked; saveDB(); render(); }
+async function setAutoEnabled(checked){ db.pricing.auto.enabled=checked; await savePricingDB(); render(); }
 function overrideEditorId(metal,key){ return metal+'|'+key; }
 function beginOverride(metal,key){
   const id=overrideEditorId(metal,key);
@@ -461,12 +480,12 @@ function commitOverride(metal,key,value){
   setOverride(metal,key,n);
   toast(`${gradeLabel(metal,key)} price overridden`);
 }
-function savePricingSnapshot(){
+async function savePricingSnapshot(){
   const by = val('px_by').trim() || 'Admin';
   const date = val('px_date') || todayStr();
   db.pricing.effectiveDate = date;
   db.pricingHistory.push({ id:uid('rate'), ts:Date.now(), effectiveDate:date, enteredBy:by, snapshot: JSON.parse(JSON.stringify(db.pricing)) });
-  saveDB(); render(); toast('Rate sheet saved to history');
+  if(await savePricingDB(true)){ render(); toast('Rate sheet saved to history'); }
 }
 async function saveGoldMultipliers(){
   if(!adminEditGuard()) return;
@@ -480,13 +499,13 @@ async function saveGoldMultipliers(){
   db.pricing.gradeMultipliers=db.pricing.gradeMultipliers||{};
   db.pricing.gradeMultipliers.Gold=values;
   closeGoldMultiplierEditor();
-  await saveDB(); render(); toast('Gold karat multipliers updated');
+  if(await savePricingDB()){ render(); toast('Gold karat multipliers updated'); }
 }
 async function resetGoldMultipliers(){
   if(!adminEditGuard()||!confirm('Reset every Gold multiplier to the original rate-sheet values?')) return;
   if(db.pricing.gradeMultipliers) delete db.pricing.gradeMultipliers.Gold;
   closeGoldMultiplierEditor();
-  await saveDB(); render(); toast('Gold multipliers reset');
+  if(await savePricingDB()){ render(); toast('Gold multipliers reset'); }
 }
 function openGoldMultiplierEditor(){
   if(!adminEditGuard()) return;
@@ -899,14 +918,14 @@ async function saveGradeFormula(event){
     db.pricing.dailyFormula.baseRates.Silver925=silver925;
     delete db.pricing.silver.overrides['925'];
   }
-  closeGradeFormulaEditor(); await saveDB(); render(); toast(`${metal} PHP base rate updated for today`);
+  closeGradeFormulaEditor(); if(await savePricingDB()){ render(); toast(`${metal} PHP base rate updated for today`); }
 }
 async function resetGradeFormula(){
   if(!formulaEditTarget||!adminEditGuard()) return;
   const {metal}=formulaEditTarget;
   if(db.pricing.dailyFormula?.baseRates) delete db.pricing.dailyFormula.baseRates[metal];
   if(metal==='Silver'&&db.pricing.dailyFormula?.baseRates) delete db.pricing.dailyFormula.baseRates.Silver925;
-  closeGradeFormulaEditor(); await saveDB(); render(); toast(`${metal} PHP base reset to the live rate`);
+  closeGradeFormulaEditor(); if(await savePricingDB()){ render(); toast(`${metal} PHP base reset to the live rate`); }
 }
 function renderFeaturedBox(){
   const f = db.pricing.featured;

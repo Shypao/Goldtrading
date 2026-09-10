@@ -382,6 +382,33 @@ async function saveState(state: LedgerState): Promise<void> {
   state._revision=nextRevision;
 }
 
+async function savePricingState(pricing: PricingSettings, pricingHistory?: LedgerRecord[]): Promise<number> {
+  const nextRevision=(await currentLedgerRevision())+1;
+  const statements: SqlStatement[] = [];
+  if (pricingHistory) {
+    statements.push({ sql: 'DELETE FROM pricing_history' });
+    for (const record of pricingHistory) {
+      if (!record.id) throw new Error('Pricing history contains a record without an id');
+      statements.push({
+        sql: 'INSERT INTO pricing_history (id, data) VALUES (?, ?)',
+        args: [record.id, JSON.stringify(record)]
+      });
+    }
+  }
+  statements.push(
+    {
+      sql: "INSERT INTO settings (key, value) VALUES ('pricing', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      args: [JSON.stringify(pricing)]
+    },
+    {
+      sql: "INSERT INTO settings (key, value) VALUES ('ledger_revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+      args: [String(nextRevision)]
+    }
+  );
+  await dbBatch(statements);
+  return nextRevision;
+}
+
 async function fetchJson<T>(url: string): Promise<T> {
   const response = await fetch(url, { headers: { 'User-Agent': 'ZPP-Gold-Trading/1.0' } });
   if (!response.ok) throw new Error(`Market provider returned HTTP ${response.status}`);
@@ -529,6 +556,23 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     if (request.method === 'GET' && url.pathname === '/api/pricing') {
       const state = await loadState();
       return sendJson(response, 200, { pricing: state.pricing, revision: state._revision });
+    }
+    if (request.method === 'PUT' && url.pathname === '/api/pricing') {
+      if (user!.role !== 'admin') return sendJson(response, 403, { error: 'Administrator access required' });
+      const body = await readJsonBody(request) as Record<string, unknown>;
+      const pricing = body.pricing;
+      const pricingHistory = body.pricingHistory;
+      if (!pricing || typeof pricing !== 'object' || Array.isArray(pricing)) {
+        return sendJson(response, 400, { error: 'Invalid pricing settings' });
+      }
+      if (pricingHistory !== undefined && (!Array.isArray(pricingHistory) || pricingHistory.some(record => !record || typeof record !== 'object'))) {
+        return sendJson(response, 400, { error: 'Invalid pricing history' });
+      }
+      const revision = await savePricingState(
+        pricing as PricingSettings,
+        pricingHistory as LedgerRecord[] | undefined
+      );
+      return sendJson(response, 200, { ok: true, revision });
     }
     if (request.method === 'GET' && url.pathname === '/api/buying-draft') {
       const row = await dbGet<{ value: string }>('SELECT value FROM settings WHERE key = ?', [buyingDraftKey(user!)]);
