@@ -8,6 +8,10 @@ let currentUser = null;
 let userAccounts = [];
 let currentCashflow = null;
 let cashflowSyncBusy = false;
+const CASHFLOW_PAGE_SIZE = 3;
+let cashflowPurchasePage = 1;
+let cashflowAdjustmentPage = 1;
+let cashflowSearch = '';
 const STORE_KEY = 'zpp_gold_db';
 const LEDGER_DB_NAME = 'zpp_gold_trading_ph';
 const LEDGER_DB_VERSION = 1;
@@ -1141,26 +1145,70 @@ function cashflowTime(value){
   if(!value) return 'Time unavailable';
   return new Date(value).toLocaleTimeString('en-PH',{hour:'numeric',minute:'2-digit'});
 }
+function cashflowPagination(kind,total,page){
+  const pages=Math.max(1,Math.ceil(total/CASHFLOW_PAGE_SIZE));
+  if(pages<=1) return '';
+  return `<div class="cashflow-pagination"><span>Page ${page} of ${pages} · ${total} records</span><div><button class="btn secondary small" onclick="changeCashflowPage('${kind}',-1)" ${page<=1?'disabled':''}>Previous</button><button class="btn secondary small" onclick="changeCashflowPage('${kind}',1)" ${page>=pages?'disabled':''}>Next</button></div></div>`;
+}
+function changeCashflowPage(kind,direction){
+  const total=kind==='purchases'?filteredCashflowTransactions().length:filteredCashflowAdjustments().length;
+  const pages=Math.max(1,Math.ceil(total/CASHFLOW_PAGE_SIZE));
+  if(kind==='purchases') cashflowPurchasePage=Math.min(Math.max(cashflowPurchasePage+direction,1),pages);
+  else cashflowAdjustmentPage=Math.min(Math.max(cashflowAdjustmentPage+direction,1),pages);
+  renderCashflowDetailsContent();
+}
+function cashflowMatches(values){
+  const query=cashflowSearch.trim().toLowerCase();
+  return !query||values.filter(value=>value!=null).join(' ').toLowerCase().includes(query);
+}
+function filteredCashflowTransactions(){
+  return (currentCashflow?.transactions||[]).filter(transaction=>cashflowMatches([
+    cashflowTime(transaction.recordedAt),transaction.customerName,transaction.paymentMethod,transaction.payout,
+    fmtMoney(transaction.payout),transaction.itemCount,...(transaction.items||[]),
+    String(transaction.paymentMethod).toLowerCase()==='cash'?'cash deduction':'no cash effect'
+  ]));
+}
+function filteredCashflowAdjustments(){
+  const labels={set:'Set balance',add:'Cash added',deduct:'Cash deducted'};
+  return (currentCashflow?.adjustments||[]).filter(adjustment=>cashflowMatches([
+    cashflowTime(adjustment.createdAt),labels[adjustment.operation],adjustment.operation,adjustment.note,
+    adjustment.createdBy,adjustment.amount,fmtMoney(adjustment.amount),adjustment.balanceAfter,fmtMoney(adjustment.balanceAfter)
+  ]));
+}
+function updateCashflowSearch(value){
+  cashflowSearch=String(value||''); cashflowPurchasePage=1; cashflowAdjustmentPage=1; renderCashflowDetailsContent();
+  requestAnimationFrame(()=>{ const input=document.getElementById('cashflow_search'); if(input){ input.focus(); input.setSelectionRange?.(input.value.length,input.value.length); } });
+}
 function cashflowDetailRows(){
   const snapshot=currentCashflow;
-  if(!snapshot?.transactions?.length) return '<div class="empty-note">No buying transactions recorded today.</div>';
+  const transactions=filteredCashflowTransactions();
+  if(!transactions.length) return `<div class="empty-note">${cashflowSearch?'No buying transactions match your search.':'No buying transactions recorded today.'}</div>`;
+  const matchingIds=new Set(transactions.map(transaction=>transaction.id));
   let running=Number(snapshot.cashOnHand);
   const setAt=Date.parse(snapshot.setAt||'');
-  const rows=snapshot.transactions.map(transaction=>{
+  const prepared=snapshot.transactions.map(transaction=>{
     const isCash=String(transaction.paymentMethod).toLowerCase()==='cash';
     const recordedAt=Date.parse(transaction.recordedAt||'');
     const afterLatestSet=isCash&&snapshot.configured&&Number.isFinite(recordedAt)&&Number.isFinite(setAt)&&recordedAt>setAt;
     const balanceAfter=afterLatestSet?running:null;
     if(afterLatestSet) running=roundMoney(running+Number(transaction.payout));
-    return `<tr><td>${esc(cashflowTime(transaction.recordedAt))}</td><td><strong>${esc(transaction.customerName)}</strong><br><span class="hint">${esc(transaction.items.join(' · '))} · ${transaction.itemCount} item${transaction.itemCount===1?'':'s'}</span></td><td>${esc(transaction.paymentMethod)}</td><td class="num">${fmtMoney(transaction.payout)}</td><td class="num ${isCash?'cashflow-out':'cashflow-no-effect'}">${isCash?`−${fmtMoney(transaction.payout)}`:'No cash effect'}</td><td class="num">${afterLatestSet?fmtMoney(balanceAfter):(isCash&&snapshot.configured?'Included in latest set':'—')}</td></tr>`;
-  }).join('');
-  return `<div class="table-wrap cashflow-ledger"><table><thead><tr><th>Time</th><th>Buying transaction</th><th>Payment</th><th class="num-head">Purchased</th><th class="num-head">Cash movement</th><th class="num-head">Cash remaining</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+    return {transaction,isCash,afterLatestSet,balanceAfter};
+  }).filter(entry=>matchingIds.has(entry.transaction.id));
+  const pages=Math.max(1,Math.ceil(prepared.length/CASHFLOW_PAGE_SIZE));
+  cashflowPurchasePage=Math.min(Math.max(cashflowPurchasePage,1),pages);
+  const start=(cashflowPurchasePage-1)*CASHFLOW_PAGE_SIZE;
+  const rows=prepared.slice(start,start+CASHFLOW_PAGE_SIZE).map(({transaction,isCash,afterLatestSet,balanceAfter})=>`<tr><td>${esc(cashflowTime(transaction.recordedAt))}</td><td><strong>${esc(transaction.customerName)}</strong><br><span class="hint">${esc(transaction.items.join(' · '))} · ${transaction.itemCount} item${transaction.itemCount===1?'':'s'}</span></td><td>${esc(transaction.paymentMethod)}</td><td class="num">${fmtMoney(transaction.payout)}</td><td class="num ${isCash?'cashflow-out':'cashflow-no-effect'}">${isCash?`−${fmtMoney(transaction.payout)}`:'No cash effect'}</td><td class="num">${afterLatestSet?fmtMoney(balanceAfter):(isCash&&snapshot.configured?'Included in latest set':'—')}</td></tr>`).join('');
+  return `<div class="table-wrap cashflow-ledger"><table><thead><tr><th>Time</th><th>Buying transaction</th><th>Payment</th><th class="num-head">Purchased</th><th class="num-head">Cash movement</th><th class="num-head">Cash remaining</th></tr></thead><tbody>${rows}</tbody></table></div>${cashflowPagination('purchases',prepared.length,cashflowPurchasePage)}`;
 }
 function cashflowAdjustmentRows(){
-  const adjustments=currentCashflow?.adjustments||[];
-  if(!adjustments.length) return '<div class="empty-note">No manual cash adjustments recorded today.</div>';
+  const adjustments=filteredCashflowAdjustments();
+  if(!adjustments.length) return `<div class="empty-note">${cashflowSearch?'No Admin cash adjustments match your search.':'No manual cash adjustments recorded today.'}</div>`;
   const labels={set:'Set balance',add:'Cash added',deduct:'Cash deducted'};
-  return `<div class="table-wrap cashflow-adjustment-ledger"><table><thead><tr><th>Time</th><th>Action</th><th>Notes</th><th>Admin</th><th class="num-head">Amount</th><th class="num-head">Balance after</th></tr></thead><tbody>${adjustments.map(adjustment=>`<tr><td>${esc(cashflowTime(adjustment.createdAt))}</td><td><span class="pill ${adjustment.operation==='deduct'?'cashflow-deduct-pill':adjustment.operation==='add'?'cashflow-add-pill':''}">${esc(labels[adjustment.operation]||adjustment.operation)}</span></td><td>${esc(adjustment.note||'—')}</td><td>${esc(adjustment.createdBy||'Admin')}</td><td class="num ${adjustment.operation==='deduct'?'cashflow-out':''}">${adjustment.operation==='add'?'+':adjustment.operation==='deduct'?'−':''}${fmtMoney(adjustment.amount)}</td><td class="num">${fmtMoney(adjustment.balanceAfter)}</td></tr>`).join('')}</tbody></table></div>`;
+  const pages=Math.max(1,Math.ceil(adjustments.length/CASHFLOW_PAGE_SIZE));
+  cashflowAdjustmentPage=Math.min(Math.max(cashflowAdjustmentPage,1),pages);
+  const start=(cashflowAdjustmentPage-1)*CASHFLOW_PAGE_SIZE;
+  const rows=adjustments.slice(start,start+CASHFLOW_PAGE_SIZE).map(adjustment=>`<tr><td>${esc(cashflowTime(adjustment.createdAt))}</td><td><span class="pill ${adjustment.operation==='deduct'?'cashflow-deduct-pill':adjustment.operation==='add'?'cashflow-add-pill':''}">${esc(labels[adjustment.operation]||adjustment.operation)}</span></td><td>${esc(adjustment.note||'—')}</td><td>${esc(adjustment.createdBy||'Admin')}</td><td class="num ${adjustment.operation==='deduct'?'cashflow-out':adjustment.operation==='add'?'cashflow-in':''}">${adjustment.operation==='add'?'+':adjustment.operation==='deduct'?'−':''}${fmtMoney(adjustment.amount)}</td><td class="num">${fmtMoney(adjustment.balanceAfter)}</td></tr>`).join('');
+  return `<div class="table-wrap cashflow-adjustment-ledger"><table><thead><tr><th>Time</th><th>Action</th><th>Notes</th><th>Admin</th><th class="num-head">Amount</th><th class="num-head">Balance after</th></tr></thead><tbody>${rows}</tbody></table></div>${cashflowPagination('adjustments',adjustments.length,cashflowAdjustmentPage)}`;
 }
 function renderCashflowDetailsContent(){
   const container=document.getElementById('cashflow_details_content');
@@ -1173,11 +1221,13 @@ function renderCashflowDetailsContent(){
     <div class="stat"><div class="label">Non-cash</div><div class="value">${fmtMoney(snapshot.nonCashPurchases||0)}</div></div>
   </div>
   ${snapshot.configured?`<div class="cashflow-set-note"><strong>Latest Admin adjustment:</strong> Balance became ${fmtMoney(snapshot.balanceBase)} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>`:'<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
+  <div class="cashflow-search"><div class="field"><label for="cashflow_search">Search cashflow</label><input id="cashflow_search" type="search" autocomplete="off" value="${esc(cashflowSearch)}" placeholder="Seller, item, payment, amount, note, Admin, or time" oninput="updateCashflowSearch(this.value)"></div>${cashflowSearch?'<button class="btn secondary small" onclick="updateCashflowSearch(\'\')">Clear</button>':''}</div>
   <h3 class="cashflow-ledger-title">Buying transactions</h3>${cashflowDetailRows()}
   <h3 class="cashflow-ledger-title">Admin cash adjustments</h3>${cashflowAdjustmentRows()}`;
 }
 async function openCashflowDetails(){
   closeCashflowDetails();
+  cashflowPurchasePage=1; cashflowAdjustmentPage=1; cashflowSearch='';
   const modal=document.createElement('div'); modal.id='cashflow_details_modal'; modal.className='modal-backdrop';
   modal.innerHTML=`<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="cashflow_details_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Today's buying cashflow</div><h2 id="cashflow_details_title">Cash movement · ${fmtDate(todayStr())}</h2><p class="form-note">Cash purchases reduce the balance automatically. Bank transfer and GCash purchases are recorded without reducing physical cash.</p></div><button class="modal-close" onclick="closeCashflowDetails()" aria-label="Close">×</button></div>
