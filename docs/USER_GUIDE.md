@@ -198,7 +198,7 @@ The top of the Buying page shows today's live cash position:
 
 The daily cash-movement strip shows **IN** and **OUT** totals. IN is the sum of manual **Add cash** adjustments. OUT is the sum of purchases paid by Cash plus manual **Deduct cash** adjustments. **Set exact balance** is treated as a reconciliation and is not counted as cash movement.
 
-Select **View cash flow** to open today's transaction ledger. It shows the seller, purchased items, payment method, payout, cash effect, and running balance. Use the search field to match any visible transaction or adjustment text, including seller, item, payment method, amount, action, note, Admin, or time. Buying transactions and Admin cash adjustments are paginated at three records per page to keep the modal compact. The page refreshes the shared cashflow approximately every five seconds and immediately after a successful purchase.
+Select **View cash flow** to open today's transaction ledger. It shows the seller, purchased items, payment method, payout, cash effect, and running balance. Use the search field to match any visible transaction or adjustment text, including seller, item, payment method, amount, action, note, Admin, or time. Each ledger is scrollable and displays up to 50 matching records before showing Previous and Next page controls. The page refreshes the shared cashflow approximately every five seconds and immediately after a successful purchase.
 
 Only an administrator can select **Set cash on hand** or **Edit cash on hand**. The editor provides three actions:
 
@@ -206,7 +206,7 @@ Only an administrator can select **Set cash on hand** or **Edit cash on hand**. 
 - **Add cash** records incoming physical cash and increases the balance; and
 - **Deduct cash** records a manual cash expense or transfer and decreases the balance.
 
-The administrator can attach an optional note to every adjustment. The cashflow modal records the action, amount, resulting balance, note, Admin name, and time. Purchases paid by Cash after the latest adjustment are deducted automatically. Staff can view the same live figures and adjustment history but cannot change the balance.
+The administrator can attach an optional note to every adjustment. Select **View Admin cash adjustments** from the cashflow modal to open the separate adjustment-history modal. It provides its own search and a scrollable list of up to 50 records before Previous and Next controls appear. The history records the action, amount, resulting balance, note, Admin name, and time. Purchases paid by Cash after the latest adjustment are deducted automatically. Staff can view the same live figures and adjustment history but cannot change the balance.
 
 ### Step 1: Customer information
 

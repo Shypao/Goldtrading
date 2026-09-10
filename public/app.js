@@ -8,10 +8,11 @@ let currentUser = null;
 let userAccounts = [];
 let currentCashflow = null;
 let cashflowSyncBusy = false;
-const CASHFLOW_PAGE_SIZE = 3;
+const CASHFLOW_PAGE_SIZE = 50;
 let cashflowPurchasePage = 1;
 let cashflowAdjustmentPage = 1;
 let cashflowSearch = '';
+let cashflowAdjustmentSearch = '';
 const STORE_KEY = 'zpp_gold_db';
 const LEDGER_DB_NAME = 'zpp_gold_trading_ph';
 const LEDGER_DB_VERSION = 1;
@@ -1420,6 +1421,7 @@ async function syncCashflow() {
         if (card)
             card.innerHTML = cashflowCardMarkup();
         renderCashflowDetailsContent();
+        renderCashflowAdjustmentDetailsContent();
     }
     catch (error) {
         console.error('Cashflow sync failed', error);
@@ -1463,10 +1465,11 @@ function filteredCashflowTransactions() {
 }
 function filteredCashflowAdjustments() {
     const labels = { set: 'Set balance', add: 'Cash added', deduct: 'Cash deducted' };
-    return (currentCashflow?.adjustments || []).filter(adjustment => cashflowMatches([
+    const query = cashflowAdjustmentSearch.trim().toLowerCase();
+    return (currentCashflow?.adjustments || []).filter(adjustment => !query || [
         cashflowTime(adjustment.createdAt), labels[adjustment.operation], adjustment.operation, adjustment.note,
         adjustment.createdBy, adjustment.amount, fmtMoney(adjustment.amount), adjustment.balanceAfter, fmtMoney(adjustment.balanceAfter)
-    ]));
+    ].filter(value => value != null).join(' ').toLowerCase().includes(query));
 }
 function updateCashflowSearch(value) {
     cashflowSearch = String(value || '');
@@ -1474,6 +1477,15 @@ function updateCashflowSearch(value) {
     cashflowAdjustmentPage = 1;
     renderCashflowDetailsContent();
     requestAnimationFrame(() => { const input = document.getElementById('cashflow_search'); if (input) {
+        input.focus();
+        input.setSelectionRange?.(input.value.length, input.value.length);
+    } });
+}
+function updateCashflowAdjustmentSearch(value) {
+    cashflowAdjustmentSearch = String(value || '');
+    cashflowAdjustmentPage = 1;
+    renderCashflowAdjustmentDetailsContent();
+    requestAnimationFrame(() => { const input = document.getElementById('cashflow_adjustment_search'); if (input) {
         input.focus();
         input.setSelectionRange?.(input.value.length, input.value.length);
     } });
@@ -1504,7 +1516,7 @@ function cashflowDetailRows() {
 function cashflowAdjustmentRows() {
     const adjustments = filteredCashflowAdjustments();
     if (!adjustments.length)
-        return `<div class="empty-note">${cashflowSearch ? 'No Admin cash adjustments match your search.' : 'No manual cash adjustments recorded today.'}</div>`;
+        return `<div class="empty-note">${cashflowAdjustmentSearch ? 'No Admin cash adjustments match your search.' : 'No manual cash adjustments recorded today.'}</div>`;
     const labels = { set: 'Set balance', add: 'Cash added', deduct: 'Cash deducted' };
     const pages = Math.max(1, Math.ceil(adjustments.length / CASHFLOW_PAGE_SIZE));
     cashflowAdjustmentPage = Math.min(Math.max(cashflowAdjustmentPage, 1), pages);
@@ -1525,9 +1537,9 @@ function renderCashflowDetailsContent() {
   </div>
   <div class="cashflow-modal-flow"><span>Daily physical cash movement</span><div><strong class="cashflow-in">IN ${fmtMoney(snapshot.cashIn || 0)}</strong><strong class="cashflow-out">OUT ${fmtMoney(snapshot.cashOut || 0)}</strong></div><small>IN is Admin-added cash. OUT is Cash buying payouts plus manual deductions.</small></div>
   ${snapshot.configured ? `<div class="cashflow-set-note"><strong>Latest Admin adjustment:</strong> Balance became ${fmtMoney(snapshot.balanceBase)} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>` : '<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
-  <div class="cashflow-search"><div class="field"><label for="cashflow_search">Search cashflow</label><input id="cashflow_search" type="search" autocomplete="off" value="${esc(cashflowSearch)}" placeholder="Seller, item, payment, amount, note, Admin, or time" oninput="updateCashflowSearch(this.value)"></div>${cashflowSearch ? '<button class="btn secondary small" onclick="updateCashflowSearch(\'\')">Clear</button>' : ''}</div>
+  <div class="cashflow-search"><div class="field"><label for="cashflow_search">Search buying transactions</label><input id="cashflow_search" type="search" autocomplete="off" value="${esc(cashflowSearch)}" placeholder="Seller, item, payment, amount, or time" oninput="updateCashflowSearch(this.value)"></div>${cashflowSearch ? '<button class="btn secondary small" onclick="updateCashflowSearch(\'\')">Clear</button>' : ''}</div>
   <h3 class="cashflow-ledger-title">Buying transactions</h3>${cashflowDetailRows()}
-  <h3 class="cashflow-ledger-title">Admin cash adjustments</h3>${cashflowAdjustmentRows()}`;
+  <div class="cashflow-adjustment-launch"><div><strong>Admin cash adjustments</strong><span>Review cash added, deducted, or reconciled separately.</span></div><button class="btn secondary" onclick="openCashflowAdjustmentDetails()">View adjustments <span class="badge-count">${snapshot.adjustments?.length || 0}</span></button></div>`;
 }
 async function openCashflowDetails() {
     closeCashflowDetails();
@@ -1547,6 +1559,30 @@ async function openCashflowDetails() {
     document.body.appendChild(modal);
     renderCashflowDetailsContent();
     await syncCashflow();
+}
+function closeCashflowAdjustmentDetails() { document.getElementById('cashflow_adjustment_details_modal')?.remove(); }
+function renderCashflowAdjustmentDetailsContent() {
+    const container = document.getElementById('cashflow_adjustment_details_content');
+    if (!container)
+        return;
+    container.innerHTML = `<div class="cashflow-search"><div class="field"><label for="cashflow_adjustment_search">Search adjustments</label><input id="cashflow_adjustment_search" type="search" autocomplete="off" value="${esc(cashflowAdjustmentSearch)}" placeholder="Action, amount, note, Admin, balance, or time" oninput="updateCashflowAdjustmentSearch(this.value)"></div>${cashflowAdjustmentSearch ? '<button class="btn secondary small" onclick="updateCashflowAdjustmentSearch(\'\')">Clear</button>' : ''}</div>${cashflowAdjustmentRows()}`;
+}
+function openCashflowAdjustmentDetails() {
+    closeCashflowAdjustmentDetails();
+    cashflowAdjustmentPage = 1;
+    cashflowAdjustmentSearch = '';
+    const modal = document.createElement('div');
+    modal.id = 'cashflow_adjustment_details_modal';
+    modal.className = 'modal-backdrop cashflow-adjustment-backdrop';
+    modal.innerHTML = `<div class="inventory-move-modal cashflow-adjustment-modal" role="dialog" aria-modal="true" aria-labelledby="cashflow_adjustment_details_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Cashflow history</div><h2 id="cashflow_adjustment_details_title">Admin cash adjustments · ${fmtDate(todayStr())}</h2><p class="form-note">Cash added is green, cash deducted is red, and exact balance reconciliation is neutral.</p></div><button class="modal-close" onclick="closeCashflowAdjustmentDetails()" aria-label="Close">×</button></div>
+    <div id="cashflow_adjustment_details_content"></div>
+    <div class="form-actions" style="justify-content:flex-end;"><button class="btn secondary" onclick="syncCashflow()">Refresh</button><button class="btn" onclick="closeCashflowAdjustmentDetails()">Close</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeCashflowAdjustmentDetails(); });
+    document.body.appendChild(modal);
+    renderCashflowAdjustmentDetailsContent();
 }
 function openCashflowEditor() {
     if (!isAdmin())
