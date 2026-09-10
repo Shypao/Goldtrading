@@ -13,7 +13,7 @@ This guide explains how to use ZPP Gold Trading for daily rate setting, buying, 
 5. [Daily rate setup](#5-daily-rate-setup)
 6. [Buying transactions](#6-buying-transactions)
 7. [Inventory](#7-inventory)
-8. [Selective liquidation](#8-selective-liquidation)
+8. [Liquidation](#8-liquidation)
 9. [Refining tracking](#9-refining-tracking)
 10. [Limited retail sales](#10-limited-retail-sales)
 11. [Customer management](#11-customer-management)
@@ -31,7 +31,7 @@ ZPP Gold Trading is a transaction and inventory ledger for Gold, Silver, and Pla
 Daily Rate Setup
        ↓
 Buying Transaction → Customer record → Inventory
-                                       ├─→ Selective Liquidation
+                                       ├─→ Liquidation
                                        ├─→ Refining → New refined inventory item
                                        └─→ Limited Retail Sale
 ```
@@ -46,7 +46,7 @@ Amounts are displayed in Philippine pesos (PHP), and weights are entered in gram
 | Daily rate setup | View rates and override a grade | Yes | Full rate administration |
 | Buying transactions | Record one or more purchased items | Yes | Yes |
 | Inventory | Search and view stock | Yes | Full stock actions and edits |
-| Selective liquidation | Record stock sold to a buyer/refiner | No | Yes |
+| Liquidation | Manage open buyer batches and record completed sales | No | Yes |
 | Refining tracking | Combine processed items into one refined item | No | Yes |
 | Limited retail sales | Sell eligible jewelry inventory | No | Yes |
 | Customer management | Add, search, and view customers | Yes | Plus edit/delete |
@@ -96,12 +96,14 @@ Staff may view active rates, override individual grade prices, record purchases,
 4. Review the combined total.
 5. Confirm the transaction and print a receipt when needed.
 
+Cash on hand carries forward automatically. A new Philippine business date starts with the previous recorded day's final balance instead of resetting to zero. Cash purchases and administrator adjustments made on the new date then update that carried balance.
+
 ### Inventory processing
 
 1. Open **Inventory** and filter the relevant stock.
-2. Categorize available items as **For Selling**, **For Refining**, or **On Hold**.
+2. Categorize on-hand items as **Available**, **For Refining**, or **On Hold**.
 3. Send eligible items to the appropriate next workflow:
-   - **Selective liquidation** for a bulk sale or release;
+   - **Liquidation** to assign stock to an in-transit buyer batch;
    - **Refining tracking** for consolidation into a refined item; or
    - **Limited retail sales** for jewelry sold to a retail buyer.
 
@@ -124,7 +126,7 @@ Administrators can open these panels under **Dashboard records**:
 
 - **Purchase history:** filter by date, search records, view receipts, group totals by customer, and download a purchase CSV.
 - **Liquidation history:** filter by date, search batches, open batch details, review cost/proceeds/profit, and download a liquidation CSV.
-- **Liquidation readiness:** view inventory currently classified as **For Selling** or **For Refining**.
+- **Liquidation readiness:** view on-hand inventory currently classified as **Available** or **For Refining**.
 
 Select an active report button again to close that report.
 
@@ -263,7 +265,8 @@ Inventory contains purchased stock and any output created by refining.
 
 | Status | Meaning |
 |---|---|
-| For Selling | Available for liquidation or retail sale when otherwise eligible |
+| Available | On hand and available for liquidation or retail sale when otherwise eligible |
+| For Liquidation | Assigned to an open buyer batch and excluded from Current Inventory |
 | For Refining | Available for liquidation or refining |
 | On Hold | Kept out of liquidation/refining selection |
 | Liquidated | Fully released through a completed liquidation |
@@ -275,35 +278,41 @@ Inventory contains purchased stock and any output created by refining.
 An administrator can select records and:
 
 - apply a new category to all selected records;
-- move selected records to Selective Liquidation;
+- move selected records into a named Liquidation batch;
 - combine eligible records from chosen dates into one liquidation batch;
 - send selected **For Refining** records to Refining; or
 - edit an individual inventory record.
 
 Liquidation and refining batches must contain only one metal. Gold, Silver, and Platinum must be processed in separate batches.
 
-Moving items to the Liquidation page only stages them. It does not deduct weight or record a sale until the liquidation is confirmed.
+Creating a Liquidation batch changes each included item to **For Liquidation**. Its weight and carrying cost are preserved, but it is excluded from every Current Inventory list and total until sold or returned.
 
-## 8. Selective liquidation
+## 8. Liquidation
 
 ### Prepare the batch
 
 1. In **Inventory**, select eligible records or select **Liquidate item** for one record.
 2. Select **Move selected to liquidation**.
 3. Review the metal, dates, weight, and cost.
-4. Select **Confirm & open liquidation**.
+4. Continue to the batch details.
+5. Confirm or edit the suggested batch name.
+6. Assign the buyer and optionally record the buyer's offer and notes.
+7. Select **Create batch**.
 
-The workflow moves the full available weight of each staged record. Remove an item with the × button if it should not be part of the batch.
+The workflow moves the full available weight of every selected record. Multiple open batches can exist at the same time, and every batch has its own buyer.
+
+### Review open batches
+
+Each batch displays its item breakdown, item count, total weight, carrying cost, buyer offer, offer difference, and clearly labelled batch grand total. Use **Edit batch** to change its name, buyer, offer, or notes. Use **Return to Inventory** to restore every item to its previous on-hand status.
 
 ### Record the liquidation
 
-1. Enter the **Buyer / refiner**.
-2. Confirm the **Release date**.
+1. Open the required batch and select **Record sale**.
+2. Confirm the sale date.
 3. Choose **Pending**, **Partially Paid**, or **Paid**.
-4. Enter one **Total sold (PHP)** amount for the batch.
-5. Add optional remarks.
-6. Review selected weight, proceeds, inventory cost, profit, and profit margin.
-7. Select **Record liquidation**.
+4. Confirm or enter the final **Total sold (PHP)** amount.
+5. Add optional final notes.
+6. Select **Record liquidation**.
 
 The system allocates the batch proceeds across the selected items, removes their available weight and cost, and assigns an ID such as `L-0001`. Fully released items become **Liquidated**.
 
@@ -319,7 +328,7 @@ Only inventory classified as **For Refining** is available here.
 6. Select **Combine into one item**.
 7. Review the confirmation and select **Confirm & create one item**.
 
-The input records become **Refined** with zero available weight. The system creates one new **For Selling** scrap inventory item. Its cost equals the combined cost of the input items, and its per-gram rate is derived from that carried cost and the output weight.
+The input records become **Refined** with zero available weight. The system creates one new **Available** scrap inventory item. Its cost equals the combined cost of the input items, and its per-gram rate is derived from that carried cost and the output weight.
 
 The current simplified workflow records the refiner as **In-house refining**, uses the current date, and carries zero separate refining charges.
 
@@ -328,7 +337,7 @@ The current simplified workflow records the refiner as **In-house refining**, us
 Retail sales are limited to inventory that is both:
 
 - item type **Jewelry**; and
-- status **For Selling** with available weight.
+- status **Available** with available weight.
 
 To record a sale:
 
@@ -434,11 +443,11 @@ Another user saved a change first. Refresh the browser, verify the latest ledger
 
 ### A purchased item does not appear in Retail
 
-Confirm that the inventory item type is **Jewelry**, its status is **For Selling**, and it has available weight.
+Confirm that the inventory item type is **Jewelry**, its status is **Available**, and it has available weight.
 
 ### An item does not appear in Refining
 
-Confirm that its status is **For Refining**, it has available weight, and it is not currently staged for liquidation.
+Confirm that its status is **For Refining** and it has available weight. Items in an open Liquidation batch are excluded automatically.
 
 ### A button is missing
 

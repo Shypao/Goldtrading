@@ -2,7 +2,7 @@
 // The legacy single-page UI is incrementally typed; server and persistence code use strict TypeScript.
 // @ts-nocheck
 /* ============================= DATA LAYER ============================= */
-let db = { rates:[], customers:[], stock:[], liquidations:[], refiningBatches:[], retailSales:[] };
+let db = { rates:[], customers:[], stock:[], liquidationBatches:[], liquidations:[], refiningBatches:[], retailSales:[] };
 let currentTab = 'dashboard';
 let currentUser = null;
 let userAccounts = [];
@@ -15,8 +15,8 @@ let cashflowSearch = '';
 let cashflowAdjustmentSearch = '';
 const STORE_KEY = 'zpp_gold_db';
 const LEDGER_DB_NAME = 'zpp_gold_trading_ph';
-const LEDGER_DB_VERSION = 1;
-const ARRAY_STORES = ['customers','stock','liquidations','refiningBatches','retailSales','pricingHistory'];
+const LEDGER_DB_VERSION = 2;
+const ARRAY_STORES = ['customers','stock','liquidationBatches','liquidations','refiningBatches','retailSales','pricingHistory'];
 let ledgerDB = null;
 let storageLocationCleanupNeeded=false;
 
@@ -57,7 +57,9 @@ function ensureShape(){
   db.customers = db.customers||[]; db.stock = db.stock||[];
   db.stock.forEach(item=>{
     if(Object.prototype.hasOwnProperty.call(item,'location')){ delete item.location; storageLocationCleanupNeeded=true; }
+    if(item.status==='For Selling'){ item.status='Available'; storageLocationCleanupNeeded=true; }
   });
+  db.liquidationBatches = db.liquidationBatches||[];
   db.liquidations = db.liquidations||[]; db.refiningBatches = db.refiningBatches||[]; db.retailSales = db.retailSales||[];
   db.pricingHistory = db.pricingHistory||[];
   db.pricingHistory.forEach(h=>{ if(!h.id) h.id=uid('rate'); });
@@ -159,7 +161,7 @@ function seedEmptyLedger(){
   };
   db.pricingHistory = [{ id:uid('rate'), ts:Date.now(), effectiveDate: todayStr(), enteredBy:'Admin', snapshot: JSON.parse(JSON.stringify(db.pricing)) }];
   db.stock = [];
-  db.liquidations = []; db.refiningBatches = []; db.retailSales = [];
+  db.liquidationBatches = []; db.liquidations = []; db.refiningBatches = []; db.retailSales = [];
 }
 
 async function loadDB(){
@@ -236,7 +238,7 @@ async function signIn(event){
 }
 async function signOut(){
   try{ await fetch('/api/logout',{method:'POST'}); }catch(ignore){}
-  db={rates:[],customers:[],stock:[],liquidations:[],refiningBatches:[],retailSales:[]};
+  db={rates:[],customers:[],stock:[],liquidationBatches:[],liquidations:[],refiningBatches:[],retailSales:[]};
   userAccounts=[]; currentCashflow=null; showLogin();
 }
 
@@ -539,7 +541,7 @@ const TABS = [
   {id:'rates', label:'Daily rate setup', staff:true},
   {id:'buying', label:'Buying transactions', staff:true},
   {id:'inventory', label:'Inventory', staff:true},
-  {id:'liquidation', label:'Selective liquidation'},
+  {id:'liquidation', label:'Liquidation'},
   {id:'refining', label:'Refining tracking'},
   {id:'retail', label:'Limited retail sales'},
   {id:'customers', label:'Customer management'},
@@ -629,7 +631,7 @@ function render(){
     rates:['Pricing control','Daily rate setup'],
     buying:['Record a purchase','Buying transactions'],
     inventory:['Current stock','Inventory'],
-    liquidation:['Release stock to a buyer or refiner','Selective liquidation'],
+    liquidation:['Off-hand stock assigned to buyers','Liquidation'],
     refining:['Refining batches','Refining tracking'],
     retail:['Walk-in resale','Limited retail sales'],
     customers:['Sellers on file','Customer management'],
@@ -642,7 +644,6 @@ function render(){
     liquidation:renderLiquidation, refining:renderRefining, retail:renderRetail, customers:renderCustomers,
     users:renderUsers};
   el.innerHTML = fns[currentTab]();
-  if(currentTab==='liquidation') requestAnimationFrame(updateLiquidationPreview);
 }
 
 /* ============================= DASHBOARD ============================= */
@@ -731,7 +732,7 @@ function renderDashboard(){
   const payoutToday = pToday.reduce((a,s)=>a+Number(s.payout),0);
   const payoutMonth = pMonth.reduce((a,s)=>a+Number(s.payout),0);
   const monthLabel=new Date(`${mon}-01T00:00:00`).toLocaleDateString('en-PH',{month:'long',year:'numeric'});
-  const inventoryMonth=db.stock.filter(s=>s.date.startsWith(mon)&&Number(s.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(s.status));
+  const inventoryMonth=db.stock.filter(s=>s.date.startsWith(mon)&&Number(s.currentWeight)>0&&!['For Liquidation','Liquidated','Refined','Sold'].includes(s.status));
   const inventoryAmountMonth=inventoryMonth.reduce((a,s)=>a+Number(s.cost),0);
   const inventoryWeightMonth=inventoryMonth.reduce((a,s)=>a+Number(s.currentWeight),0);
 
@@ -756,7 +757,7 @@ function renderDashboard(){
 }
 
 function statusPill(status){
-  const map = {'For Selling':'selling','For Refining':'refining','On Hold':'hold','Liquidated':'liquidated','Refined':'liquidated','Sold':'sold'};
+  const map = {'Available':'selling','For Liquidation':'liquidation','For Refining':'refining','On Hold':'hold','Liquidated':'liquidated','Refined':'liquidated','Sold':'sold'};
   return `<span class="pill ${map[status]||''}">${status}</span>`;
 }
 function tableOrEmpty(rows, rowFn, headers, emptyMsg){
@@ -1308,7 +1309,7 @@ let buyingDraftForm={};
 let buyingDraftSaveTimer=null;
 function cashflowCardMarkup(){
   const snapshot=currentCashflow?.date===todayStr()?currentCashflow:null;
-  const configured=Boolean(snapshot?.configured);
+  const configured=Boolean(snapshot?.configured)&&snapshot?.cashOnHand!==null&&Number.isFinite(Number(snapshot?.cashOnHand));
   const balance=configured?fmtMoney(snapshot.cashOnHand):'Not set';
   const updated=snapshot?.setAt?new Date(snapshot.setAt).toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'}):'';
   return `<section class="cashflow-card ${configured&&Number(snapshot.cashOnHand)<0?'is-negative':''}">
@@ -1332,6 +1333,7 @@ async function syncCashflow(){
     if(response.status===401){ showLogin(); return; }
     const result=await response.json().catch(()=>null);
     if(!response.ok) throw new Error(result?.error||'Cashflow sync failed');
+    if(!result||result.date!==todayStr()||(result.configured&&(result.cashOnHand===null||!Number.isFinite(Number(result.cashOnHand))))) throw new Error('Cashflow sync returned an invalid balance');
     currentCashflow=result;
     const card=document.getElementById('buying_cashflow_card');
     if(card) card.innerHTML=cashflowCardMarkup();
@@ -1610,7 +1612,7 @@ function renderBuying(){
           <summary>More details <span>optional</span></summary>
           <div class="form-grid buying-more-grid">
             <div class="field"><label>Staff member</label><input id="b_staff" value="${esc(buyingDraftValue('b_staff'))}" placeholder="Name" oninput="scheduleBuyingDraftSave()"></div>
-            <div class="field"><label>Initial status</label><select id="b_status" onchange="scheduleBuyingDraftSave()">${['For Selling','For Refining','On Hold'].map(status=>`<option ${buyingDraftValue('b_status','For Selling')===status?'selected':''}>${status}</option>`).join('')}</select></div>
+            <div class="field"><label>Initial status</label><select id="b_status" onchange="scheduleBuyingDraftSave()">${['Available','For Refining','On Hold'].map(status=>`<option ${buyingDraftValue('b_status','Available')===status?'selected':''}>${status}</option>`).join('')}</select></div>
             <div class="field"><label>Remarks</label><textarea id="b_remarks" placeholder="Optional notes" oninput="scheduleBuyingDraftSave()">${esc(buyingDraftValue('b_remarks'))}</textarea></div>
           </div>
         </details>
@@ -1818,15 +1820,13 @@ function printPurchaseReceipt(batchId){
 
 /* ============================= INVENTORY ============================= */
 let invFilter = {metal:'All', karat:'All', type:'All', status:'All'};
-let inventoryBulkStatus='For Selling';
+let inventoryBulkStatus='Available';
 let inventoryWeekOffset=0;
 let inventorySelectedDate='All';
 let inventorySearch='';
 const inventoryMoveSelection=new Set();
-const liquidationSelection=new Set();
-const liquidationDraft=new Map();
-let liquidationTotalSoldDraft='';
 let pendingInventoryMove=null;
+let pendingLiquidationBatchSetup=null;
 let combineLiquidationMetal='';
 const combineLiquidationDates=new Set();
 const LOW_KARAT_GOLD_KEYS=new Set(['17K','16K','14K','12K','10K','9K','8K','5K','73%']);
@@ -1871,7 +1871,7 @@ function updateInventorySearch(value){
   });
 }
 function closeInventoryFilterModal(){ document.getElementById('inventory_filter_modal')?.remove(); }
-function activeInventoryRecord(item){ return Number(item.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(item.status); }
+function activeInventoryRecord(item){ return Number(item.currentWeight)>0&&!['For Liquidation','Liquidated','Refined','Sold'].includes(item.status); }
 function inventoryFilterKaratsForDate(metal){
   return Array.from(new Set(db.stock.filter(item=>inventoryDateScope(item)&&activeInventoryRecord(item)&&(metal==='All'||item.metal===metal)).map(item=>item.karat)));
 }
@@ -1895,7 +1895,7 @@ function openInventoryFilterModal(){
       <div class="field"><label for="modal_inv_metal">Metal</label><select id="modal_inv_metal" onchange="updateInventoryFilterModalKarats()">${['All','Gold','Silver','Platinum'].map(metal=>`<option value="${metal}" ${invFilter.metal===metal?'selected':''}>${metal==='All'?'All metals':metal}</option>`).join('')}</select></div>
       <div class="field"><label for="modal_inv_karat">Karat / purity</label><select id="modal_inv_karat"><option value="All">All purities</option>${karats.map(karat=>`<option value="${esc(karat)}" ${invFilter.karat===karat?'selected':''}>${esc(karat)}</option>`).join('')}</select></div>
       <div class="field"><label for="modal_inv_type">Item type</label><select id="modal_inv_type">${['All','Jewelry','Scrap'].map(type=>`<option value="${type}" ${invFilter.type===type?'selected':''}>${type==='All'?'All item types':type}</option>`).join('')}</select></div>
-      <div class="field"><label for="modal_inv_status">Status</label><select id="modal_inv_status">${['All','For Selling','For Refining','On Hold','Liquidated','Refined','Sold'].map(status=>`<option value="${status}" ${invFilter.status===status?'selected':''}>${status==='All'?'All statuses':status}</option>`).join('')}</select></div>
+      <div class="field"><label for="modal_inv_status">Status</label><select id="modal_inv_status">${['All','Available','For Refining','On Hold'].map(status=>`<option value="${status}" ${invFilter.status===status?'selected':''}>${status==='All'?'All statuses':status}</option>`).join('')}</select></div>
     </div>
     <div class="inventory-filter-help"><strong>Tip:</strong> Choose “All” to include every current record from ${inventoryDateLabel()}.</div>
     <div class="form-actions inventory-filter-modal-actions"><button class="btn secondary" onclick="showAllInventoryForSelectedDate()">Show all stock</button><button class="btn" onclick="applyInventoryDateFilters()">Apply filters</button></div>
@@ -1921,13 +1921,12 @@ function selectInventoryMetalCategory(metal){
   inventoryMoveSelection.clear();
   render();
 }
-function selectableInventory(item){ return Number(item.currentWeight)>0&&(item.status==='For Selling'||item.status==='For Refining'); }
-function movableInventory(item){ return selectableInventory(item)&&!liquidationSelection.has(item.id); }
-function categorizableInventory(item){ return Number(item.currentWeight)>0&&!['Liquidated','Refined','Sold'].includes(item.status)&&!liquidationSelection.has(item.id); }
+function selectableInventory(item){ return Number(item.currentWeight)>0&&(item.status==='Available'||item.status==='For Refining'); }
+function movableInventory(item){ return selectableInventory(item); }
+function categorizableInventory(item){ return activeInventoryRecord(item); }
 function lowKaratGoldInventory(item){ return item.metal==='Gold'&&LOW_KARAT_GOLD_KEYS.has(item.karat)&&activeInventoryRecord(item); }
 function selectedInventoryForCategory(){ return db.stock.filter(item=>inventoryMoveSelection.has(item.id)&&categorizableInventory(item)); }
 function selectedInventoryForMove(){ return db.stock.filter(item=>inventoryMoveSelection.has(item.id)&&movableInventory(item)); }
-function selectedInventoryForLiquidation(){ return db.stock.filter(item=>liquidationSelection.has(item.id)&&selectableInventory(item)); }
 function inventoryPercentagePool(){
   return db.stock.filter(item=>inventoryDateScope(item)&&movableInventory(item)&&
     (invFilter.metal==='All'||item.metal===invFilter.metal)&&
@@ -1988,7 +1987,7 @@ async function categorizeCheckedInventory(){
   if(!adminEditGuard()) return;
   const selected=selectedInventoryForCategory(),status=val('inventory_bulk_status');
   if(!selected.length){ toast('Select at least one inventory record'); return; }
-  if(!['For Selling','For Refining','On Hold'].includes(status)){ toast('Choose a valid category'); return; }
+  if(!['Available','For Refining','On Hold'].includes(status)){ toast('Choose a valid category'); return; }
   if(!confirm(`Change ${selected.length} selected inventory ${selected.length===1?'record':'records'} to “${status}”?`)) return;
   selected.forEach(item=>{item.status=status;});
   inventoryMoveSelection.clear();
@@ -2015,7 +2014,7 @@ function moveInventorySelectionToLiquidation(percentage){
 function moveCheckedInventoryToLiquidation(){
   const checked=selectedInventoryForCategory();
   if(!checked.length){ toast('Check at least one inventory record first'); return; }
-  if(checked.some(item=>!movableInventory(item))){ toast('On Hold records must be categorized as For Selling or For Refining before liquidation'); return; }
+  if(checked.some(item=>!movableInventory(item))){ toast('On Hold records must be categorized as Available or For Refining before liquidation'); return; }
   const selected=checked;
   openInventoryMoveReview(selected,{total:selected.length,automatic:false});
 }
@@ -2087,7 +2086,7 @@ function openCombineLiquidationDateSelection(){
     <p class="move-confirmation-intro">Choose one or more dates. The system will automatically select every available stock record for the chosen metal on those dates and combine them into one liquidation batch.</p>
     <div class="field combine-metal-field"><label for="combine_liquidation_metal">Metal</label><select id="combine_liquidation_metal" onchange="changeCombineLiquidationMetal(this.value)">${metals.map(metal=>`<option value="${esc(metal)}" ${metal===combineLiquidationMetal?'selected':''}>${esc(metal)}</option>`).join('')}</select></div>
     <div id="combine_liquidation_date_choices"></div>
-    <div class="move-confirmation-note"><strong>Nothing is sold yet.</strong><span>You can review every automatically selected item before moving the batch to Selective Liquidation.</span></div>
+    <div class="move-confirmation-note"><strong>Nothing is sold yet.</strong><span>You can review every automatically selected item before creating the Liquidation batch.</span></div>
     <div class="form-actions"><button class="btn secondary" onclick="closeCombineLiquidationDateSelection()">Cancel</button><button class="btn" id="confirm_combine_dates" onclick="confirmCombineLiquidationDates()">Review selected dates</button></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeCombineLiquidationDateSelection();});
@@ -2134,8 +2133,8 @@ function openInventoryMoveReview(selected,context){
     <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th>Status</th><th class="num-head">Weight moving</th><th class="num-head">Cost</th></tr></thead><tbody>
       ${selected.map(item=>`<tr><td><strong>${esc(item.metal)} ${esc(item.karat)}</strong><br><span class="form-note">${esc(item.itemType)}${item.remarks?' · '+esc(item.remarks):''}</span></td><td>${esc(item.customerName||'—')}</td><td>${statusPill(item.status)}</td><td class="num"><strong>${fmtWeight(item.currentWeight)}</strong><br><span class="form-note">full available weight</span></td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}
     </tbody></table></div>
-    <div class="move-confirmation-note"><strong>What happens next?</strong><span>These records will appear in Selective Liquidation as one batch. Enter one total PHP sold amount, then confirm the final liquidation.</span></div>
-    <div class="form-actions"><button class="btn secondary" onclick="closeInventoryMoveConfirmation()">Cancel</button><button class="btn" onclick="confirmInventoryMoveToLiquidation()">Confirm &amp; open liquidation</button></div>
+    <div class="move-confirmation-note"><strong>What happens next?</strong><span>Assign a batch name and buyer. The records will then become For Liquidation and leave Current Inventory until sold or returned.</span></div>
+    <div class="form-actions"><button class="btn secondary" onclick="closeInventoryMoveConfirmation()">Cancel</button><button class="btn" onclick="confirmInventoryMoveToLiquidation()">Continue to batch details</button></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeInventoryMoveConfirmation();});
   document.body.appendChild(modal);
@@ -2146,16 +2145,45 @@ function confirmInventoryMoveToLiquidation(){
   if(!pending){ closeInventoryMoveConfirmation(); return; }
   const selected=pending.ids.map(id=>db.stock.find(item=>item.id===id)).filter(item=>item&&selectableInventory(item));
   if(selected.length!==pending.ids.length){ closeInventoryMoveConfirmation(); toast('One or more selected records are no longer available. Review the inventory again.'); render(); return; }
-  liqMetal=pending.metal; liqKarat='All'; liqStatus='All';
-  selected.forEach(item=>{
-    liquidationSelection.add(item.id);
-    liquidationDraft.set(item.id,{weight:Number(item.currentWeight).toFixed(2)});
-  });
-  const message=pending.mode==='individual'?'1 item prepared for individual liquidation':pending.mode==='combined'?`${selected.length} records from ${pending.dates.length} dates combined for liquidation`:pending.percentage?`${pending.percentage}% of the stock records prepared: ${selected.length} of ${pending.total}`:`${selected.length} records prepared for liquidation`;
-  inventoryMoveSelection.clear();
+  pendingLiquidationBatchSetup={ids:selected.map(item=>item.id),metal:pending.metal};
   closeInventoryMoveConfirmation();
-  goTab('liquidation');
-  toast(message);
+  openLiquidationBatchSetup();
+}
+function closeLiquidationBatchSetup(){ document.getElementById('liquidation_batch_setup')?.remove(); pendingLiquidationBatchSetup=null; }
+function suggestedLiquidationBatchName(items){
+  const grades=Array.from(new Set(items.map(item=>gradeLabel(item.metal,item.karat))));
+  return `${grades.length===1?grades[0]:items[0]?.metal||'Liquidation'} batch`;
+}
+function openLiquidationBatchSetup(){
+  const pending=pendingLiquidationBatchSetup;
+  if(!pending) return;
+  const items=pending.ids.map(id=>db.stock.find(item=>item.id===id)).filter(Boolean);
+  if(items.length!==pending.ids.length){ closeLiquidationBatchSetup(); toast('One or more selected records are no longer available'); render(); return; }
+  const totalWeight=items.reduce((sum,item)=>sum+Number(item.currentWeight),0),totalCost=items.reduce((sum,item)=>sum+Number(item.cost),0);
+  const modal=document.createElement('div'); modal.id='liquidation_batch_setup'; modal.className='modal-backdrop';
+  modal.innerHTML=`<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="liquidation_batch_setup_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Create liquidation batch</div><h2 id="liquidation_batch_setup_title">Assign batch and buyer</h2></div><button class="modal-close" onclick="closeLiquidationBatchSetup()" aria-label="Close">×</button></div>
+    <div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="new_liquidation_batch_name" value="${esc(suggestedLiquidationBatchName(items))}" required></div><div class="field"><label>Assigned buyer</label><input id="new_liquidation_batch_buyer" placeholder="Buyer name" required></div><div class="field"><label>Buyer offer (PHP)</label><input id="new_liquidation_batch_offer" inputmode="decimal" placeholder="Optional" oninput="formatMoneyEntry(this)"></div><div class="field"><label>Notes</label><input id="new_liquidation_batch_notes" placeholder="Optional"></div></div>
+    <div class="move-confirmation-summary"><div><span>Items</span><strong>${items.length}</strong></div><div><span>Metal</span><strong>${esc(pending.metal)}</strong></div><div><span>Total weight</span><strong>${fmtWeight(totalWeight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(totalCost)}</strong></div></div>
+    <div class="form-actions"><button class="btn secondary" onclick="closeLiquidationBatchSetup()">Cancel</button><button class="btn" onclick="createLiquidationBatch()">Create batch</button></div>
+  </div>`;
+  modal.addEventListener('click',event=>{if(event.target===modal)closeLiquidationBatchSetup();}); document.body.appendChild(modal);
+  document.getElementById('new_liquidation_batch_buyer')?.focus();
+}
+async function createLiquidationBatch(){
+  const pending=pendingLiquidationBatchSetup;
+  if(!pending) return;
+  const name=val('new_liquidation_batch_name').trim(),buyer=val('new_liquidation_batch_buyer').trim();
+  if(!name||!buyer){ toast('Enter a batch name and assigned buyer'); return; }
+  const items=pending.ids.map(id=>db.stock.find(item=>item.id===id)).filter(item=>item&&selectableInventory(item));
+  if(items.length!==pending.ids.length){ closeLiquidationBatchSetup(); toast('One or more selected records are no longer available'); render(); return; }
+  const beforeState=JSON.parse(JSON.stringify(db)),id=nextSequenceId('LB',db.liquidationBatches);
+  const lines=items.map(item=>({itemId:item.id,previousStatus:item.status,weight:roundWeight(item.currentWeight),cost:roundMoney(item.cost)}));
+  db.liquidationBatches.push({id,name,buyer,metal:pending.metal,lines,buyerOffer:roundMoney(parseMoneyEntry(val('new_liquidation_batch_offer'))),notes:val('new_liquidation_batch_notes').trim(),createdAt:new Date().toISOString(),createdBy:currentUser?.displayName||''});
+  items.forEach(item=>{item.status='For Liquidation';item.liquidationBatchId=id;});
+  const saved=await saveDB();
+  if(!saved){db=beforeState;render();toast('Liquidation batch was not created');return;}
+  inventoryMoveSelection.clear(); closeLiquidationBatchSetup(); goTab('liquidation'); toast(`${name} created for ${buyer}`);
 }
 function renderInventory(){
   const week=inventoryWeekRange();
@@ -2216,7 +2244,7 @@ function renderInventory(){
     <p class="form-note inventory-breakdown-caption">Totals below combine every active purchase date.</p>
     ${breakdown.length?`<div class="table-wrap inventory-breakdown"><table><thead><tr><th>Metal</th><th>Karat / purity</th><th class="num-head">Items</th><th class="num-head">Total weight</th><th class="num-head">Total cost</th></tr></thead><tbody>${breakdown.map(entry=>`<tr><td><span class="metal-tag ${entry.metal.toLowerCase()}">${entry.metal}</span></td><td>${esc(gradeLabel(entry.metal,entry.karat))}</td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.weight)}</td><td class="num">${fmtMoney(entry.cost)}</td></tr>`).join('')}</tbody></table></div><div class="inventory-breakdown-total"><span>${invFilter.metal==='All'?'All current stock':`${invFilter.metal} total`} · ${breakdownSource.length} item${breakdownSource.length===1?'':'s'} · ${fmtWeight(breakdownWeight)}</span><strong>${fmtMoney(breakdownCost)}</strong></div>`
       : `<div class="empty-note">No active ${invFilter.metal==='All'?'inventory':esc(invFilter.metal)+' inventory'} remains.</div>`}
-    <p class="form-note inventory-history-note">Liquidated, refined, and sold items remain in reports and transaction history but are hidden here.</p>
+    <p class="form-note inventory-history-note">For Liquidation items are shown only in the Liquidation view. Liquidated, refined, and sold items remain in reports and transaction history.</p>
   </section>
 
   <section class="block">
@@ -2228,7 +2256,7 @@ function renderInventory(){
     <h2 class="block-title">${inventorySelectedDate==='All'?'All purchase dates':`${new Date(selectedDay.date+'T00:00:00').toLocaleDateString('en-PH',{weekday:'long'})}, ${fmtDate(selectedDay.date)}`}</h2>
     <div class="stat-row">
       <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines ${inventorySelectedDate==='All'?'across all dates':'on this date'}</div></div>
-      <div class="stat"><div class="label">Available stock lines</div><div class="value">${selectedDay.available.length}</div><div class="sub">eligible for selling or refining</div></div>
+      <div class="stat"><div class="label">Available stock lines</div><div class="value">${selectedDay.available.length}</div><div class="sub">eligible for liquidation or refining</div></div>
       <div class="stat"><div class="label">Available weight</div><div class="value">${fmtWeight(selectedDay.weight)}</div><div class="sub">remaining from ${inventorySelectedDate==='All'?'all purchases':"this date's purchases"}</div></div>
       <div class="stat"><div class="label">Remaining cost</div><div class="value">${fmtMoney(selectedDay.cost)}</div><div class="sub">carrying cost ${inventorySelectedDate==='All'?'across all dates':'for this purchase date'}</div></div>
     </div>
@@ -2236,8 +2264,8 @@ function renderInventory(){
 
   <section class="block" id="inventory_stock_list">
     <div class="inventory-stock-head"><div><h2 class="block-title">Stock records</h2><p class="form-note">${inventorySearch?`${rows.length} matching record${rows.length===1?'':'s'}`:activeFilterLabels.length?`Showing: ${activeFilterLabels.map(esc).join(' · ')}`:'Showing all records'} across ${inventoryDateLabel()}.</p></div><div class="inventory-stock-tools"><div class="field inventory-stock-search"><label for="inventory_stock_search">Search stock records</label><input id="inventory_stock_search" type="search" autocomplete="off" value="${esc(inventorySearch)}" placeholder="Customer, date, metal, karat, or status" oninput="updateInventorySearch(this.value)"></div><button class="btn secondary small" onclick="openInventoryFilterModal()">Change filters</button></div></div>
-    ${isAdmin()?`<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible ${inventorySelectedDate==='All'?'across all dates':'on this date'}</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length?'':' · change the date or filters'}</span>${selectedGradeCounts.size?`<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade,count])=>`<span>${esc(grade)} · ${count}</span>`).join('')}</div>`:''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount?'':'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['For Selling','For Refining','On Hold'].map(status=>`<option ${inventoryBulkStatus===status?'selected':''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount?'':'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected?'':'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock?'':'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount?'':'disabled'}>Refine selected</button></div></div>`:''}
-    ${tableOrEmpty(rows, s=>`<tr>${isAdmin()?`<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="${liquidationSelection.has(s.id)?'Already moved':'Select'} ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id)?'checked':''} ${categorizableInventory(s)?'':'disabled'}></td>`:''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
+    ${isAdmin()?`<div class="inventory-action-panel"><div class="inventory-action-status"><strong>${percentagePool.length} eligible ${inventorySelectedDate==='All'?'across all dates':'on this date'}</strong><span><span id="inventory_liq_count">${selectedMoveCount}</span> selected across dates${percentagePool.length?'':' · change the date or filters'}</span>${selectedGradeCounts.size?`<div class="inventory-selection-chips">${Array.from(selectedGradeCounts.entries()).map(([grade,count])=>`<span>${esc(grade)} · ${count}</span>`).join('')}</div>`:''}</div><div class="inventory-action-buttons"><button class="btn secondary small" onclick="selectAllVisibleInventory()">Select all shown</button><button class="btn secondary small" onclick="selectAllLowKaratGold()">Select low-karat Gold</button><button class="btn secondary small" data-inventory-selection-required onclick="clearInventorySelection()" ${selectedMoveCount?'':'disabled'}>Clear</button><div class="inventory-bulk-category"><select id="inventory_bulk_status" aria-label="Category for selected inventory" onchange="inventoryBulkStatus=this.value">${['Available','For Refining','On Hold'].map(status=>`<option ${inventoryBulkStatus===status?'selected':''}>${status}</option>`).join('')}</select><button class="btn secondary small" data-inventory-selection-required onclick="categorizeCheckedInventory()" ${selectedMoveCount?'':'disabled'}>Apply category</button></div><button class="btn small" id="inventory_move_selected" onclick="moveCheckedInventoryToLiquidation()" ${canMoveSelected?'':'disabled'}>Move selected to liquidation</button><button class="btn secondary small" onclick="openCombineLiquidationDateSelection()" ${hasMovableStock?'':'disabled'}>Combine dates</button><button class="btn secondary small" data-inventory-selection-required onclick="prepareInventoryForRefining()" ${selectedMoveCount?'':'disabled'}>Refine selected</button></div></div>`:''}
+    ${tableOrEmpty(rows, s=>`<tr>${isAdmin()?`<td><input type="checkbox" data-inventory-move-id="${s.id}" aria-label="Select ${esc(s.metal)} ${esc(s.karat)} from ${esc(s.customerName)}" onchange="toggleInventoryForLiquidation('${s.id}',this.checked)" ${inventoryMoveSelection.has(s.id)?'checked':''} ${categorizableInventory(s)?'':'disabled'}></td>`:''}<td>${fmtDate(s.date)}</td><td>${esc(s.customerName)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td>
       <td>${esc(s.itemType)}</td><td class="num">${fmtWeight(s.currentWeight)}</td><td class="num">${fmtMoney(s.cost)}</td><td>${statusPill(s.status)}</td><td>${esc(s.remarks||'—')}</td>${isAdmin()?`<td><div class="form-actions">${movableInventory(s)?`<button class="btn secondary small" onclick="liquidateInventoryItem('${s.id}')">Liquidate item</button>`:''}${adminEditButton('Inventory',s.id)}</div></td>`:''}</tr>`,
       [...(isAdmin()?['Select']:[]),'Date','Customer','Metal / karat','Type','Current weight','Cost','Status','Remarks',...(isAdmin()?['Actions']:[])],
       `No stock matches this filter ${inventorySelectedDate==='All'?'across all purchase dates':`on ${fmtDate(selectedDay.date)}`}.`)}
@@ -2248,7 +2276,7 @@ let editingInventoryId=null;
 function openInventoryEdit(id){
   const item=db.stock.find(s=>s.id===id); if(!item||!adminEditGuard()) return;
   editingInventoryId=id;
-  const statuses=['For Selling','For Refining','On Hold','Liquidated','Refined','Sold'];
+  const statuses=['Available','For Refining','On Hold','Liquidated','Refined','Sold'];
   openAdminEditModal('Edit purchase / inventory record',`<div class="form-grid">
     <div class="field"><label>Date</label><input id="edit_inventory_date" type="date" value="${esc(item.date||todayStr())}"></div>
     <div class="field"><label>Classification</label><select id="edit_inventory_status">${statuses.map(status=>`<option ${item.status===status?'selected':''}>${status}</option>`).join('')}</select></div>
@@ -2276,6 +2304,7 @@ async function deleteInventoryRecord(){
   if(!adminEditGuard()) return;
   const item=db.stock.find(s=>s.id===editingInventoryId); if(!item) return;
   const linked=db.liquidations.some(record=>(record.lines||[]).some(line=>line.itemId===item.id)) ||
+    db.liquidationBatches.some(record=>(record.lines||[]).some(line=>line.itemId===item.id)) ||
     db.refiningBatches.some(record=>(record.itemIds||[]).includes(item.id)||record.outputItemId===item.id) || db.retailSales.some(record=>record.itemId===item.id);
   if(linked){ toast('This item is linked to a completed transaction. Delete that transaction first.'); return; }
   if(!await confirmDeletion('Delete inventory record?',`Permanently remove this ${item.metal} ${item.karat} item from inventory.`,[
@@ -2287,65 +2316,26 @@ async function deleteInventoryRecord(){
 }
 
 /* ============================= LIQUIDATION ============================= */
-let liqMetal = 'Gold', liqStatus='All', liqKarat='All';
 function renderLiquidation(){
-  const eligible=selectedInventoryForLiquidation();
-  if(eligible.length) liqMetal=eligible[0].metal;
-
-  return `
-  <section class="block">
-    <h2 class="block-title">1. Inventory moved for liquidation</h2>
-    <p class="form-note">Only records moved from the dated Inventory screen appear here. Return to Inventory to add other stock records.</p>
-    ${eligible.length? `
-    <div class="item-check-wrap liquidation-items">
-      <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span></div>
-      ${eligible.map(s=>{
-        const draft=liquidationDraft.get(s.id)||{weight:Number(s.currentWeight).toFixed(2)};
-        return `
-        <div class="item-check-row" data-item="${s.id}">
-          <button class="btn danger small" style="padding:4px 7px;" aria-label="Remove ${esc(s.karat)} from liquidation" onclick="removeStagedLiquidationItem('${s.id}')">×</button>
-          <span>${fmtDate(s.date)} · ${esc(s.karat)} ${esc(s.itemType)} · ${esc(s.customerName)}</span>
-          <span class="num">${fmtWeight(s.currentWeight)}</span>
-          <span class="num">${fmtMoney(s.cost)}</span>
-          <span>${statusPill(s.status)}</span>
-          <input type="number" min="0" step="0.01" max="${s.currentWeight}" class="liq-wt" id="liqwt_${s.id}" value="${esc(draft.weight)}" readonly>
-        </div>`;
-      }).join('')}
-    </div>
-    ` : `<div class="empty-note">No stock has been moved from Inventory.<div class="form-actions" style="justify-content:center;"><button class="btn" onclick="goTab('inventory')">Open Inventory</button></div></div>`}
+  const batches=db.liquidationBatches.slice().sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
+  const allLines=batches.flatMap(batch=>batch.lines||[]);
+  const totalWeight=allLines.reduce((sum,line)=>sum+Number(line.weight||0),0),totalCost=allLines.reduce((sum,line)=>sum+Number(line.cost||0),0);
+  return `<section class="block liquidation-overview">
+    <div class="batch-head"><div><p class="eyebrow">Off-hand stock committed to buyers</p><h2 class="block-title">Open liquidation batches</h2><p class="form-note">These items are excluded from Current Inventory until the batch is sold or returned.</p></div><button class="btn" onclick="goTab('inventory')">Create batch from Inventory</button></div>
+    <div class="stat-row"><div class="stat"><div class="label">Open batches</div><div class="value">${batches.length}</div></div><div class="stat"><div class="label">Items in transit</div><div class="value">${allLines.length}</div></div><div class="stat"><div class="label">Total weight</div><div class="value">${fmtWeight(totalWeight)}</div></div><div class="stat"><div class="label">Total carrying cost</div><div class="value">${fmtMoney(totalCost)}</div></div></div>
   </section>
-
-  ${eligible.length?`
-  <section class="block">
-    <h2 class="block-title">2. Batch details</h2>
-    <div class="form-grid">
-      <div class="field"><label>Buyer / refiner</label><input id="lq_buyer" placeholder="Name"></div>
-      <div class="field"><label>Release date</label><input id="lq_date" type="date" value="${todayStr()}"></div>
-      <div class="field"><label>Payment status</label><select id="lq_payment"><option>Pending</option><option>Partially Paid</option><option>Paid</option></select></div>
-      <div class="field"><label>Total sold (PHP)</label><input id="lq_total_sold" inputmode="decimal" value="${esc(liquidationTotalSoldDraft)}" placeholder="0" oninput="formatMoneyEntry(this);liquidationTotalSoldDraft=this.value;updateLiquidationPreview()"></div>
-      <div class="field span-2"><label>Remarks</label><input id="lq_remarks" placeholder="Optional"></div>
-    </div>
-    <div class="stat-row" style="margin-top:16px;">
-      <div class="stat"><div class="label">Selected weight</div><div class="value" id="liq_preview_weight">0.00 g</div></div>
-      <div class="stat"><div class="label">Liquidation proceeds</div><div class="value" id="liq_preview_proceeds">PHP 0.00</div></div>
-      <div class="stat"><div class="label">Selected inventory cost</div><div class="value" id="liq_preview_cost">PHP 0.00</div></div>
-      <div class="stat"><div class="label">Profit</div><div class="value" id="liq_preview_margin">PHP 0.00</div><div class="sub" id="liq_preview_margin_pct">0.00% profit margin</div></div>
-    </div>
-    <div class="form-actions">
-      <button class="btn" onclick="submitLiquidation()">Record liquidation</button>
-      <span class="form-note">Enter one total PHP amount for the entire batch. Profit and profit margin are calculated automatically.</span>
-    </div>
-  </section>
-  `:''}
-
-  `;
-}
-function removeStagedLiquidationItem(id){
-  liquidationSelection.delete(id); liquidationDraft.delete(id); render();
-}
-function updateLiquidationDraft(id){
-  liquidationDraft.set(id,{weight:val('liqwt_'+id)});
-  updateLiquidationPreview();
+  ${batches.map(batch=>{
+    const lines=batch.lines||[],cost=lines.reduce((sum,line)=>sum+Number(line.cost||0),0),weight=lines.reduce((sum,line)=>sum+Number(line.weight||0),0),offer=Number(batch.buyerOffer)||0,difference=offer-cost;
+    return `<section class="block liquidation-batch-card">
+      <div class="batch-head liquidation-batch-head"><div><p class="eyebrow">${esc(batch.id)} · ${esc(batch.metal)}</p><h2 class="block-title">${esc(batch.name)}</h2><p class="form-note">Assigned buyer: <strong>${esc(batch.buyer)}</strong>${batch.createdAt?` · Created ${new Date(batch.createdAt).toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'})}`:''}</p></div><div class="form-actions"><button class="btn secondary small" onclick="openLiquidationBatchEdit('${batch.id}')">Edit batch</button><button class="btn secondary small" onclick="returnLiquidationBatch('${batch.id}')">Return to Inventory</button><button class="btn small" onclick="openCompleteLiquidationBatch('${batch.id}')">Record sale</button></div></div>
+      <div class="table-wrap liquidation-batch-items"><table><thead><tr><th>Item</th><th>Original seller</th><th>Purchase date</th><th>Status</th><th class="num-head">Weight</th><th class="num-head">Carrying cost</th></tr></thead><tbody>${lines.map(line=>{
+        const item=db.stock.find(stock=>stock.id===line.itemId)||{};
+        return `<tr><td><strong>${esc(item.metal||batch.metal)} ${esc(gradeLabel(item.metal||batch.metal,item.karat||''))}</strong><br><span class="form-note">${esc(item.itemType||'Inventory item')} · ${esc(line.itemId)}</span></td><td>${esc(item.customerName||'—')}</td><td>${fmtDate(item.date)}</td><td>${statusPill('For Liquidation')}</td><td class="num">${fmtWeight(line.weight)}</td><td class="num">${fmtMoney(line.cost)}</td></tr>`;
+      }).join('')}</tbody><tfoot><tr><th colspan="4">Batch subtotal · ${lines.length} item${lines.length===1?'':'s'}</th><th class="num">${fmtWeight(weight)}</th><th class="num">${fmtMoney(cost)}</th></tr></tfoot></table></div>
+      <div class="liquidation-batch-totals"><div><span>Items</span><strong>${lines.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Total carrying cost</span><strong>${fmtMoney(cost)}</strong></div><div class="liquidation-grand-total"><span>Batch grand total · buyer offer</span><strong>${offer?fmtMoney(offer):'Not entered'}</strong></div>${offer?`<div><span>Offer difference</span><strong style="color:${difference>=0?'var(--sage)':'var(--rust)'}">${fmtMoney(difference)}</strong></div>`:''}</div>
+      ${batch.notes?`<div class="move-confirmation-note"><strong>Notes</strong><span>${esc(batch.notes)}</span></div>`:''}
+    </section>`;
+  }).join('')||`<section class="block"><div class="empty-note">No items are currently marked For Liquidation.<div class="form-actions" style="justify-content:center;"><button class="btn" onclick="goTab('inventory')">Open Current Inventory</button></div></div></section>`}`;
 }
 function liquidationAmountLabel(record){
   const amounts=new Map();
@@ -2357,32 +2347,44 @@ function liquidationAmountLabel(record){
   if(!amounts.size&&Number(record.proceeds)>0) return esc(fmtMoney(record.proceeds));
   return amounts.size?Array.from(amounts.entries()).map(([assay,amount])=>`${esc(assay)}: ${esc(fmtMoney(amount))}`).join('<br>'):'—';
 }
-function liquidationPreviewValues(){
-  let totalWeight=0,totalCost=0,totalProceeds=0,selected=0;
-  document.querySelectorAll('.item-check-row[data-item]').forEach(row=>{
-    const id=row.dataset.item;
-    const item=db.stock.find(s=>s.id===id); if(!item) return;
-    const enteredWeight=Number(val('liqwt_'+id));
-    let weight=Math.min(Math.max(enteredWeight||0,0),Number(item.currentWeight));
-    if(Number(item.currentWeight)-weight<=0.005) weight=Number(item.currentWeight);
-    if(weight<=0) return;
-    selected++;
-    totalWeight+=weight;
-    totalCost+=(weight/Number(item.currentWeight))*Number(item.cost);
-  });
-  totalProceeds=Math.max(parseMoneyEntry(val('lq_total_sold')||liquidationTotalSoldDraft),0);
-  return {selected,totalWeight,totalCost,totalProceeds,margin:totalProceeds-totalCost};
+let editingOpenLiquidationBatchId=null;
+function closeOpenLiquidationBatchModal(){ document.getElementById('open_liquidation_batch_modal')?.remove(); editingOpenLiquidationBatchId=null; }
+function openLiquidationBatchEdit(id){
+  const batch=db.liquidationBatches.find(record=>record.id===id); if(!batch||!adminEditGuard()) return;
+  editingOpenLiquidationBatchId=id;
+  const modal=document.createElement('div'); modal.id='open_liquidation_batch_modal'; modal.className='modal-backdrop';
+  modal.innerHTML=`<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="open_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)}</div><h2 id="open_liquidation_batch_title">Edit liquidation batch</h2></div><button class="modal-close" onclick="closeOpenLiquidationBatchModal()" aria-label="Close">×</button></div><div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="edit_open_batch_name" value="${esc(batch.name)}"></div><div class="field"><label>Assigned buyer</label><input id="edit_open_batch_buyer" value="${esc(batch.buyer)}"></div><div class="field"><label>Buyer offer (PHP)</label><input id="edit_open_batch_offer" inputmode="decimal" value="${moneyEntryValue(batch.buyerOffer)}" oninput="formatMoneyEntry(this)"></div><div class="field"><label>Notes</label><input id="edit_open_batch_notes" value="${esc(batch.notes||'')}"></div></div><div class="form-actions"><button class="btn secondary" onclick="closeOpenLiquidationBatchModal()">Cancel</button><button class="btn" onclick="saveOpenLiquidationBatch()">Save batch</button></div></div>`;
+  modal.addEventListener('click',event=>{if(event.target===modal)closeOpenLiquidationBatchModal();}); document.body.appendChild(modal);
 }
-function updateLiquidationPreview(){
-  const preview=liquidationPreviewValues();
-  const weight=document.getElementById('liq_preview_weight'),proceeds=document.getElementById('liq_preview_proceeds');
-  const cost=document.getElementById('liq_preview_cost'),margin=document.getElementById('liq_preview_margin');
-  const marginPct=document.getElementById('liq_preview_margin_pct');
-  if(weight) weight.textContent=fmtWeight(preview.totalWeight);
-  if(proceeds) proceeds.textContent=fmtMoney(preview.totalProceeds);
-  if(cost) cost.textContent=fmtMoney(preview.totalCost);
-  if(margin){ margin.textContent=fmtMoney(preview.margin); margin.style.color=preview.margin>=0?'var(--sage)':'var(--rust)'; }
-  if(marginPct) marginPct.textContent=`${preview.totalCost?(preview.margin/preview.totalCost*100).toFixed(2):'0.00'}% profit margin`;
+async function saveOpenLiquidationBatch(){
+  const batch=db.liquidationBatches.find(record=>record.id===editingOpenLiquidationBatchId); if(!batch) return;
+  const name=val('edit_open_batch_name').trim(),buyer=val('edit_open_batch_buyer').trim();
+  if(!name||!buyer){toast('Batch name and buyer are required');return;}
+  const before=JSON.parse(JSON.stringify(batch));
+  Object.assign(batch,{name,buyer,buyerOffer:roundMoney(parseMoneyEntry(val('edit_open_batch_offer'))),notes:val('edit_open_batch_notes').trim()});
+  if(!await saveDB()){Object.assign(batch,before);toast('Batch changes were not saved');return;}
+  closeOpenLiquidationBatchModal();render();toast('Liquidation batch updated');
+}
+async function returnLiquidationBatch(id){
+  const batch=db.liquidationBatches.find(record=>record.id===id); if(!batch||!adminEditGuard()) return;
+  if(!confirm(`Return every item in “${batch.name}” to Current Inventory?`)) return;
+  const beforeState=JSON.parse(JSON.stringify(db));
+  const linked=(batch.lines||[]).map(line=>({line,item:db.stock.find(stock=>stock.id===line.itemId)}));
+  if(linked.some(({item})=>!item||item.status!=='For Liquidation'||item.liquidationBatchId!==batch.id)){toast('One or more batch items changed. Refresh and try again.');return;}
+  for(const {line,item} of linked){
+    item.status=line.previousStatus||'Available'; delete item.liquidationBatchId;
+  }
+  db.liquidationBatches=db.liquidationBatches.filter(record=>record.id!==id);
+  if(!await saveDB()){db=beforeState;render();toast('The batch was not returned');return;}
+  render();toast(`${batch.name} returned to Current Inventory`);
+}
+function closeCompleteLiquidationBatch(){ document.getElementById('complete_liquidation_batch_modal')?.remove(); }
+function openCompleteLiquidationBatch(id){
+  const batch=db.liquidationBatches.find(record=>record.id===id); if(!batch||!adminEditGuard()) return;
+  const weight=(batch.lines||[]).reduce((sum,line)=>sum+Number(line.weight||0),0),cost=(batch.lines||[]).reduce((sum,line)=>sum+Number(line.cost||0),0);
+  const modal=document.createElement('div'); modal.id='complete_liquidation_batch_modal'; modal.className='modal-backdrop';
+  modal.innerHTML=`<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="complete_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)} · ${esc(batch.buyer)}</div><h2 id="complete_liquidation_batch_title">Record ${esc(batch.name)} sale</h2></div><button class="modal-close" onclick="closeCompleteLiquidationBatch()" aria-label="Close">×</button></div><div class="move-confirmation-summary" style="margin-top:16px;"><div><span>Items</span><strong>${(batch.lines||[]).length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(cost)}</strong></div><div><span>Assigned buyer</span><strong>${esc(batch.buyer)}</strong></div></div><div class="form-grid"><div class="field"><label>Sale date</label><input id="complete_batch_date" type="date" value="${todayStr()}"></div><div class="field"><label>Payment status</label><select id="complete_batch_payment"><option>Pending</option><option>Partially Paid</option><option>Paid</option></select></div><div class="field"><label>Total sold (PHP)</label><input id="complete_batch_total" inputmode="decimal" value="${moneyEntryValue(batch.buyerOffer)}" oninput="formatMoneyEntry(this)"></div><div class="field"><label>Final notes</label><input id="complete_batch_notes" value="${esc(batch.notes||'')}"></div></div><div class="form-actions"><button class="btn secondary" onclick="closeCompleteLiquidationBatch()">Cancel</button><button class="btn" onclick="submitLiquidationBatch('${batch.id}')">Record liquidation</button></div></div>`;
+  modal.addEventListener('click',event=>{if(event.target===modal)closeCompleteLiquidationBatch();}); document.body.appendChild(modal);
 }
 function closeLiquidationDetails(){ document.getElementById('liquidation_details_modal')?.remove(); }
 function openLiquidationDetails(id){
@@ -2410,52 +2412,30 @@ function openLiquidationDetails(id){
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeLiquidationDetails();}); document.body.appendChild(modal);
 }
-async function submitLiquidation(){
-  const rows = Array.from(document.querySelectorAll('.item-check-row[data-item]'));
-  if(!rows.length){ toast('Move stock records from Inventory first'); return; }
-  const buyer = val('lq_buyer').trim(), date = val('lq_date');
-  if(!buyer){ toast('Enter a buyer or refiner name'); return; }
-  if(!date){ toast('Enter the release date'); return; }
-  const totalSold=parseMoneyEntry(val('lq_total_sold'));
-  if(totalSold<=0){ toast('Enter the total PHP sold amount for this batch'); return; }
-
-  const prepared=[];
-  for(const row of rows){
-    const id = row.dataset.item;
-    const item = db.stock.find(s=>s.id===id);
-    const wtInput = document.getElementById('liqwt_'+id);
-    let w = parseFloat(wtInput.value)||0;
-    if(w<=0){ toast(`Enter a release weight for ${item.karat}`); return; }
-    if(w>item.currentWeight+0.0001){ toast('Release weight exceeds available for one item'); return; }
-    if(item.currentWeight-w<=0.005) w=Number(item.currentWeight);
-    const costPortion = (w/item.currentWeight)*item.cost;
-    prepared.push({item,w,costPortion,previousStatus:item.status});
+async function submitLiquidationBatch(batchId){
+  const batch=db.liquidationBatches.find(record=>record.id===batchId); if(!batch) return;
+  const date=val('complete_batch_date'),totalSold=parseMoneyEntry(val('complete_batch_total'));
+  if(!date){toast('Enter the sale date');return;}
+  if(totalSold<=0){toast('Enter the total PHP sold amount for this batch');return;}
+  const prepared=(batch.lines||[]).map(line=>({line,item:db.stock.find(stock=>stock.id===line.itemId)}));
+  if(!prepared.length||prepared.some(({line,item})=>!item||item.status!=='For Liquidation'||item.liquidationBatchId!==batch.id||Math.abs(Number(item.currentWeight)-Number(line.weight))>.005||Math.abs(Number(item.cost)-Number(line.cost))>.01)){
+    toast('One or more batch items changed. Refresh and try again.');return;
   }
-
   const beforeState=JSON.parse(JSON.stringify(db));
-  const preparedWeight=prepared.reduce((sum,entry)=>sum+entry.w,0);
-  const preparedCost=prepared.reduce((sum,entry)=>sum+entry.costPortion,0);
-  let totalWeight=0, totalCost=0, allocatedSold=0, lines=[];
-  for(let index=0;index<prepared.length;index++){
-    const {item,w,costPortion,previousStatus}=prepared[index];
-    const ratio=preparedCost>0?costPortion/preparedCost:w/preparedWeight;
+  const totalWeight=prepared.reduce((sum,{line})=>sum+Number(line.weight||0),0),totalCost=prepared.reduce((sum,{line})=>sum+Number(line.cost||0),0);
+  let allocatedSold=0;
+  const lines=prepared.map(({line,item},index)=>{
+    const weight=Number(line.weight),costPortion=Number(line.cost),ratio=totalCost>0?costPortion/totalCost:weight/totalWeight;
     const sellingAmount=index===prepared.length-1?roundMoney(totalSold-allocatedSold):roundMoney(totalSold*ratio);
     allocatedSold=roundMoney(allocatedSold+sellingAmount);
-    const rate=sellingAmount/w;
-    item.currentWeight = +(item.currentWeight - w).toFixed(4);
-    item.cost = +(item.cost - costPortion).toFixed(2);
-    if(item.currentWeight<=0.005){ item.currentWeight=0; item.cost=0; item.status='Liquidated'; }
-    totalWeight += w; totalCost += costPortion;
-    lines.push({itemId:item.id, assay:item.karat, weight:roundWeight(w), sellingAmount, sellingRate:roundMoney(rate), proceeds:sellingAmount, costPortion:roundMoney(costPortion), previousStatus});
-  }
-  const uniqueRates=Array.from(new Set(lines.map(line=>line.sellingRate)));
-  db.liquidations.push({id:nextSequenceId('L',db.liquidations), date, metal:liqMetal, buyer, itemCount:lines.length, sellingRate:uniqueRates.length===1?uniqueRates[0]:null, releasedWeight:roundWeight(totalWeight),
-    proceeds:roundMoney(totalSold), paymentStatus:val('lq_payment'), cost:roundMoney(totalCost), margin:roundMoney(totalSold-totalCost), profitMargin:totalCost?roundMoney((totalSold-totalCost)/totalCost*100):0, lines, remarks:val('lq_remarks').trim(),createdBy:currentUser?.displayName||''});
-  const saved=await saveDB();
-  if(!saved){ db=beforeState; render(); toast('Liquidation was not recorded; all inventory changes were rolled back'); return; }
-  lines.forEach(line=>{ liquidationSelection.delete(line.itemId); liquidationDraft.delete(line.itemId); });
-  liquidationTotalSoldDraft='';
-  render(); toast(`Liquidation ${db.liquidations[db.liquidations.length-1].id} recorded`);
+    item.currentWeight=0; item.cost=0; item.status='Liquidated'; delete item.liquidationBatchId;
+    return {itemId:item.id,assay:item.karat,weight:roundWeight(weight),sellingAmount,sellingRate:roundMoney(sellingAmount/weight),proceeds:sellingAmount,costPortion:roundMoney(costPortion),previousStatus:line.previousStatus||'Available'};
+  });
+  const uniqueRates=Array.from(new Set(lines.map(line=>line.sellingRate))),liquidationId=nextSequenceId('L',db.liquidations);
+  db.liquidations.push({id:liquidationId,batchId:batch.id,batchName:batch.name,date,metal:batch.metal,buyer:batch.buyer,itemCount:lines.length,sellingRate:uniqueRates.length===1?uniqueRates[0]:null,releasedWeight:roundWeight(totalWeight),proceeds:roundMoney(totalSold),paymentStatus:val('complete_batch_payment'),cost:roundMoney(totalCost),margin:roundMoney(totalSold-totalCost),profitMargin:totalCost?roundMoney((totalSold-totalCost)/totalCost*100):0,lines,remarks:val('complete_batch_notes').trim(),createdBy:currentUser?.displayName||''});
+  db.liquidationBatches=db.liquidationBatches.filter(record=>record.id!==batch.id);
+  if(!await saveDB()){db=beforeState;render();toast('Liquidation was not recorded; inventory changes were rolled back');return;}
+  closeCompleteLiquidationBatch();render();toast(`Liquidation ${liquidationId} recorded`);
 }
 let editingLiquidationId=null;
 function openLiquidationEdit(id){
@@ -2520,7 +2500,7 @@ async function deleteLiquidationRecord(){
   items.forEach(({line,item})=>{
     item.currentWeight=roundWeight(Number(item.currentWeight)+Number(line.weight||0));
     item.cost=roundMoney(Number(item.cost)+Number(line.costPortion||0));
-    if(item.currentWeight>0&&item.status==='Liquidated') item.status=line.previousStatus|| (item.itemType==='Scrap'?'For Refining':'For Selling');
+    if(item.currentWeight>0&&item.status==='Liquidated') item.status=line.previousStatus==='For Selling'?'Available':line.previousStatus|| (item.itemType==='Scrap'?'For Refining':'Available');
   });
   db.liquidations=db.liquidations.filter(l=>l.id!==record.id);
   closeAdminEditModal(); await saveDB(); render(); toast('Liquidation deleted and inventory restored');
@@ -2535,7 +2515,7 @@ function toggleRefiningSelection(id,checked){
 }
 function changeRefiningMetal(metal){ refMetal=metal; refiningSelection.clear(); render(); }
 function selectedRefiningItems(){
-  return db.stock.filter(item=>refiningSelection.has(item.id)&&item.metal===refMetal&&item.status==='For Refining'&&Number(item.currentWeight)>0&&!liquidationSelection.has(item.id));
+  return db.stock.filter(item=>refiningSelection.has(item.id)&&item.metal===refMetal&&item.status==='For Refining'&&Number(item.currentWeight)>0);
 }
 function updateRefiningCombinedSummary(){
   const items=selectedRefiningItems();
@@ -2556,7 +2536,7 @@ function prepareInventoryForRefining(){
   toast(`${selected.length} ${selected.length===1?'item':'items'} prepared for a refining batch`);
 }
 function renderRefining(){
-  const eligible = db.stock.filter(s=>s.metal===refMetal && s.status==='For Refining' && s.currentWeight>0&&!liquidationSelection.has(s.id));
+  const eligible = db.stock.filter(s=>s.metal===refMetal && s.status==='For Refining' && s.currentWeight>0);
   Array.from(refiningSelection).forEach(id=>{if(!eligible.some(item=>item.id===id))refiningSelection.delete(id);});
   const selected=selectedRefiningItems();
   const selectedWeight=selected.reduce((sum,item)=>sum+Number(item.currentWeight),0);
@@ -2622,10 +2602,10 @@ function submitRefining(){
   const returned=Number(val('rf_returned'));
   if(!Number.isFinite(returned)||returned<=0){ toast('Enter the output weight returned to inventory'); return; }
   const items=chosen.map(id=>db.stock.find(s=>s.id===id)).filter(Boolean);
-  if(items.length!==chosen.length||items.some(item=>item.status!=='For Refining'||Number(item.currentWeight)<=0||liquidationSelection.has(item.id))){ toast('One or more selected items are no longer available for refining'); return; }
+  if(items.length!==chosen.length||items.some(item=>item.status!=='For Refining'||Number(item.currentWeight)<=0)){ toast('One or more selected items are no longer available for refining'); return; }
   const inputWeight=items.reduce((sum,item)=>sum+Number(item.currentWeight),0);
   const inputCost=items.reduce((sum,item)=>sum+Number(item.cost||0),0);
-  const outputCost=roundMoney(inputCost),outputWeight=roundWeight(returned),outputStatus='For Selling';
+  const outputCost=roundMoney(inputCost),outputWeight=roundWeight(returned),outputStatus='Available';
   const remarks=`Combined from ${chosen.length} refined item${chosen.length===1?'':'s'}`;
   pendingRefiningBatch={chosen,date,refiner,outputPurity,expected:outputWeight,actual:outputWeight,charges:0,outputWeight,outputCost,outputStatus,remarks,metal:refMetal,inputWeight:roundWeight(inputWeight),inputCost:roundMoney(inputCost)};
   const modal=document.createElement('div'); modal.id='refining_confirmation_modal'; modal.className='modal-backdrop';
@@ -2641,7 +2621,7 @@ function submitRefining(){
 async function confirmRefiningBatch(){
   const pending=pendingRefiningBatch; if(!pending) return;
   const items=pending.chosen.map(id=>db.stock.find(s=>s.id===id)).filter(Boolean);
-  if(items.length!==pending.chosen.length||items.some(item=>item.status!=='For Refining'||Number(item.currentWeight)<=0||liquidationSelection.has(item.id))){ closeRefiningConfirmation(); toast('One or more input items changed. Review the batch again.'); render(); return; }
+  if(items.length!==pending.chosen.length||items.some(item=>item.status!=='For Refining'||Number(item.currentWeight)<=0)){ closeRefiningConfirmation(); toast('One or more input items changed. Review the batch again.'); render(); return; }
   const itemSnapshots=items.map(item=>({itemId:item.id,currentWeight:Number(item.currentWeight),status:item.status,cost:Number(item.cost)||0}));
   const beforeState=JSON.parse(JSON.stringify(db));
   items.forEach(item=>{ item.currentWeight=0; item.cost=0; item.status='Refined'; });
@@ -2723,7 +2703,7 @@ async function deleteRefiningRecord(){
 /* ============================= RETAIL SALES ============================= */
 let lastRetailSaleId=null;
 function renderRetail(){
-  const eligible = db.stock.filter(s=>s.status==='For Selling' && s.itemType==='Jewelry' && s.currentWeight>0);
+  const eligible = db.stock.filter(s=>s.status==='Available' && s.itemType==='Jewelry' && s.currentWeight>0);
   return `
   <section class="block">
     <h2 class="block-title">Sell a jewelry item</h2>
@@ -2733,7 +2713,7 @@ function renderRetail(){
           <option value="">— choose item —</option>
           ${eligible.map(s=>`<option value="${s.id}">${fmtDate(s.date)} · ${s.metal} ${esc(s.karat)} · ${fmtWeight(s.currentWeight)} · cost ${fmtMoney(s.cost)}</option>`).join('')}
         </select>
-        ${!eligible.length? `<span class="hint">No jewelry currently marked "For Selling".</span>`:''}
+        ${!eligible.length? `<span class="hint">No available jewelry is currently in stock.</span>`:''}
       </div>
       <div class="field"><label>Buyer name</label><input id="rt_buyer" placeholder="Walk-in customer"></div>
       <div class="field"><label>Sale date</label><input id="rt_date" type="date" value="${todayStr()}"></div>
@@ -2796,7 +2776,7 @@ async function deleteRetailRecord(){
     {label:'Item',value:record.itemSummary||`${item.metal} ${item.karat} ${item.itemType}`},{label:'Sale amount',value:fmtMoney(record.salePrice)}
   ])) return;
   const previouslyReleased=db.liquidations.reduce((sum,batch)=>sum+(batch.lines||[]).filter(line=>line.itemId===item.id).reduce((lineSum,line)=>lineSum+Number(line.weight||0),0),0);
-  item.currentWeight=roundWeight(Math.min(Number(record.weight)||Number(item.netWeight),Math.max(0,Number(item.netWeight)-previouslyReleased))); item.status='For Selling';
+  item.currentWeight=roundWeight(Math.min(Number(record.weight)||Number(item.netWeight),Math.max(0,Number(item.netWeight)-previouslyReleased))); item.status='Available';
   db.retailSales=db.retailSales.filter(r=>r.id!==record.id);
   closeAdminEditModal(); await saveDB(); render(); toast('Retail sale deleted and item restored');
 }
@@ -3019,7 +2999,7 @@ function renderLiquidationHistory(){
 
 function renderReports(){
   const allPurchases=db.stock.filter(s=>!s.sourceRefiningBatchId);
-  const readyStock=db.stock.filter(s=>(s.status==='For Selling'||s.status==='For Refining')&&s.currentWeight>0);
+  const readyStock=db.stock.filter(s=>(s.status==='Available'||s.status==='For Refining')&&s.currentWeight>0);
   const renderPurchaseReport=()=>{
     const purchases=allPurchases.filter(purchaseHistoryDateMatch).slice().sort((a,b)=>b.date.localeCompare(a.date));
     const purchaseWeight=purchases.reduce((sum,item)=>sum+Number(item.netWeight||0),0);
@@ -3046,7 +3026,7 @@ function renderReports(){
   </section></div>`;
   };
   const renderReadinessReport=()=>`<div id="dashboard_report_content" class="dashboard-report-content"><section class="block">
-    <div class="batch-head"><div><h2 class="block-title">Liquidation readiness</h2><p class="form-note">Available inventory that can be prepared for selling or refining.</p></div><button class="btn small" onclick="goTab('inventory')">Open inventory</button></div>
+    <div class="batch-head"><div><h2 class="block-title">Liquidation readiness</h2><p class="form-note">On-hand inventory that can be assigned to a liquidation batch or sent for refining.</p></div><button class="btn small" onclick="goTab('inventory')">Open inventory</button></div>
     ${dashboardReportSearch('Search date, metal, purity, item type, or status',readyStock.length)}
     ${tableOrEmpty(readyStock,
       s=>`<tr data-dashboard-search="${dashboardSearchValue(s.date,fmtDate(s.date),s.metal,s.karat,s.itemType,s.status,s.customerName)}"><td>${fmtDate(s.date)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td><td>${esc(s.itemType)}</td>

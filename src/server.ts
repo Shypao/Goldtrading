@@ -29,6 +29,7 @@ interface PricingSettings { [key: string]: unknown }
 interface LedgerState {
   customers: LedgerRecord[];
   stock: LedgerRecord[];
+  liquidationBatches: LedgerRecord[];
   liquidations: LedgerRecord[];
   refiningBatches: LedgerRecord[];
   retailSales: LedgerRecord[];
@@ -64,6 +65,7 @@ const tursoClient: Client | null = usesTurso ? createClient({ url: tursoDatabase
 const schemaStatements = [
   'CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS inventory (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS liquidation_batches (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS liquidations (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS refining_batches (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS retail_sales (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
@@ -125,6 +127,21 @@ function removeInventoryLocationFields(records: LedgerRecord[]): boolean {
   return changed;
 }
 
+async function migrateForSellingInventory(): Promise<void> {
+  const rows = await dbAll<{ id: string; data: string }>('SELECT id, data FROM inventory');
+  const updates: SqlStatement[] = [];
+  for (const row of rows) {
+    const record=JSON.parse(row.data) as LedgerRecord;
+    if (record.status !== 'For Selling') continue;
+    record.status='Available';
+    updates.push({sql:'UPDATE inventory SET data = ? WHERE id = ?',args:[JSON.stringify(record),row.id]});
+  }
+  if (!updates.length) return;
+  const revision=Number((await dbGet<{value:string}>("SELECT value FROM settings WHERE key = 'ledger_revision'"))?.value??0)+1;
+  updates.push({sql:"UPDATE settings SET value = ? WHERE key = 'ledger_revision'",args:[String(revision)]});
+  await dbBatch(updates);
+}
+
 async function purgeStoredInventoryLocations(): Promise<void> {
   const rows = await dbAll<{ id: string; data: string }>('SELECT id, data FROM inventory');
   const cleaned=rows.map(row=>({id:row.id,record:JSON.parse(row.data) as LedgerRecord}));
@@ -182,6 +199,7 @@ async function initializeDatabase(): Promise<void> {
   for (const statement of schemaStatements) await dbRun(statement);
   await dbRun("INSERT INTO settings (key, value) VALUES ('ledger_revision', '0') ON CONFLICT(key) DO NOTHING");
   await dbRun("INSERT INTO settings (key, value) VALUES ('pricing', ?) ON CONFLICT(key) DO NOTHING", [JSON.stringify(defaultPricingSettings())]);
+  await migrateForSellingInventory();
   await purgeStoredInventoryLocations();
   await ensureDefaultUsers();
 }
@@ -191,6 +209,7 @@ const databaseReady = initializeDatabase();
 const tableMap = {
   customers: 'customers',
   stock: 'inventory',
+  liquidationBatches: 'liquidation_batches',
   liquidations: 'liquidations',
   refiningBatches: 'refining_batches',
   retailSales: 'retail_sales',
@@ -241,7 +260,7 @@ async function sessionUser(request: IncomingMessage): Promise<AuthUser | null> {
 async function publicStateFor(user: AuthUser): Promise<LedgerState> {
   const state = await loadState();
   if (user.role === 'admin') return state;
-  return { ...state, liquidations: [], refiningBatches: [], retailSales: [], pricingHistory: [] };
+  return { ...state, liquidationBatches: [], liquidations: [], refiningBatches: [], retailSales: [], pricingHistory: [] };
 }
 
 function readJsonBody(request: IncomingMessage): Promise<unknown> {
@@ -320,7 +339,7 @@ async function saveStaffAdditions(candidate: LedgerState): Promise<void> {
     if (!item.id || (item.customerId && !knownCustomerIds.has(String(item.customerId))) ||
         !['Gold', 'Silver', 'Platinum'].includes(String(item.metal ?? '')) ||
         !['Jewelry', 'Scrap'].includes(String(item.itemType ?? '')) ||
-        !['For Selling', 'For Refining', 'On Hold'].includes(status) ||
+        !['Available', 'For Refining', 'On Hold'].includes(status) ||
         Number(item.netWeight) <= 0 || Number(item.currentWeight) !== Number(item.netWeight) ||
         Number(item.payout) < 0 || Number(item.cost) !== Number(item.payout)) {
       throw new Error('Invalid purchase record');
@@ -361,6 +380,10 @@ async function loadCashflowSettings(): Promise<CashflowSettings> {
   } catch {
     return { days: {} };
   }
+}
+
+async function persistCashflowSettings(settings: CashflowSettings): Promise<void> {
+  await dbRun("INSERT INTO settings (key, value) VALUES ('cashflow', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)]);
 }
 
 function validDateKey(value: string): boolean {
@@ -412,10 +435,51 @@ function cashflowPurchases(state: LedgerState, date: string) {
   };
 }
 
+function cashflowBalanceForSetting(state: LedgerState, date: string, setting: CashflowDaySetting): number {
+  const totals=cashflowPurchases(state,date);
+  return Math.round((setting.balanceBase-(totals.cashPurchases-setting.cashPaidBaseline))*100)/100;
+}
+
+function cashPurchasesBetween(state: LedgerState, afterDate: string, beforeDate: string): number {
+  const amount=state.stock
+    .filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')>afterDate&&String(record.date??'')<beforeDate&&String(record.paymentMethod??'').toLowerCase()==='cash')
+    .reduce((sum,record)=>sum+Number(record.payout??0),0);
+  return Math.round(amount*100)/100;
+}
+
+async function carryForwardCashflowSetting(state: LedgerState, date: string, settings: CashflowSettings): Promise<CashflowDaySetting | undefined> {
+  if (settings.days[date]) return settings.days[date];
+  const previousDate=Object.keys(settings.days).filter(key=>validDateKey(key)&&key<date).sort().pop();
+  if (!previousDate) return undefined;
+  const previousBalance=cashflowBalanceForSetting(state,previousDate,settings.days[previousDate]);
+  const skippedCashPurchases=cashPurchasesBetween(state,previousDate,date);
+  const carriedBalance=Math.round((previousBalance-skippedCashPurchases)*100)/100;
+  const createdAt=new Date(`${date}T00:00:00+08:00`).toISOString();
+  const setting: CashflowDaySetting={
+    balanceBase:carriedBalance,
+    cashPaidBaseline:0,
+    setAt:createdAt,
+    setBy:'Automatic carry-over',
+    adjustments:[{
+      id:`cash_carry_${date}`,
+      operation:'set',
+      amount:carriedBalance,
+      balanceAfter:carriedBalance,
+      note:`Opening balance carried forward from ${previousDate}`,
+      createdAt,
+      createdBy:'System'
+    }]
+  };
+  settings.days[date]=setting;
+  await persistCashflowSettings(settings);
+  return setting;
+}
+
 async function cashflowSnapshot(date: string) {
   const state = await loadState();
   const totals = cashflowPurchases(state, date);
-  const setting = (await loadCashflowSettings()).days[date];
+  const settings=await loadCashflowSettings();
+  const setting = await carryForwardCashflowSetting(state,date,settings);
   const adjustments = setting?.adjustments ?? [];
   const cashIn = adjustments.filter(item => item.operation === 'add').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
   const manualCashOut = adjustments.filter(item => item.operation === 'deduct').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
@@ -448,7 +512,12 @@ async function currentLedgerRevision(): Promise<number> {
 
 function validateLedgerIntegrity(state: LedgerState): void {
   const stockIds = new Set(state.stock.map(record => record.id));
+  const stockById = new Map(state.stock.map(record => [record.id, record]));
   if (stockIds.size !== state.stock.length) throw new Error('Inventory contains duplicate record IDs');
+  const inventoryStatuses=new Set(['Available','For Liquidation','For Refining','On Hold','Liquidated','Refined','Sold']);
+  for (const item of state.stock) {
+    if (!inventoryStatuses.has(String(item.status??''))) throw new Error(`Inventory item ${item.id} has an invalid status`);
+  }
   const consumedBy = new Map<string, string>();
   const claimInventory = (itemId: string, owner: string) => {
     if (!stockIds.has(itemId)) throw new Error(`${owner} references a missing inventory item`);
@@ -469,6 +538,34 @@ function validateLedgerIntegrity(state: LedgerState): void {
   }
   for (const sale of state.retailSales) {
     if (sale.itemId) claimInventory(String(sale.itemId), `retail sale ${sale.id}`);
+  }
+  const pendingItemIds=new Set<string>();
+  for (const batch of state.liquidationBatches) {
+    if (!batch.id || !String(batch.name??'').trim() || !String(batch.buyer??'').trim()) throw new Error('Liquidation batch name and buyer are required');
+    const lines=Array.isArray(batch.lines)?batch.lines as LedgerRecord[]:[];
+    if (!lines.length) throw new Error(`Liquidation batch ${batch.id} has no items`);
+    const metals=new Set<string>();
+    for (const line of lines) {
+      const itemId=String(line.itemId??'');
+      const item=stockById.get(itemId);
+      if (!item) throw new Error(`Liquidation batch ${batch.id} references a missing inventory item`);
+      if (pendingItemIds.has(itemId)) throw new Error(`Inventory item ${itemId} belongs to more than one open liquidation batch`);
+      if (consumedBy.has(itemId)) throw new Error(`Inventory item ${itemId} is already used by a completed transaction`);
+      if (item.status!=='For Liquidation' || item.liquidationBatchId!==batch.id) throw new Error(`Inventory item ${itemId} is not linked to liquidation batch ${batch.id}`);
+      if (!['Available','For Refining','On Hold'].includes(String(line.previousStatus??''))) throw new Error(`Liquidation batch ${batch.id} has an invalid previous status`);
+      if (Number(item.currentWeight)<=0 || Number(line.weight)<=0 || Number(line.cost)<0 ||
+          Math.abs(Number(item.currentWeight)-Number(line.weight))>.005 || Math.abs(Number(item.cost)-Number(line.cost))>.01) {
+        throw new Error(`Liquidation batch ${batch.id} has invalid item totals`);
+      }
+      metals.add(String(item.metal??''));
+      pendingItemIds.add(itemId);
+    }
+    if (metals.size!==1 || !metals.has(String(batch.metal??''))) throw new Error(`Liquidation batch ${batch.id} must contain one metal`);
+  }
+  for (const item of state.stock) {
+    const pending=pendingItemIds.has(item.id);
+    if (item.status==='For Liquidation'&&!pending) throw new Error(`Inventory item ${item.id} is missing its liquidation batch`);
+    if (item.status!=='For Liquidation'&&item.liquidationBatchId) throw new Error(`Inventory item ${item.id} has a stale liquidation batch link`);
   }
 }
 
@@ -713,7 +810,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       const state = await loadState();
       const totals = cashflowPurchases(state, date);
       const settings = await loadCashflowSettings();
-      const previous = settings.days[date];
+      const previous = await carryForwardCashflowSetting(state,date,settings);
       if (!previous && operation !== 'set') return sendJson(response, 400, { error: 'Set the cash on hand before adding or deducting cash' });
       const currentBalance = previous
         ? Math.round((previous.balanceBase - (totals.cashPurchases - previous.cashPaidBaseline)) * 100) / 100
@@ -737,7 +834,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
         setBy: user!.displayName,
         adjustments: [...(previous?.adjustments ?? []), adjustment]
       };
-      await dbRun("INSERT INTO settings (key, value) VALUES ('cashflow', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)]);
+      await persistCashflowSettings(settings);
       return sendJson(response, 200, await cashflowSnapshot(date));
     }
     if (request.method === 'GET' && url.pathname === '/api/pricing') {
