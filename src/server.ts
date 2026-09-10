@@ -472,6 +472,27 @@ async function applyMarketProposal(proposal: Awaited<ReturnType<typeof createMar
   await dbRun("UPDATE settings SET value = ? WHERE key = 'pricing'", [JSON.stringify(pricing)]);
 }
 
+async function marketProposalForClient(proposal: Awaited<ReturnType<typeof createMarketProposal>>) {
+  const state = await loadState();
+  const pricing = state.pricing as Record<string, any> | null;
+  const dailyFormula = pricing?.dailyFormula;
+  if (!dailyFormula || dailyFormula.effectiveDate !== proposal.effectiveDate) return proposal;
+  const baseRates = dailyFormula.baseRates ?? {};
+  const activeBase = (metal: 'Gold' | 'Silver' | 'Platinum', marketValue: number) => {
+    const configured = Number(baseRates[metal]);
+    return Number.isFinite(configured) && configured > 0 ? configured : marketValue;
+  };
+  return {
+    ...proposal,
+    draft: {
+      ...proposal.draft,
+      gold: activeBase('Gold', proposal.draft.gold),
+      silver: activeBase('Silver', proposal.draft.silver),
+      platinum: activeBase('Platinum', proposal.draft.platinum)
+    }
+  };
+}
+
 function serveFile(response: ServerResponse, filename: string, contentType: string): void {
   const filepath = path.join(publicDirectory, filename);
   if (!fs.existsSync(filepath)) return sendJson(response, 404, { error: 'File not found' });
@@ -629,7 +650,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     if (request.method === 'GET' && url.pathname === '/api/market') {
       const proposal = await createMarketProposal();
       if (url.searchParams.get('apply') === '1') await applyMarketProposal(proposal);
-      return sendJson(response, 200, proposal);
+      return sendJson(response, 200, await marketProposalForClient(proposal));
     }
     if (request.method === 'GET' && url.pathname === '/api/users') {
       if (user!.role !== 'admin') return sendJson(response, 403, { error: 'Administrator access required' });
