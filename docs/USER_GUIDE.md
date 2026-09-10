@@ -187,6 +187,19 @@ Rates take effect as soon as they are changed. Saving the sheet creates an audit
 
 The Buying page supports several items in one customer payout. The in-progress payout is saved as a draft for the signed-in user.
 
+### Cashflow card
+
+The top of the Buying page shows today's live cash position:
+
+- **Cash on hand:** the latest Admin-set physical cash balance minus later purchases paid by Cash;
+- **Bought today:** total payouts across all payment methods;
+- **Cash paid today:** purchases that reduce physical cash; and
+- **Non-cash today:** Bank transfer and GCash purchases, which do not reduce physical cash.
+
+Select **View cash flow** to open today's transaction ledger. It shows the seller, purchased items, payment method, payout, cash effect, and running balance. The page refreshes the shared cashflow approximately every five seconds and immediately after a successful purchase.
+
+Only an administrator can select **Set cash on hand** or **Edit cash on hand**. The administrator should enter the physical cash available at that moment. Purchases paid by Cash after that point are deducted automatically. Staff can view the same live figures but cannot change the balance.
+
 ### Step 1: Customer information
 
 1. Enter the customer's name, or leave it blank for a walk-in seller.
@@ -475,4 +488,3 @@ Copy `.env.example` to `.env.local` and set values appropriate for the environme
 - Confirm `/api/health` reports the expected database mode and persistence status.
 - Test sign-in, rate refresh, one sample purchase, and CSV export before live use.
 - Establish a regular database backup and reconciliation process.
-

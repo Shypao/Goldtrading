@@ -6,6 +6,8 @@ let db = { rates: [], customers: [], stock: [], liquidations: [], refiningBatche
 let currentTab = 'dashboard';
 let currentUser = null;
 let userAccounts = [];
+let currentCashflow = null;
+let cashflowSyncBusy = false;
 const STORE_KEY = 'zpp_gold_db';
 const LEDGER_DB_NAME = 'zpp_gold_trading_ph';
 const LEDGER_DB_VERSION = 1;
@@ -320,6 +322,7 @@ async function signOut() {
     catch (ignore) { }
     db = { rates: [], customers: [], stock: [], liquidations: [], refiningBatches: [], retailSales: [] };
     userAccounts = [];
+    currentCashflow = null;
     showLogin();
 }
 async function resetDemo() {
@@ -754,6 +757,8 @@ function startAutomaticPricing() {
     automaticPricingTimer = setInterval(() => {
         if (!currentUser || document.hidden)
             return;
+        if (currentTab === 'buying')
+            syncCashflow();
         if (isAdmin()) {
             if (db.pricing.auto.enabled)
                 refreshPhilippineRates(true);
@@ -765,6 +770,8 @@ function startAutomaticPricing() {
     document.addEventListener('visibilitychange', () => {
         if (!currentUser || document.hidden)
             return;
+        if (currentTab === 'buying')
+            syncCashflow();
         if (isAdmin()) {
             if (db.pricing.auto.enabled)
                 refreshPhilippineRates(true);
@@ -780,6 +787,8 @@ function goTab(id) {
     currentTab = id;
     document.querySelectorAll('nav.tabs button').forEach(b => b.classList.toggle('active', b.dataset.tab === id));
     render();
+    if (id === 'buying')
+        syncCashflow();
     if (id === 'users')
         loadUserAccounts();
 }
@@ -1371,6 +1380,147 @@ async function deleteCustomerRecord() {
 let purchaseBatch = [];
 let buyingDraftForm = {};
 let buyingDraftSaveTimer = null;
+function cashflowCardMarkup() {
+    const snapshot = currentCashflow?.date === todayStr() ? currentCashflow : null;
+    const configured = Boolean(snapshot?.configured);
+    const balance = configured ? fmtMoney(snapshot.cashOnHand) : 'Not set';
+    const updated = snapshot?.setAt ? new Date(snapshot.setAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : '';
+    return `<section class="cashflow-card ${configured && Number(snapshot.cashOnHand) < 0 ? 'is-negative' : ''}">
+    <div class="cashflow-main">
+      <div><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><strong>${balance}</strong><small>${configured ? `Live balance after today's cash purchases${updated ? ` · set ${esc(updated)} by ${esc(snapshot.setBy || 'Admin')}` : ''}` : 'Waiting for an administrator to set the available cash'}</small></div>
+      <div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin() ? `<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured ? 'Edit cash on hand' : 'Set cash on hand'}</button>` : '<span class="cashflow-readonly">Admin controlled</span>'}</div>
+    </div>
+    <div class="cashflow-stats">
+      <div><span>Bought today</span><strong>${fmtMoney(snapshot?.totalPurchases || 0)}</strong><small>${snapshot?.purchaseCount || 0} item${snapshot?.purchaseCount === 1 ? '' : 's'} · all payment methods</small></div>
+      <div><span>Cash paid today</span><strong>${fmtMoney(snapshot?.cashPurchases || 0)}</strong><small>Deducted from cash on hand</small></div>
+      <div><span>Non-cash today</span><strong>${fmtMoney(snapshot?.nonCashPurchases || 0)}</strong><small>Bank transfer and GCash</small></div>
+    </div>
+  </section>`;
+}
+async function syncCashflow() {
+    if (cashflowSyncBusy || !currentUser || !(location.protocol === 'http:' || location.protocol === 'https:'))
+        return;
+    cashflowSyncBusy = true;
+    try {
+        const response = await fetch(`/api/cashflow?date=${encodeURIComponent(todayStr())}`, { cache: 'no-store' });
+        if (response.status === 401) {
+            showLogin();
+            return;
+        }
+        const result = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(result?.error || 'Cashflow sync failed');
+        currentCashflow = result;
+        const card = document.getElementById('buying_cashflow_card');
+        if (card)
+            card.innerHTML = cashflowCardMarkup();
+        renderCashflowDetailsContent();
+    }
+    catch (error) {
+        console.error('Cashflow sync failed', error);
+    }
+    finally {
+        cashflowSyncBusy = false;
+    }
+}
+function closeCashflowEditor() { document.getElementById('cashflow_editor_modal')?.remove(); }
+function closeCashflowDetails() { document.getElementById('cashflow_details_modal')?.remove(); }
+function cashflowTime(value) {
+    if (!value)
+        return 'Time unavailable';
+    return new Date(value).toLocaleTimeString('en-PH', { hour: 'numeric', minute: '2-digit' });
+}
+function cashflowDetailRows() {
+    const snapshot = currentCashflow;
+    if (!snapshot?.transactions?.length)
+        return '<div class="empty-note">No buying transactions recorded today.</div>';
+    let running = Number(snapshot.cashOnHand);
+    const setAt = Date.parse(snapshot.setAt || '');
+    const rows = snapshot.transactions.map(transaction => {
+        const isCash = String(transaction.paymentMethod).toLowerCase() === 'cash';
+        const recordedAt = Date.parse(transaction.recordedAt || '');
+        const afterLatestSet = isCash && snapshot.configured && Number.isFinite(recordedAt) && Number.isFinite(setAt) && recordedAt > setAt;
+        const balanceAfter = afterLatestSet ? running : null;
+        if (afterLatestSet)
+            running = roundMoney(running + Number(transaction.payout));
+        return `<tr><td>${esc(cashflowTime(transaction.recordedAt))}</td><td><strong>${esc(transaction.customerName)}</strong><br><span class="hint">${esc(transaction.items.join(' · '))} · ${transaction.itemCount} item${transaction.itemCount === 1 ? '' : 's'}</span></td><td>${esc(transaction.paymentMethod)}</td><td class="num">${fmtMoney(transaction.payout)}</td><td class="num ${isCash ? 'cashflow-out' : 'cashflow-no-effect'}">${isCash ? `−${fmtMoney(transaction.payout)}` : 'No cash effect'}</td><td class="num">${afterLatestSet ? fmtMoney(balanceAfter) : (isCash && snapshot.configured ? 'Included in latest set' : '—')}</td></tr>`;
+    }).join('');
+    return `<div class="table-wrap cashflow-ledger"><table><thead><tr><th>Time</th><th>Buying transaction</th><th>Payment</th><th class="num-head">Purchased</th><th class="num-head">Cash movement</th><th class="num-head">Cash remaining</th></tr></thead><tbody>${rows}</tbody></table></div>`;
+}
+function renderCashflowDetailsContent() {
+    const container = document.getElementById('cashflow_details_content');
+    if (!container)
+        return;
+    const snapshot = currentCashflow || {};
+    container.innerHTML = `<div class="stat-row cashflow-modal-stats">
+    <div class="stat"><div class="label">Cash on hand</div><div class="value">${snapshot.configured ? fmtMoney(snapshot.cashOnHand) : 'Not set'}</div></div>
+    <div class="stat"><div class="label">Bought today</div><div class="value">${fmtMoney(snapshot.totalPurchases || 0)}</div><div class="sub">${snapshot.purchaseCount || 0} item${snapshot.purchaseCount === 1 ? '' : 's'}</div></div>
+    <div class="stat"><div class="label">Cash paid</div><div class="value">${fmtMoney(snapshot.cashPurchases || 0)}</div></div>
+    <div class="stat"><div class="label">Non-cash</div><div class="value">${fmtMoney(snapshot.nonCashPurchases || 0)}</div></div>
+  </div>
+  ${snapshot.configured ? `<div class="cashflow-set-note"><strong>Latest Admin balance:</strong> ${fmtMoney(snapshot.balanceBase)} set by ${esc(snapshot.setBy || 'Admin')} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>` : '<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
+  ${cashflowDetailRows()}`;
+}
+async function openCashflowDetails() {
+    closeCashflowDetails();
+    const modal = document.createElement('div');
+    modal.id = 'cashflow_details_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="cashflow_details_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Today's buying cashflow</div><h2 id="cashflow_details_title">Cash movement · ${fmtDate(todayStr())}</h2><p class="form-note">Cash purchases reduce the balance automatically. Bank transfer and GCash purchases are recorded without reducing physical cash.</p></div><button class="modal-close" onclick="closeCashflowDetails()" aria-label="Close">×</button></div>
+    <div id="cashflow_details_content"></div>
+    <div class="form-actions" style="justify-content:flex-end;"><button class="btn secondary" onclick="syncCashflow()">Refresh</button><button class="btn" onclick="closeCashflowDetails()">Close</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeCashflowDetails(); });
+    document.body.appendChild(modal);
+    renderCashflowDetailsContent();
+    await syncCashflow();
+}
+function openCashflowEditor() {
+    if (!isAdmin())
+        return;
+    closeCashflowEditor();
+    const current = currentCashflow?.configured ? Number(currentCashflow.cashOnHand) : NaN;
+    const modal = document.createElement('div');
+    modal.id = 'cashflow_editor_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<form class="summary-modal" onsubmit="saveCashflowOverride(event)" role="dialog" aria-modal="true" aria-labelledby="cashflow_editor_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Admin cash control</div><h2 id="cashflow_editor_title">Set cash on hand</h2></div><button type="button" class="modal-close" onclick="closeCashflowEditor()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">Enter the physical cash currently available now. Future purchases paid by Cash will be deducted automatically. Bank transfer and GCash purchases will not reduce this balance.</p>
+    <div class="form-grid"><div class="field span-2"><label>Current cash on hand (PHP)</label><input id="cashflow_balance" type="number" min="0" step="0.01" value="${Number.isFinite(current) ? current : ''}" placeholder="0" required><span class="hint">Today: ${fmtMoney(currentCashflow?.cashPurchases || 0)} paid in cash across ${currentCashflow?.purchaseCount || 0} purchased item${currentCashflow?.purchaseCount === 1 ? '' : 's'}.</span></div></div>
+    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeCashflowEditor()">Cancel</button><button type="submit" class="btn">Save cash on hand</button></div>
+  </form>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeCashflowEditor(); });
+    document.body.appendChild(modal);
+    document.getElementById('cashflow_balance')?.focus();
+}
+async function saveCashflowOverride(event) {
+    event.preventDefault();
+    if (!isAdmin())
+        return;
+    const balance = Number(val('cashflow_balance'));
+    if (!Number.isFinite(balance) || balance < 0) {
+        toast('Enter a valid non-negative cash balance');
+        return;
+    }
+    try {
+        const response = await fetch('/api/cashflow', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: todayStr(), balance }) });
+        const result = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(result?.error || 'Could not save cash on hand');
+        currentCashflow = result;
+        closeCashflowEditor();
+        const card = document.getElementById('buying_cashflow_card');
+        if (card)
+            card.innerHTML = cashflowCardMarkup();
+        toast('Cash on hand updated');
+    }
+    catch (error) {
+        toast(error.message || 'Could not save cash on hand');
+    }
+}
 function buyingDraftValue(key, fallback = '') {
     const element = document.getElementById(key);
     return element ? element.value : String(buyingDraftForm[key] ?? fallback);
@@ -1442,6 +1592,7 @@ function renderBuying() {
     const rateOverridden = Boolean(rateObj && rate !== systemRate);
     const suggested = roundPeso(net * rate);
     return `
+  <div id="buying_cashflow_card">${cashflowCardMarkup()}</div>
   <section class="block buying-workflow">
     <div class="buying-step" id="buying_customer_step">
       <div class="step-number">1</div>
@@ -1688,7 +1839,7 @@ async function commitPurchaseBatch(printAfter = false) {
         db.customers.push({ id: customerId, name: customer.name, contact: '', notes: '' });
     }
     const batchId = uid('buy');
-    const shared = { date: val('b_date') || todayStr(), customerId, customerName: customer.name, paymentMethod: val('b_pay'), staff: val('b_staff').trim(),
+    const shared = { date: val('b_date') || todayStr(), recordedAt: new Date().toISOString(), customerId, customerName: customer.name, paymentMethod: val('b_pay'), staff: val('b_staff').trim(),
         status: val('b_status'), remarks: val('b_remarks').trim(), batchId };
     purchaseBatch.forEach(item => db.stock.push({ ...item, ...shared, id: uid('stk'), cost: item.payout }));
     const count = purchaseBatch.length, total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
@@ -1703,6 +1854,7 @@ async function commitPurchaseBatch(printAfter = false) {
     closePurchaseSummary();
     await clearBuyingDraft();
     render();
+    await syncCashflow();
     if (printAfter)
         openPurchaseReceipt(batchId);
     toast(`${count} items recorded · ${fmtMoney(total)}`);

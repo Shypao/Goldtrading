@@ -36,6 +36,13 @@ interface LedgerState {
   pricing: PricingSettings | null;
   _revision?: number;
 }
+interface CashflowDaySetting {
+  balanceBase: number;
+  cashPaidBaseline: number;
+  setAt: string;
+  setBy: string;
+}
+interface CashflowSettings { days: Record<string, CashflowDaySetting> }
 interface GoldApiResponse { price: number }
 interface ExchangeApiResponse { rates?: { PHP?: number } }
 type UserRole = 'admin' | 'staff';
@@ -321,6 +328,84 @@ async function loadState(): Promise<LedgerState> {
   return state;
 }
 
+async function loadCashflowSettings(): Promise<CashflowSettings> {
+  const row = await dbGet<{ value: string }>("SELECT value FROM settings WHERE key = 'cashflow'");
+  if (!row) return { days: {} };
+  try {
+    const parsed = JSON.parse(row.value) as Partial<CashflowSettings>;
+    return { days: parsed.days && typeof parsed.days === 'object' ? parsed.days : {} };
+  } catch {
+    return { days: {} };
+  }
+}
+
+function validDateKey(value: string): boolean {
+  return /^\d{4}-\d{2}-\d{2}$/.test(value) && !Number.isNaN(new Date(`${value}T00:00:00Z`).getTime());
+}
+
+function manilaDateKey(): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(new Date());
+}
+
+function cashflowPurchases(state: LedgerState, date: string) {
+  const purchases = state.stock.filter(record => !record.sourceRefiningBatchId && String(record.date ?? '') === date);
+  const totalPurchases = purchases.reduce((sum, record) => sum + Number(record.payout ?? 0), 0);
+  const cashPurchases = purchases
+    .filter(record => String(record.paymentMethod ?? '').toLowerCase() === 'cash')
+    .reduce((sum, record) => sum + Number(record.payout ?? 0), 0);
+  const grouped = new Map<string, {
+    id: string; recordedAt: string; customerName: string; paymentMethod: string;
+    payout: number; itemCount: number; items: string[];
+  }>();
+  for (const record of purchases) {
+    const id = String(record.batchId ?? record.id);
+    const existing = grouped.get(id) ?? {
+      id,
+      recordedAt: String(record.recordedAt ?? ''),
+      customerName: String(record.customerName ?? '') || 'Walk-in seller',
+      paymentMethod: String(record.paymentMethod ?? '') || 'Unspecified',
+      payout: 0,
+      itemCount: 0,
+      items: []
+    };
+    existing.payout += Number(record.payout ?? 0);
+    existing.itemCount += 1;
+    existing.items.push(`${String(record.metal ?? '')} ${String(record.karat ?? '')}`.trim());
+    grouped.set(id, existing);
+  }
+  const transactions = Array.from(grouped.values()).map(transaction => ({
+    ...transaction,
+    payout: Math.round(transaction.payout * 100) / 100
+  })).sort((a, b) => (b.recordedAt || '').localeCompare(a.recordedAt || ''));
+  return {
+    purchaseCount: purchases.length,
+    totalPurchases: Math.round(totalPurchases * 100) / 100,
+    cashPurchases: Math.round(cashPurchases * 100) / 100,
+    nonCashPurchases: Math.round((totalPurchases - cashPurchases) * 100) / 100,
+    transactions
+  };
+}
+
+async function cashflowSnapshot(date: string) {
+  const state = await loadState();
+  const totals = cashflowPurchases(state, date);
+  const setting = (await loadCashflowSettings()).days[date];
+  const cashOnHand = setting
+    ? Math.round((setting.balanceBase - (totals.cashPurchases - setting.cashPaidBaseline)) * 100) / 100
+    : null;
+  return {
+    date,
+    ...totals,
+    configured: Boolean(setting),
+    cashOnHand,
+    balanceBase: setting?.balanceBase ?? null,
+    setAt: setting?.setAt ?? '',
+    setBy: setting?.setBy ?? ''
+  };
+}
+
 class LedgerRevisionConflict extends Error {}
 
 async function currentLedgerRevision(): Promise<number> {
@@ -574,6 +659,32 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     const user = await sessionUser(request);
     if (url.pathname.startsWith('/api/') && !user) return sendJson(response, 401, { error: 'Sign in required' });
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await publicStateFor(user!));
+    if (request.method === 'GET' && url.pathname === '/api/cashflow') {
+      const date = url.searchParams.get('date') || manilaDateKey();
+      if (!validDateKey(date)) return sendJson(response, 400, { error: 'Invalid cashflow date' });
+      return sendJson(response, 200, await cashflowSnapshot(date));
+    }
+    if (request.method === 'PUT' && url.pathname === '/api/cashflow') {
+      if (user!.role !== 'admin') return sendJson(response, 403, { error: 'Administrator access required' });
+      const body = await readJsonBody(request) as Record<string, unknown>;
+      const date = String(body.date ?? manilaDateKey());
+      const balance = Number(body.balance);
+      if (!validDateKey(date)) return sendJson(response, 400, { error: 'Invalid cashflow date' });
+      if (!Number.isFinite(balance) || balance < 0 || balance > 1_000_000_000_000) {
+        return sendJson(response, 400, { error: 'Enter a valid non-negative cash balance' });
+      }
+      const state = await loadState();
+      const totals = cashflowPurchases(state, date);
+      const settings = await loadCashflowSettings();
+      settings.days[date] = {
+        balanceBase: Math.round(balance * 100) / 100,
+        cashPaidBaseline: totals.cashPurchases,
+        setAt: new Date().toISOString(),
+        setBy: user!.displayName
+      };
+      await dbRun("INSERT INTO settings (key, value) VALUES ('cashflow', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)]);
+      return sendJson(response, 200, await cashflowSnapshot(date));
+    }
     if (request.method === 'GET' && url.pathname === '/api/pricing') {
       const state = await loadState();
       return sendJson(response, 200, { pricing: state.pricing, revision: state._revision });
