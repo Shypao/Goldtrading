@@ -1087,16 +1087,37 @@ function renderStaffRates() {
 }
 function renderRateDownloadButton() {
     const icon = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4h14v-4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-    const button = (format, imageType) => {
-        const formatLabel = format === 'phone' ? 'Phone' : 'Desktop', imageLabel = imageType.toUpperCase();
-        return `<button id="rate_download_${format}_${imageType}" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetImage('${format}','${imageType}')" title="Save a ${format === 'phone' ? 'portrait' : 'landscape'} ${imageLabel}${format === 'phone' ? ' with larger text for phone viewing' : ''}">${icon}<span class="rate-download-label">${formatLabel} ${imageLabel}</span></button>`;
+    const button = (format) => {
+        const formatLabel = format === 'phone' ? 'Phone' : 'Desktop';
+        return `<button id="rate_download_${format}" type="button" class="btn secondary rate-download-btn" onclick="openRateSheetDownloadModal('${format}')" title="Choose JPG or PNG for the ${formatLabel.toLowerCase()} layout">${icon}<span class="rate-download-label">${formatLabel} Download</span></button>`;
     };
-    return `<div class="rate-sheet-toolbar">${button('desktop', 'jpg')}${button('desktop', 'png')}${button('phone', 'jpg')}${button('phone', 'png')}</div>`;
+    return `<div class="rate-sheet-toolbar">${button('desktop')}${button('phone')}</div>`;
 }
-async function downloadRateSheetImage(format = 'desktop', imageType = 'jpg') {
-    const isPhone = format === 'phone';
+function closeRateSheetDownloadModal() { document.getElementById('rate_sheet_download_modal')?.remove(); }
+function openRateSheetDownloadModal(format) {
+    closeRateSheetDownloadModal();
+    const formatLabel = format === 'phone' ? 'Phone' : 'Desktop';
+    const modal = document.createElement('div');
+    modal.id = 'rate_sheet_download_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="rate_sheet_download_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">${formatLabel} rate sheet</div><h2 id="rate_sheet_download_title">Choose image format</h2></div><button type="button" class="modal-close" onclick="closeRateSheetDownloadModal()" aria-label="Close">×</button></div>
+    <p class="form-note">Download the ${format === 'phone' ? 'portrait phone' : 'landscape desktop'} layout as a JPG or PNG image.</p>
+    <div class="form-actions"><button type="button" class="btn secondary" onclick="downloadRateSheetFromModal('${format}','jpg')">Download JPG</button><button type="button" class="btn" onclick="downloadRateSheetFromModal('${format}','png')">Download PNG</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeRateSheetDownloadModal(); });
+    document.body.appendChild(modal);
+}
+function downloadRateSheetFromModal(format, imageType) {
+    closeRateSheetDownloadModal();
+    downloadRateSheetImage(format, imageType);
+}
+async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
+    const resolvedFormat = format === 'auto' ? (window.matchMedia('(max-width: 700px)').matches ? 'phone' : 'desktop') : format;
+    const isPhone = resolvedFormat === 'phone';
     const imageLabel = imageType.toUpperCase(), mimeType = imageType === 'png' ? 'image/png' : 'image/jpeg';
-    const button = document.getElementById(`rate_download_${format}_${imageType}`);
+    const button = document.getElementById(`rate_download_${resolvedFormat}`);
     const label = button?.querySelector('.rate-download-label');
     if (button) {
         button.disabled = true;
@@ -1289,7 +1310,7 @@ async function downloadRateSheetImage(format = 'desktop', imageType = 'jpg') {
         const blob = await new Promise(resolve => canvas.toBlob(resolve, mimeType, imageType === 'jpg' ? .94 : undefined));
         if (!blob)
             throw new Error(`${imageLabel} generation failed`);
-        const filename = `zpp-price-rates-${db.pricing.effectiveDate || todayStr()}-${format}.${imageType}`;
+        const filename = `zpp-price-rates-${db.pricing.effectiveDate || todayStr()}-${resolvedFormat}.${imageType}`;
         const file = new File([blob], filename, { type: mimeType });
         if (isPhone && navigator.share && navigator.canShare?.({ files: [file] })) {
             try {
@@ -1323,7 +1344,7 @@ async function downloadRateSheetImage(format = 'desktop', imageType = 'jpg') {
             button.removeAttribute('aria-busy');
         }
         if (label)
-            label.textContent = `${isPhone ? 'Phone' : 'Desktop'} ${imageLabel}`;
+            label.textContent = `${isPhone ? 'Phone' : 'Desktop'} Download`;
     }
 }
 function renderGradeCard(metal, key, label) {
