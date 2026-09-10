@@ -94,6 +94,9 @@ test('Liquidation view renders independent batches and their totals', async () =
   assert.match(html, /Silver batch/);
   assert.match(html, /Silver Buyer/);
   assert.match(html, /Batch grand total · buyer offer/);
+  assert.match(html, /Selected inventory cost/);
+  assert.match(html, /Profit/);
+  assert.match(html, /profit margin/);
   assert.match(html, /PHP 500/);
   assert.match(html, /PHP 800/);
 });
