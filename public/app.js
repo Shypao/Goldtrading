@@ -1008,10 +1008,10 @@ function renderRates() {
       <div class="stat"><div class="label">Silver 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Silver'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Silver)}/g</div></div>
       <div class="stat"><div class="label">Platinum 999 buying rate</div><div class="value">${fmtMoney(configuredBaseRate('Platinum'))}/g</div><div class="sub">Market: ${fmtMoney(auto.marketPhp?.Platinum)}/g</div></div>
     </div>
-    <p class="source-note">The internet price supplies the PHP base rate. Use <strong>Edit Gold multipliers</strong> to configure each Gold grade. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
+    <p class="source-note">The internet price supplies the PHP base rate. Gold grades use the saved karat multipliers. Gold uses <a href="https://www.livepriceofgold.com/philippines-gold-price-per-gram.html" target="_blank" rel="noopener">LivePriceOfGold Philippines</a> when available, with an automatic fallback. Verify high-value payouts independently.</p>
   </section>
   <section class="block">
-    <div class="batch-head"><div><h2 class="block-title">How automated pricing works</h2><p class="metal-section-desc">Use <strong>Edit today's PHP base</strong> to set a metal's base rate for this Philippine date. Gold grades recalculate using your saved karat multipliers. Use <strong>Override PHP rate</strong> only when one specific grade needs a different exact rate.</p></div><button class="btn secondary" onclick="openGoldMultiplierEditor()">Edit Gold multipliers</button></div>
+    <div class="batch-head"><div><h2 class="block-title">How automated pricing works</h2><p class="metal-section-desc">Use <strong>Edit today's PHP base</strong> to set a metal's base rate for this Philippine date. Gold grades recalculate using the saved karat multipliers. Use <strong>Override PHP rate</strong> only when one specific grade needs a different exact rate.</p></div></div>
   </section>
 
   <section class="metal-section">
