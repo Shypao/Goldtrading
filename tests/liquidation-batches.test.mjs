@@ -43,6 +43,11 @@ async function loadInventoryApi() {
       openCompleteLiquidationBatch(id);
       return appended.at(-1)?.innerHTML || '';
     },
+    openCashflowResetModal() {
+      appended.length = 0;
+      if (typeof openCashflowResetConfirmation === 'function') openCashflowResetConfirmation();
+      return appended.at(-1)?.innerHTML || '';
+    },
     profitPreview(cost, total) {
       const elements = {
         complete_batch_total: { value: total },
@@ -189,6 +194,19 @@ test('cash-on-hand card never converts a missing synced balance into zero', asyn
   api.setCashflow({ date: api.today(), configured: true, cashOnHand: null, cashIn: 0, cashOut: 0 });
 
   assert.match(api.cashflowCardMarkup(), /<strong>Not set<\/strong>/);
+});
+
+test('admin can open a confirmation before resetting IN and OUT counters', async () => {
+  const api = await loadInventoryApi();
+  api.setCashflow({ date: api.today(), configured: true, cashOnHand: 0, cashIn: 66572, cashOut: 23043 });
+
+  const card = api.cashflowCardMarkup();
+  const modal = api.openCashflowResetModal();
+
+  assert.match(card, /Reset IN \/ OUT/);
+  assert.match(modal, /Reset IN and OUT to PHP 0/);
+  assert.match(modal, /does not delete buying transactions/i);
+  assert.match(modal, /Confirm reset/);
 });
 
 test('cashflow details can use a retrieved historical daily snapshot', async () => {

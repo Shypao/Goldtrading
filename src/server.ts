@@ -42,11 +42,17 @@ interface CashflowDaySetting {
   cashPaidBaseline: number;
   setAt: string;
   setBy: string;
+  movementBaseline?: CashflowMovementBaseline;
   adjustments?: CashflowAdjustment[];
+}
+interface CashflowMovementBaseline {
+  cashIn: number;
+  manualCashOut: number;
+  cashOut: number;
 }
 interface CashflowAdjustment {
   id: string;
-  operation: 'set' | 'add' | 'deduct';
+  operation: 'set' | 'add' | 'deduct' | 'reset';
   amount: number;
   balanceAfter: number;
   note: string;
@@ -475,15 +481,29 @@ async function carryForwardCashflowSetting(state: LedgerState, date: string, set
   return setting;
 }
 
+export function cashflowMovementTotals(
+  totals: { cashPurchases: number },
+  adjustments: Array<Pick<CashflowAdjustment, 'operation' | 'amount'>>,
+  baseline?: CashflowMovementBaseline
+): CashflowMovementBaseline {
+  const round=(value:number)=>Math.round(value*100)/100;
+  const grossCashIn=adjustments.filter(item=>item.operation==='add').reduce((sum,item)=>sum+Number(item.amount??0),0);
+  const grossManualCashOut=adjustments.filter(item=>item.operation==='deduct').reduce((sum,item)=>sum+Number(item.amount??0),0);
+  const grossCashOut=Number(totals.cashPurchases??0)+grossManualCashOut;
+  return {
+    cashIn:round(Math.max(grossCashIn-Number(baseline?.cashIn??0),0)),
+    manualCashOut:round(Math.max(grossManualCashOut-Number(baseline?.manualCashOut??0),0)),
+    cashOut:round(Math.max(grossCashOut-Number(baseline?.cashOut??0),0))
+  };
+}
+
 async function cashflowSnapshot(date: string) {
   const state = await loadState();
   const totals = cashflowPurchases(state, date);
   const settings=await loadCashflowSettings();
   const setting = await carryForwardCashflowSetting(state,date,settings);
   const adjustments = setting?.adjustments ?? [];
-  const cashIn = adjustments.filter(item => item.operation === 'add').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  const manualCashOut = adjustments.filter(item => item.operation === 'deduct').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
-  const cashOut = totals.cashPurchases + manualCashOut;
+  const movements=cashflowMovementTotals(totals,adjustments,setting?.movementBaseline);
   const cashOnHand = setting
     ? Math.round((setting.balanceBase - (totals.cashPurchases - setting.cashPaidBaseline)) * 100) / 100
     : null;
@@ -492,10 +512,10 @@ async function cashflowSnapshot(date: string) {
     ...totals,
     configured: Boolean(setting),
     cashOnHand,
-    cashIn: Math.round(cashIn * 100) / 100,
-    cashOut: Math.round(cashOut * 100) / 100,
-    manualCashOut: Math.round(manualCashOut * 100) / 100,
-    netCashflow: Math.round((cashIn - cashOut) * 100) / 100,
+    cashIn: movements.cashIn,
+    cashOut: movements.cashOut,
+    manualCashOut: movements.manualCashOut,
+    netCashflow: Math.round((movements.cashIn - movements.cashOut) * 100) / 100,
     balanceBase: setting?.balanceBase ?? null,
     setAt: setting?.setAt ?? '',
     setBy: setting?.setBy ?? '',
@@ -802,7 +822,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       const amount = Number(body.amount ?? body.balance);
       const note = String(body.note ?? '').trim();
       if (!validDateKey(date)) return sendJson(response, 400, { error: 'Invalid cashflow date' });
-      if (!['set', 'add', 'deduct'].includes(operation)) return sendJson(response, 400, { error: 'Invalid cash adjustment type' });
+      if (!['set', 'add', 'deduct', 'reset'].includes(operation)) return sendJson(response, 400, { error: 'Invalid cash adjustment type' });
       if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000_000_000) {
         return sendJson(response, 400, { error: 'Enter a valid non-negative cash amount' });
       }
@@ -815,6 +835,23 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       const currentBalance = previous
         ? Math.round((previous.balanceBase - (totals.cashPurchases - previous.cashPaidBaseline)) * 100) / 100
         : 0;
+      if (operation === 'reset') {
+        if (!previous) return sendJson(response, 400, { error: 'Set the cash on hand before resetting IN and OUT' });
+        const createdAt=new Date().toISOString();
+        const grossMovements=cashflowMovementTotals(totals,previous.adjustments??[]);
+        const adjustment:CashflowAdjustment={
+          id:`cash_${randomBytes(8).toString('hex')}`,
+          operation:'reset',amount:0,balanceAfter:currentBalance,
+          note:note||'IN and OUT counters reset',createdAt,createdBy:user!.displayName
+        };
+        settings.days[date]={
+          ...previous,
+          movementBaseline:grossMovements,
+          adjustments:[...(previous.adjustments??[]),adjustment]
+        };
+        await persistCashflowSettings(settings);
+        return sendJson(response, 200, await cashflowSnapshot(date));
+      }
       const nextBalance = operation === 'set' ? amount : operation === 'add' ? currentBalance + amount : currentBalance - amount;
       if (nextBalance < 0) return sendJson(response, 400, { error: 'The deduction is greater than the current cash on hand' });
       const createdAt = new Date().toISOString();
@@ -832,6 +869,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
         cashPaidBaseline: totals.cashPurchases,
         setAt: createdAt,
         setBy: user!.displayName,
+        movementBaseline: previous?.movementBaseline,
         adjustments: [...(previous?.adjustments ?? []), adjustment]
       };
       await persistCashflowSettings(settings);

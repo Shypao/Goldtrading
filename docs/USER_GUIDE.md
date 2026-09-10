@@ -210,6 +210,8 @@ Only an administrator can select **Set cash on hand** or **Edit cash on hand**. 
 
 The administrator can attach an optional note to every adjustment. Select **View Admin cash adjustments** from the cashflow modal to open the separate adjustment-history modal. It provides its own search and a scrollable list of up to 50 records before Previous and Next controls appear. The history records the action, amount, resulting balance, note, Admin name, and time. Purchases paid by Cash after the latest adjustment are deducted automatically. Staff can view the same live figures and adjustment history but cannot change the balance.
 
+Select **Reset IN / OUT** and confirm to restart only the daily movement counters at PHP 0. This does not change Cash on Hand, purchase totals, inventory, or earlier audit records. Cash added, deductions, and cash purchases recorded after the reset begin increasing the counters again.
+
 ### Step 1: Customer information
 
 1. Enter the customer's name, or leave it blank for a walk-in seller.

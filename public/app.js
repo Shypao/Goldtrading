@@ -1672,7 +1672,7 @@ function cashflowCardMarkup() {
     return `<section class="cashflow-card ${configured && Number(snapshot.cashOnHand) < 0 ? 'is-negative' : ''}">
     <div class="cashflow-main">
       <div><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><strong>${balance}</strong><small>${configured ? `Live balance after today's cash purchases${updated ? ` · adjusted ${esc(updated)} by ${esc(snapshot.setBy || 'Admin')}` : ''}` : 'Waiting for an administrator to set the available cash'}</small></div>
-      <div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin() ? `<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured ? 'Edit cash on hand' : 'Set cash on hand'}</button>` : '<span class="cashflow-readonly">Admin controlled</span>'}</div>
+      <div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin() ? `${configured ? '<button class="btn secondary" onclick="openCashflowResetConfirmation()">Reset IN / OUT</button>' : ''}<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured ? 'Edit cash on hand' : 'Set cash on hand'}</button>` : '<span class="cashflow-readonly">Admin controlled</span>'}</div>
     </div>
     <div class="cashflow-flow-strip"><strong>${new Date(todayStr() + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: '2-digit' })}</strong><span class="cashflow-in">IN ${fmtMoney(snapshot?.cashIn || 0)}</span><span class="cashflow-out">OUT ${fmtMoney(snapshot?.cashOut || 0)}</span></div>
     <div class="cashflow-stats">
@@ -1716,6 +1716,7 @@ async function syncCashflow() {
     }
 }
 function closeCashflowEditor() { document.getElementById('cashflow_editor_modal')?.remove(); }
+function closeCashflowResetConfirmation() { document.getElementById('cashflow_reset_modal')?.remove(); }
 function closeCashflowDetails() { document.getElementById('cashflow_details_modal')?.remove(); }
 function cashflowDetailSnapshot() { return cashflowHistorySnapshot || currentCashflow || {}; }
 function cashflowTime(value) {
@@ -1753,7 +1754,7 @@ function filteredCashflowTransactions() {
     ]));
 }
 function filteredCashflowAdjustments() {
-    const labels = { set: 'Set balance', add: 'Cash added', deduct: 'Cash deducted' };
+    const labels = { set: 'Set balance', add: 'Cash added', deduct: 'Cash deducted', reset: 'IN / OUT reset' };
     const query = cashflowAdjustmentSearch.trim().toLowerCase();
     return (cashflowDetailSnapshot().adjustments || []).filter(adjustment => !query || [
         cashflowTime(adjustment.createdAt), labels[adjustment.operation], adjustment.operation, adjustment.note,
@@ -1806,7 +1807,7 @@ function cashflowAdjustmentRows() {
     const adjustments = filteredCashflowAdjustments();
     if (!adjustments.length)
         return `<div class="empty-note">${cashflowAdjustmentSearch ? 'No Admin cash adjustments match your search.' : `No cash adjustments recorded on ${fmtDate(cashflowHistoryDate || todayStr())}.`}</div>`;
-    const labels = { set: 'Set balance', add: 'Cash added', deduct: 'Cash deducted' };
+    const labels = { set: 'Set balance', add: 'Cash added', deduct: 'Cash deducted', reset: 'IN / OUT reset' };
     const pages = Math.max(1, Math.ceil(adjustments.length / CASHFLOW_PAGE_SIZE));
     cashflowAdjustmentPage = Math.min(Math.max(cashflowAdjustmentPage, 1), pages);
     const start = (cashflowAdjustmentPage - 1) * CASHFLOW_PAGE_SIZE;
@@ -1948,6 +1949,48 @@ function openCashflowEditor() {
         closeCashflowEditor(); });
     document.body.appendChild(modal);
     document.getElementById('cashflow_amount')?.focus();
+}
+function openCashflowResetConfirmation() {
+    if (!isAdmin() || !currentCashflow?.configured)
+        return;
+    closeCashflowResetConfirmation();
+    const modal = document.createElement('div');
+    modal.id = 'cashflow_reset_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="cashflow_reset_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Admin cash control</div><h2 id="cashflow_reset_title">Reset IN and OUT to PHP 0</h2></div><button type="button" class="modal-close" onclick="closeCashflowResetConfirmation()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">This starts new IN and OUT counters from this moment. It does not delete buying transactions, adjustment history, or inventory, and it does not change Cash on Hand.</p>
+    <div class="move-confirmation-summary"><div><span>Cash on hand</span><strong>${fmtMoney(currentCashflow.cashOnHand)}</strong></div><div><span>Current IN</span><strong class="cashflow-in">${fmtMoney(currentCashflow.cashIn || 0)}</strong></div><div><span>Current OUT</span><strong class="cashflow-out">${fmtMoney(currentCashflow.cashOut || 0)}</strong></div></div>
+    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeCashflowResetConfirmation()">Cancel</button><button type="button" class="btn" onclick="resetCashflowMovements()">Confirm reset</button></div>
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeCashflowResetConfirmation(); });
+    document.body.appendChild(modal);
+}
+async function resetCashflowMovements() {
+    if (!isAdmin())
+        return;
+    try {
+        const response = await fetch('/api/cashflow', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ date: todayStr(), operation: 'reset', amount: 0, note: 'IN and OUT counters reset' }) });
+        const result = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(result?.error || 'Could not reset IN and OUT');
+        currentCashflow = result;
+        closeCashflowResetConfirmation();
+        if (!cashflowHistoryDate || cashflowHistoryDate === todayStr()) {
+            cashflowHistoryDate = todayStr();
+            cashflowHistorySnapshot = result;
+            renderCashflowDetailsContent();
+            renderCashflowAdjustmentDetailsContent();
+        }
+        const card = document.getElementById('buying_cashflow_card');
+        if (card)
+            card.innerHTML = cashflowCardMarkup();
+        toast('IN and OUT reset to PHP 0');
+    }
+    catch (error) {
+        toast(error.message || 'Could not reset IN and OUT');
+    }
 }
 function updateCashflowEditorFields() {
     const operation = val('cashflow_operation'), label = document.getElementById('cashflow_amount_label'), hint = document.getElementById('cashflow_action_hint'), input = document.getElementById('cashflow_amount');
