@@ -526,6 +526,10 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     const user = await sessionUser(request);
     if (url.pathname.startsWith('/api/') && !user) return sendJson(response, 401, { error: 'Sign in required' });
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await publicStateFor(user!));
+    if (request.method === 'GET' && url.pathname === '/api/pricing') {
+      const state = await loadState();
+      return sendJson(response, 200, { pricing: state.pricing, revision: state._revision });
+    }
     if (request.method === 'GET' && url.pathname === '/api/buying-draft') {
       const row = await dbGet<{ value: string }>('SELECT value FROM settings WHERE key = ?', [buyingDraftKey(user!)]);
       if (!row) return sendJson(response, 200, { items: [], form: {} });

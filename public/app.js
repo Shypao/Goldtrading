@@ -371,12 +371,15 @@ function configuredSilver925Rate(silver999Base = configuredBaseRate('Silver')) {
     return roundPeso(Math.max(Number(silver999Base || 0) - 10, 0));
 }
 function calculatedRateFromBase(metal, key, base) {
-    const customGoldPurity = metal === 'Gold' ? customGoldPurityFromKey(key) : null;
-    if (!Number.isFinite(base) || base <= 0 || (!gradeMeta(metal, key) && customGoldPurity === null))
+    const customPurity = customPurityFromKey(key);
+    if (!Number.isFinite(base) || base <= 0 || (!gradeMeta(metal, key) && customPurity === null))
         return 0;
     let rate = 0;
-    if (metal === 'Gold') {
-        rate = base * (customGoldPurity === null ? configuredGradeMultiplier(metal, key) : customGoldPurity / 100);
+    if (customPurity !== null) {
+        rate = base * (customPurity / 100);
+    }
+    else if (metal === 'Gold') {
+        rate = base * configuredGradeMultiplier(metal, key);
     }
     else if (metal === 'Silver') {
         const sterlingRate = configuredSilver925Rate(base);
@@ -401,14 +404,14 @@ function isOverridden(metal, key) {
     const b = bucketFor(metal);
     return b.overrides[key] != null && b.overrides[key] !== '';
 }
-function customGoldPurityFromKey(key) {
+function customPurityFromKey(key) {
     const match = String(key || '').match(/^(\d+(?:\.\d+)?)%$/);
     if (!match)
         return null;
     const purity = Number(match[1]);
     return Number.isFinite(purity) && purity > 0 && purity <= 100 ? purity : null;
 }
-function customGoldGradeKey(value) {
+function customPurityGradeKey(value) {
     const purity = Number(value);
     if (!Number.isFinite(purity) || purity <= 0 || purity > 100)
         return '';
@@ -418,13 +421,13 @@ function gradeLabel(metal, key) {
     const g = gradeMeta(metal, key);
     if (g)
         return g.label;
-    const customPurity = metal === 'Gold' ? customGoldPurityFromKey(key) : null;
+    const customPurity = customPurityFromKey(key);
     return customPurity === null ? key : `${Number(customPurity.toFixed(2))}% purity`;
 }
 function distinctKarats(metal) { return GRADES[metal] || []; }
 function activeRate(metal, karat) {
-    const isCustomGold = metal === 'Gold' && customGoldPurityFromKey(karat) !== null;
-    if ((!GRADES[metal] || !GRADES[metal].includes(karat)) && !isCustomGold)
+    const isCustomPurity = customPurityFromKey(karat) !== null;
+    if ((!GRADES[metal] || !GRADES[metal].includes(karat)) && !isCustomPurity)
         return null;
     return { rate: metalRate(metal, karat), effectiveDate: db.pricing.effectiveDate };
 }
@@ -668,16 +671,76 @@ function boot() {
     startAutomaticPricing();
 }
 let automaticPricingTimer = null;
+let sharedPricingSyncBusy = false;
+async function syncSharedPricing() {
+    if (sharedPricingSyncBusy || isAdmin() || !(location.protocol === 'http:' || location.protocol === 'https:'))
+        return;
+    sharedPricingSyncBusy = true;
+    try {
+        const previousPricing = JSON.stringify(db.pricing);
+        const buyingMetal = currentTab === 'buying' ? val('b_metal') : '';
+        const buyingKarat = currentTab === 'buying' ? selectedBuyingGrade() : '';
+        const previousBuyingRate = buyingMetal && buyingKarat ? roundPeso(activeRate(buyingMetal, buyingKarat)?.rate) : null;
+        const buyingRateInput = document.getElementById('b_rate');
+        const enteredBuyingRate = buyingRateInput ? roundPeso(Number(buyingRateInput.value)) : null;
+        const response = await fetch('/api/pricing', { cache: 'no-store' });
+        if (response.status === 401) {
+            showLogin();
+            return;
+        }
+        const result = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(result?.error || 'Pricing sync failed');
+        if (Number.isInteger(result?.revision))
+            db._revision = result.revision;
+        if (!result?.pricing || JSON.stringify(result.pricing) === previousPricing)
+            return;
+        db.pricing = result.pricing;
+        ensureShape();
+        if (currentTab === 'rates') {
+            const editingRateField = document.activeElement?.matches('input,select,textarea');
+            if (!editingRateField)
+                render();
+        }
+        else if (currentTab === 'buying' && buyingRateInput && enteredBuyingRate === previousBuyingRate) {
+            const currentRate = buyingMetal && buyingKarat ? roundPeso(activeRate(buyingMetal, buyingKarat)?.rate) : 0;
+            buyingRateInput.value = currentRate ? String(currentRate) : '';
+            buyingDraftForm.b_rate = buyingRateInput.value;
+            recalcBuying();
+            scheduleBuyingDraftSave();
+        }
+    }
+    catch (error) {
+        console.error('Shared pricing sync failed', error);
+    }
+    finally {
+        sharedPricingSyncBusy = false;
+    }
+}
 function startAutomaticPricing() {
     if (automaticPricingTimer)
         return;
     automaticPricingTimer = setInterval(() => {
-        if (currentUser && db.pricing.auto.enabled && !document.hidden)
-            refreshPhilippineRates(true);
+        if (!currentUser || document.hidden)
+            return;
+        if (isAdmin()) {
+            if (db.pricing.auto.enabled)
+                refreshPhilippineRates(true);
+        }
+        else {
+            syncSharedPricing();
+        }
     }, 5000);
     document.addEventListener('visibilitychange', () => {
-        if (currentUser && !document.hidden && db.pricing.auto.enabled)
-            refreshPhilippineRates(true);
+        if (!currentUser || document.hidden)
+            return;
+        if (isAdmin()) {
+            if (db.pricing.auto.enabled)
+                refreshPhilippineRates(true);
+        }
+        else {
+            syncSharedPricing();
+        }
     });
 }
 function goTab(id) {
@@ -1323,9 +1386,9 @@ function renderBuying() {
     const karats = distinctKarats(metal);
     const requestedKarat = buyingDraftValue('b_karat');
     const customPurityValue = buyingDraftValue('b_custom_purity');
-    const customSelected = metal === 'Gold' && requestedKarat === '__custom__';
+    const customSelected = requestedKarat === '__custom__';
     const karatSelection = customSelected ? '__custom__' : (karats.includes(requestedKarat) ? requestedKarat : karats[0]) || '';
-    const karat = customSelected ? customGoldGradeKey(customPurityValue) : karatSelection;
+    const karat = customSelected ? customPurityGradeKey(customPurityValue) : karatSelection;
     const rateObj = karat ? activeRate(metal, karat) : null;
     const grossValue = buyingDraftValue('b_gross'), deductionValue = buyingDraftValue('b_ded');
     const gross = parseFloat(grossValue) || 0, ded = parseFloat(deductionValue) || 0;
@@ -1370,12 +1433,12 @@ function renderBuying() {
       <div class="field"><label>Karat / purity</label>
         <select id="b_karat" onchange="handleBuyingGradeChange();scheduleBuyingDraftSave()">
           ${karats.length ? karats.map(k => `<option value="${k}" ${k === karatSelection ? 'selected' : ''}>${esc(gradeLabel(metal, k))}</option>`).join('') : `<option value="">No rate set</option>`}
-          ${metal === 'Gold' ? `<option value="__custom__" ${customSelected ? 'selected' : ''}>Custom purity (%)</option>` : ''}
+          <option value="__custom__" ${customSelected ? 'selected' : ''}>Custom purity (%)</option>
         </select>
         <div id="b_custom_purity_field" class="custom-purity-field ${customSelected ? '' : 'is-hidden'}">
-          <label for="b_custom_purity">Custom gold purity (%)</label>
+          <label for="b_custom_purity">Custom ${esc(metal)} purity (%)</label>
           <div class="custom-purity-input"><input id="b_custom_purity" type="number" min="0.01" max="100" step="0.01" value="${esc(customPurityValue)}" placeholder="Example: 89" oninput="resetBuyingRate();scheduleBuyingDraftSave()"><span>%</span></div>
-          <span class="hint">Example: 89% uses 0.89 × today's Gold base rate.</span>
+          <span class="hint">Example: 89% uses 0.89 × today's ${esc(metal)} base rate.</span>
         </div>
         ${!karats.length ? `<span class="hint">Add a buying rate for ${metal} first.</span>` : ''}
       </div>
@@ -1414,20 +1477,20 @@ function renderBuying() {
 }
 function updateBuyingGrades() {
     const metal = val('b_metal'), select = document.getElementById('b_karat'), grades = distinctKarats(metal);
-    select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('') + (metal === 'Gold' ? '<option value="__custom__">Custom purity (%)</option>' : '');
+    select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('') + '<option value="__custom__">Custom purity (%)</option>';
     document.getElementById('b_custom_purity_field')?.classList.add('is-hidden');
     resetBuyingRate();
 }
 function handleBuyingGradeChange() {
-    const custom = val('b_metal') === 'Gold' && val('b_karat') === '__custom__';
+    const custom = val('b_karat') === '__custom__';
     document.getElementById('b_custom_purity_field')?.classList.toggle('is-hidden', !custom);
     resetBuyingRate();
     if (custom)
         document.getElementById('b_custom_purity')?.focus();
 }
 function selectedBuyingGrade() {
-    if (val('b_metal') === 'Gold' && val('b_karat') === '__custom__')
-        return customGoldGradeKey(val('b_custom_purity'));
+    if (val('b_karat') === '__custom__')
+        return customPurityGradeKey(val('b_custom_purity'));
     return val('b_karat');
 }
 function resetBuyingRate() {
@@ -1445,7 +1508,7 @@ function recalcBuying() {
     if (netEl)
         netEl.textContent = fmtWeight(net);
     if (rateLabel)
-        rateLabel.textContent = rateOverridden ? 'Buying rate (overridden)' : karat && customGoldPurityFromKey(karat) !== null ? `Buying rate (${gradeLabel(metal, karat)} × Gold base)` : 'Buying rate (Daily Rate Setup)';
+        rateLabel.textContent = rateOverridden ? 'Buying rate (overridden)' : karat && customPurityFromKey(karat) !== null ? `Buying rate (${gradeLabel(metal, karat)} × ${metal} base)` : 'Buying rate (Daily Rate Setup)';
     ratePanel?.classList.toggle('is-overridden', rateOverridden);
     rateReset?.classList.toggle('is-hidden', !rateOverridden);
     const suggested = roundPeso(net * rate);
@@ -1457,7 +1520,7 @@ function recalcBuying() {
 function purchaseItemFromForm() {
     const metal = val('b_metal'), karat = selectedBuyingGrade();
     if (val('b_karat') === '__custom__' && !karat) {
-        toast('Enter a custom Gold purity between 0.01% and 100%');
+        toast(`Enter a custom ${metal} purity between 0.01% and 100%`);
         return null;
     }
     if (!karat) {
