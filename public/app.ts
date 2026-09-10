@@ -2820,12 +2820,13 @@ function renderLiquidationHistory(){
 }
 
 function renderReports(){
-  const allPurchases=db.stock.filter(s=>!s.sourceRefiningBatchId).slice().sort((a,b)=>b.date.localeCompare(a.date));
-  const purchases=allPurchases.filter(purchaseHistoryDateMatch);
-  const purchaseWeight=purchases.reduce((sum,item)=>sum+Number(item.netWeight||0),0);
-  const purchasePayout=purchases.reduce((sum,item)=>sum+Number(item.payout||0),0);
+  const allPurchases=db.stock.filter(s=>!s.sourceRefiningBatchId);
   const readyStock=db.stock.filter(s=>(s.status==='For Selling'||s.status==='For Refining')&&s.currentWeight>0);
-  const purchaseReport=`<div id="dashboard_report_content" class="dashboard-report-content">
+  const renderPurchaseReport=()=>{
+    const purchases=allPurchases.filter(purchaseHistoryDateMatch).slice().sort((a,b)=>b.date.localeCompare(a.date));
+    const purchaseWeight=purchases.reduce((sum,item)=>sum+Number(item.netWeight||0),0);
+    const purchasePayout=purchases.reduce((sum,item)=>sum+Number(item.payout||0),0);
+    return `<div id="dashboard_report_content" class="dashboard-report-content">
   <section class="block recent-purchases purchase-history">
     <div class="batch-head"><div><h2 class="block-title">Purchase history</h2><p class="form-note">All recorded purchases are kept here in one view.</p></div><div class="form-actions"><button class="btn secondary small" onclick="openCustomerHistoryModal()">View customer history</button><button class="btn small" onclick="exportPurchases()">Download purchase CSV</button></div></div>
     <div class="purchase-history-filter-card">
@@ -2845,8 +2846,8 @@ function renderReports(){
       <td data-label="Details"><div class="purchase-details"><span class="hint">${esc(s.staff||'No staff recorded')}</span><div class="form-actions"><button class="btn secondary small" onclick="openPurchaseReceipt('${s.batchId||s.id}')">Receipt</button>${adminEditButton('Inventory',s.id)}</div></div></td></tr>`,
       ['Date','Seller','Item','Net weight','Payout','Status','Details'], 'No purchases recorded yet.')}
   </section></div>`;
-  const liquidationReport=`<div id="dashboard_report_content" class="dashboard-report-content">${renderLiquidationHistory()}</div>`;
-  const readinessReport=`<div id="dashboard_report_content" class="dashboard-report-content"><section class="block">
+  };
+  const renderReadinessReport=()=>`<div id="dashboard_report_content" class="dashboard-report-content"><section class="block">
     <div class="batch-head"><div><h2 class="block-title">Liquidation readiness</h2><p class="form-note">Available inventory that can be prepared for selling or refining.</p></div><button class="btn small" onclick="goTab('inventory')">Open inventory</button></div>
     ${dashboardReportSearch('Search date, metal, purity, item type, or status',readyStock.length)}
     ${tableOrEmpty(readyStock,
@@ -2855,7 +2856,9 @@ function renderReports(){
       ['Date','Metal / karat','Type','Weight available','Status'],
       'Nothing is currently eligible for liquidation.')}
   </section></div>`;
-  const selectedReport=dashboardReportPanel==='purchases'?purchaseReport:dashboardReportPanel==='liquidations'?liquidationReport:dashboardReportPanel==='readiness'?readinessReport:'';
+  const selectedReport=dashboardReportPanel==='purchases'?renderPurchaseReport()
+    :dashboardReportPanel==='liquidations'?`<div id="dashboard_report_content" class="dashboard-report-content">${renderLiquidationHistory()}</div>`
+    :dashboardReportPanel==='readiness'?renderReadinessReport():'';
   return `<section class="block dashboard-report-menu">
     <div><h2 class="block-title">Dashboard records</h2><p class="form-note">Open only the report you need. Select the active button again to close it.</p></div>
     <div class="dashboard-report-buttons">
