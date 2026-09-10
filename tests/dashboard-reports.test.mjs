@@ -4,7 +4,7 @@ import test from 'node:test';
 import vm from 'node:vm';
 
 async function loadDashboardReports() {
-  const appPath = new URL('../public/app.ts', import.meta.url);
+  const appPath = new URL('../public/app.js', import.meta.url);
   const source = (await readFile(appPath, 'utf8')).replace(/initializeAuth\(\);\s*$/, '');
   const context = vm.createContext({ console });
   vm.runInContext(`${source}\n;globalThis.dashboardReportsTestApi = {

@@ -873,12 +873,17 @@ function renderStaffRates(){
 }
 function renderRateDownloadButton(){
   const icon=`<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4h14v-4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
-  return `<div class="rate-sheet-toolbar"><button id="rate_download_desktop_jpg" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetJpg('desktop')" title="Save a landscape JPG for desktop viewing">${icon}<span class="rate-download-label">Desktop JPG</span></button><button id="rate_download_phone_jpg" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetJpg('phone')" title="Save a portrait JPG with larger text for phone viewing">${icon}<span class="rate-download-label">Phone JPG</span></button></div>`;
+  const button=(format:'desktop'|'phone',imageType:'jpg'|'png')=>{
+    const formatLabel=format==='phone'?'Phone':'Desktop',imageLabel=imageType.toUpperCase();
+    return `<button id="rate_download_${format}_${imageType}" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetImage('${format}','${imageType}')" title="Save a ${format==='phone'?'portrait':'landscape'} ${imageLabel}${format==='phone'?' with larger text for phone viewing':''}">${icon}<span class="rate-download-label">${formatLabel} ${imageLabel}</span></button>`;
+  };
+  return `<div class="rate-sheet-toolbar">${button('desktop','jpg')}${button('desktop','png')}${button('phone','jpg')}${button('phone','png')}</div>`;
 }
 
-async function downloadRateSheetJpg(format:'desktop'|'phone'='desktop'){
+async function downloadRateSheetImage(format:'desktop'|'phone'='desktop',imageType:'jpg'|'png'='jpg'){
   const isPhone=format==='phone';
-  const button=document.getElementById(`rate_download_${format}_jpg`);
+  const imageLabel=imageType.toUpperCase(),mimeType=imageType==='png'?'image/png':'image/jpeg';
+  const button=document.getElementById(`rate_download_${format}_${imageType}`);
   const label=button?.querySelector('.rate-download-label');
   if(button){ button.disabled=true; button.setAttribute('aria-busy','true'); }
   if(label) label.textContent='Generating…';
@@ -964,8 +969,9 @@ async function downloadRateSheetJpg(format:'desktop'|'phone'='desktop'){
       text('BUYING RATE',x+(isPhone?24:15),y+(isPhone?108:76),isPhone?'700 16px Arial, sans-serif':'700 9px Arial, sans-serif',colors.goldDeep);
     };
 
+    const goldGrades=GOLD_GRADES.filter(grade=>grade.key!=='24K'&&grade.key!=='18K-BUO');
     let y=isPhone?254:172;
-    drawHeading('Gold',GOLD_GRADES.length,colors.gold,y); y+=16;
+    drawHeading('Gold',goldGrades.length+1,colors.gold,y); y+=16;
     if(isPhone){
       y+=14;
       drawBase(pad,y,'24K rate — pure gold',configuredBaseRate('Gold'),width-pad*2);
@@ -977,7 +983,6 @@ async function downloadRateSheetJpg(format:'desktop'|'phone'='desktop'){
       drawFeatured(pad+258,y,520);
       y+=98;
     }
-    const goldGrades=GOLD_GRADES.filter(grade=>grade.key!=='24K');
     const goldColumns=isPhone?2:6;
     goldGrades.forEach((grade,index)=>drawGradeCard(grade,'Gold',index,y,goldColumns));
     y+=Math.ceil(goldGrades.length/goldColumns)*(cardHeight+columnGap)+(isPhone?30:18);
@@ -986,12 +991,12 @@ async function downloadRateSheetJpg(format:'desktop'|'phone'='desktop'){
     if(isPhone){
       y+=14;
       const halfWidth=(width-pad*2-columnGap)/2;
-      drawBase(pad,y,'999 rate — independent silver rate',configuredBaseRate('Silver'),halfWidth);
-      drawBase(pad+halfWidth+columnGap,y,'925 basis — other silver grades',configuredSilver925Rate(),halfWidth);
+      drawBase(pad,y,'999 rate',configuredBaseRate('Silver'),halfWidth);
+      drawBase(pad+halfWidth+columnGap,y,'925 basis',configuredSilver925Rate(),halfWidth);
       y+=146;
     }else{
-      drawBase(pad,y,'999 rate — independent silver rate',configuredBaseRate('Silver'));
-      drawBase(pad+258,y,'925 basis — other silver grades',configuredSilver925Rate(),300);
+      drawBase(pad,y,'999 rate',configuredBaseRate('Silver'));
+      drawBase(pad+258,y,'925 basis',configuredSilver925Rate(),300);
       y+=98;
     }
     const silverGrades=SILVER_GRADES.filter(grade=>grade.key!=='999'&&grade.key!=='925');
@@ -1014,18 +1019,18 @@ async function downloadRateSheetJpg(format:'desktop'|'phone'='desktop'){
     text('ZPP GOLD TRADING  ·  DAILY BUYING PRICE GUIDE',pad,height-(isPhone?18:13),isPhone?'700 16px Arial, sans-serif':'700 9px Arial, sans-serif',colors.soft);
     text(`Generated ${new Date().toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'})}`,width-pad,height-(isPhone?18:13),isPhone?'16px Arial, sans-serif':'10px Arial, sans-serif',colors.soft,'right');
 
-    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.94));
-    if(!blob) throw new Error('JPG generation failed');
-    const filename=`zpp-price-rates-${db.pricing.effectiveDate||todayStr()}-${format}.jpg`;
-    const file=new File([blob],filename,{type:'image/jpeg'});
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,mimeType,imageType==='jpg'?.94:undefined));
+    if(!blob) throw new Error(`${imageLabel} generation failed`);
+    const filename=`zpp-price-rates-${db.pricing.effectiveDate||todayStr()}-${format}.${imageType}`;
+    const file=new File([blob],filename,{type:mimeType});
     if(isPhone&&navigator.share&&navigator.canShare?.({files:[file]})){
       try{
         await navigator.share({files:[file],title:'ZPP Gold Trading price rates'});
-        toast('Phone JPG opened — choose Save Image or Photos');
+        toast(`Phone ${imageLabel} opened — choose Save Image or Photos`);
         return;
       }catch(error){
         if(error instanceof DOMException&&error.name==='AbortError'){
-          toast('Phone JPG share cancelled');
+          toast(`Phone ${imageLabel} share cancelled`);
           return;
         }
       }
@@ -1034,13 +1039,13 @@ async function downloadRateSheetJpg(format:'desktop'|'phone'='desktop'){
     link.href=url; link.download=filename;
     document.body.appendChild(link); link.click(); link.remove();
     setTimeout(()=>URL.revokeObjectURL(url),1000);
-    toast(`${isPhone?'Phone':'Desktop'} price rate JPG downloaded${isPhone?' — open it and choose Save to Photos':''}`);
+    toast(`${isPhone?'Phone':'Desktop'} price rate ${imageLabel} downloaded${isPhone?' — open it and choose Save to Photos':''}`);
   }catch(error){
-    console.error('Price rate JPG download failed',error);
-    toast('Could not generate the price rate JPG');
+    console.error(`Price rate ${imageLabel} download failed`,error);
+    toast(`Could not generate the price rate ${imageLabel}`);
   }finally{
     if(button){ button.disabled=false; button.removeAttribute('aria-busy'); }
-    if(label) label.textContent=isPhone?'Phone JPG':'Desktop JPG';
+    if(label) label.textContent=`${isPhone?'Phone':'Desktop'} ${imageLabel}`;
   }
 }
 function renderGradeCard(metal, key, label){
