@@ -198,7 +198,13 @@ The top of the Buying page shows today's live cash position:
 
 Select **View cash flow** to open today's transaction ledger. It shows the seller, purchased items, payment method, payout, cash effect, and running balance. The page refreshes the shared cashflow approximately every five seconds and immediately after a successful purchase.
 
-Only an administrator can select **Set cash on hand** or **Edit cash on hand**. The administrator should enter the physical cash available at that moment. Purchases paid by Cash after that point are deducted automatically. Staff can view the same live figures but cannot change the balance.
+Only an administrator can select **Set cash on hand** or **Edit cash on hand**. The editor provides three actions:
+
+- **Set exact balance** replaces the current cash-on-hand figure;
+- **Add cash** records incoming physical cash and increases the balance; and
+- **Deduct cash** records a manual cash expense or transfer and decreases the balance.
+
+The administrator can attach an optional note to every adjustment. The cashflow modal records the action, amount, resulting balance, note, Admin name, and time. Purchases paid by Cash after the latest adjustment are deducted automatically. Staff can view the same live figures and adjustment history but cannot change the balance.
 
 ### Step 1: Customer information
 

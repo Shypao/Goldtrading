@@ -1110,7 +1110,7 @@ function cashflowCardMarkup(){
   const updated=snapshot?.setAt?new Date(snapshot.setAt).toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'}):'';
   return `<section class="cashflow-card ${configured&&Number(snapshot.cashOnHand)<0?'is-negative':''}">
     <div class="cashflow-main">
-      <div><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><strong>${balance}</strong><small>${configured?`Live balance after today's cash purchases${updated?` · set ${esc(updated)} by ${esc(snapshot.setBy||'Admin')}`:''}`:'Waiting for an administrator to set the available cash'}</small></div>
+      <div><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><strong>${balance}</strong><small>${configured?`Live balance after today's cash purchases${updated?` · adjusted ${esc(updated)} by ${esc(snapshot.setBy||'Admin')}`:''}`:'Waiting for an administrator to set the available cash'}</small></div>
       <div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin()?`<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured?'Edit cash on hand':'Set cash on hand'}</button>`:'<span class="cashflow-readonly">Admin controlled</span>'}</div>
     </div>
     <div class="cashflow-stats">
@@ -1156,6 +1156,12 @@ function cashflowDetailRows(){
   }).join('');
   return `<div class="table-wrap cashflow-ledger"><table><thead><tr><th>Time</th><th>Buying transaction</th><th>Payment</th><th class="num-head">Purchased</th><th class="num-head">Cash movement</th><th class="num-head">Cash remaining</th></tr></thead><tbody>${rows}</tbody></table></div>`;
 }
+function cashflowAdjustmentRows(){
+  const adjustments=currentCashflow?.adjustments||[];
+  if(!adjustments.length) return '<div class="empty-note">No manual cash adjustments recorded today.</div>';
+  const labels={set:'Set balance',add:'Cash added',deduct:'Cash deducted'};
+  return `<div class="table-wrap cashflow-adjustment-ledger"><table><thead><tr><th>Time</th><th>Action</th><th>Notes</th><th>Admin</th><th class="num-head">Amount</th><th class="num-head">Balance after</th></tr></thead><tbody>${adjustments.map(adjustment=>`<tr><td>${esc(cashflowTime(adjustment.createdAt))}</td><td><span class="pill ${adjustment.operation==='deduct'?'cashflow-deduct-pill':adjustment.operation==='add'?'cashflow-add-pill':''}">${esc(labels[adjustment.operation]||adjustment.operation)}</span></td><td>${esc(adjustment.note||'—')}</td><td>${esc(adjustment.createdBy||'Admin')}</td><td class="num ${adjustment.operation==='deduct'?'cashflow-out':''}">${adjustment.operation==='add'?'+':adjustment.operation==='deduct'?'−':''}${fmtMoney(adjustment.amount)}</td><td class="num">${fmtMoney(adjustment.balanceAfter)}</td></tr>`).join('')}</tbody></table></div>`;
+}
 function renderCashflowDetailsContent(){
   const container=document.getElementById('cashflow_details_content');
   if(!container) return;
@@ -1166,8 +1172,9 @@ function renderCashflowDetailsContent(){
     <div class="stat"><div class="label">Cash paid</div><div class="value">${fmtMoney(snapshot.cashPurchases||0)}</div></div>
     <div class="stat"><div class="label">Non-cash</div><div class="value">${fmtMoney(snapshot.nonCashPurchases||0)}</div></div>
   </div>
-  ${snapshot.configured?`<div class="cashflow-set-note"><strong>Latest Admin balance:</strong> ${fmtMoney(snapshot.balanceBase)} set by ${esc(snapshot.setBy||'Admin')} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>`:'<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
-  ${cashflowDetailRows()}`;
+  ${snapshot.configured?`<div class="cashflow-set-note"><strong>Latest Admin adjustment:</strong> Balance became ${fmtMoney(snapshot.balanceBase)} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>`:'<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
+  <h3 class="cashflow-ledger-title">Buying transactions</h3>${cashflowDetailRows()}
+  <h3 class="cashflow-ledger-title">Admin cash adjustments</h3>${cashflowAdjustmentRows()}`;
 }
 async function openCashflowDetails(){
   closeCashflowDetails();
@@ -1186,25 +1193,36 @@ function openCashflowEditor(){
   const current=currentCashflow?.configured?Number(currentCashflow.cashOnHand):NaN;
   const modal=document.createElement('div'); modal.id='cashflow_editor_modal'; modal.className='modal-backdrop';
   modal.innerHTML=`<form class="summary-modal" onsubmit="saveCashflowOverride(event)" role="dialog" aria-modal="true" aria-labelledby="cashflow_editor_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Admin cash control</div><h2 id="cashflow_editor_title">Set cash on hand</h2></div><button type="button" class="modal-close" onclick="closeCashflowEditor()" aria-label="Close">×</button></div>
-    <p class="form-note" style="margin:16px 0;">Enter the physical cash currently available now. Future purchases paid by Cash will be deducted automatically. Bank transfer and GCash purchases will not reduce this balance.</p>
-    <div class="form-grid"><div class="field span-2"><label>Current cash on hand (PHP)</label><input id="cashflow_balance" type="number" min="0" step="0.01" value="${Number.isFinite(current)?current:''}" placeholder="0" required><span class="hint">Today: ${fmtMoney(currentCashflow?.cashPurchases||0)} paid in cash across ${currentCashflow?.purchaseCount||0} purchased item${currentCashflow?.purchaseCount===1?'':'s'}.</span></div></div>
-    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeCashflowEditor()">Cancel</button><button type="submit" class="btn">Save cash on hand</button></div>
+    <div class="summary-modal-head"><div><div class="eyebrow">Admin cash control</div><h2 id="cashflow_editor_title">Edit cash on hand</h2></div><button type="button" class="modal-close" onclick="closeCashflowEditor()" aria-label="Close">×</button></div>
+    <p class="form-note" style="margin:16px 0;">Set the exact physical balance, add incoming cash, or record a cash deduction. Buying transactions paid by Cash continue to deduct automatically.</p>
+    <div class="form-grid">
+      <div class="field"><label>Action</label><select id="cashflow_operation" onchange="updateCashflowEditorFields()"><option value="set">Set exact balance</option>${currentCashflow?.configured?'<option value="add">Add cash</option><option value="deduct">Deduct cash</option>':''}</select></div>
+      <div class="field"><label id="cashflow_amount_label">Current cash on hand (PHP)</label><input id="cashflow_amount" type="number" min="0" step="0.01" value="${Number.isFinite(current)?current:''}" placeholder="0" required><span class="hint" id="cashflow_action_hint">Replace the current balance with this exact amount.</span></div>
+      <div class="field span-2"><label>Notes <span class="hint">(optional)</span></label><textarea id="cashflow_note" maxlength="500" placeholder="Example: Added cash from business reserve, petty cash expense, bank withdrawal"></textarea><span class="hint">The note, amount, time, and Admin name will appear in cashflow history.</span></div>
+    </div>
+    <div class="cashflow-current-line">Current cash on hand: <strong>${currentCashflow?.configured?fmtMoney(currentCashflow.cashOnHand):'Not set'}</strong></div>
+    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeCashflowEditor()">Cancel</button><button type="submit" class="btn">Save cash adjustment</button></div>
   </form>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeCashflowEditor();});
-  document.body.appendChild(modal); document.getElementById('cashflow_balance')?.focus();
+  document.body.appendChild(modal); document.getElementById('cashflow_amount')?.focus();
+}
+function updateCashflowEditorFields(){
+  const operation=val('cashflow_operation'),label=document.getElementById('cashflow_amount_label'),hint=document.getElementById('cashflow_action_hint'),input=document.getElementById('cashflow_amount');
+  const copy={set:['Exact cash balance (PHP)','Replace the current balance with this exact amount.'],add:['Cash to add (PHP)','Increase cash on hand by this amount.'],deduct:['Cash to deduct (PHP)','Decrease cash on hand by this amount.']};
+  if(label) label.textContent=copy[operation][0]; if(hint) hint.textContent=copy[operation][1];
+  if(input){ input.value=operation==='set'&&currentCashflow?.configured?String(currentCashflow.cashOnHand):''; input.focus(); }
 }
 async function saveCashflowOverride(event){
   event.preventDefault(); if(!isAdmin()) return;
-  const balance=Number(val('cashflow_balance'));
-  if(!Number.isFinite(balance)||balance<0){ toast('Enter a valid non-negative cash balance'); return; }
+  const operation=val('cashflow_operation'),amount=Number(val('cashflow_amount')),note=val('cashflow_note').trim();
+  if(!Number.isFinite(amount)||amount<0){ toast('Enter a valid non-negative cash amount'); return; }
   try{
-    const response=await fetch('/api/cashflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:todayStr(),balance})});
+    const response=await fetch('/api/cashflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:todayStr(),operation,amount,note})});
     const result=await response.json().catch(()=>null);
     if(!response.ok) throw new Error(result?.error||'Could not save cash on hand');
     currentCashflow=result; closeCashflowEditor();
     const card=document.getElementById('buying_cashflow_card'); if(card) card.innerHTML=cashflowCardMarkup();
-    toast('Cash on hand updated');
+    toast(operation==='add'?'Cash added':operation==='deduct'?'Cash deducted':'Cash on hand updated');
   }catch(error){ toast(error.message||'Could not save cash on hand'); }
 }
 function buyingDraftValue(key,fallback=''){

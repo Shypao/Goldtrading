@@ -41,6 +41,16 @@ interface CashflowDaySetting {
   cashPaidBaseline: number;
   setAt: string;
   setBy: string;
+  adjustments?: CashflowAdjustment[];
+}
+interface CashflowAdjustment {
+  id: string;
+  operation: 'set' | 'add' | 'deduct';
+  amount: number;
+  balanceAfter: number;
+  note: string;
+  createdAt: string;
+  createdBy: string;
 }
 interface CashflowSettings { days: Record<string, CashflowDaySetting> }
 interface GoldApiResponse { price: number }
@@ -402,7 +412,8 @@ async function cashflowSnapshot(date: string) {
     cashOnHand,
     balanceBase: setting?.balanceBase ?? null,
     setAt: setting?.setAt ?? '',
-    setBy: setting?.setBy ?? ''
+    setBy: setting?.setBy ?? '',
+    adjustments: (setting?.adjustments ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   };
 }
 
@@ -668,19 +679,41 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       if (user!.role !== 'admin') return sendJson(response, 403, { error: 'Administrator access required' });
       const body = await readJsonBody(request) as Record<string, unknown>;
       const date = String(body.date ?? manilaDateKey());
-      const balance = Number(body.balance);
+      const operation = String(body.operation ?? 'set') as CashflowAdjustment['operation'];
+      const amount = Number(body.amount ?? body.balance);
+      const note = String(body.note ?? '').trim();
       if (!validDateKey(date)) return sendJson(response, 400, { error: 'Invalid cashflow date' });
-      if (!Number.isFinite(balance) || balance < 0 || balance > 1_000_000_000_000) {
-        return sendJson(response, 400, { error: 'Enter a valid non-negative cash balance' });
+      if (!['set', 'add', 'deduct'].includes(operation)) return sendJson(response, 400, { error: 'Invalid cash adjustment type' });
+      if (!Number.isFinite(amount) || amount < 0 || amount > 1_000_000_000_000) {
+        return sendJson(response, 400, { error: 'Enter a valid non-negative cash amount' });
       }
+      if (note.length > 500) return sendJson(response, 400, { error: 'Cashflow notes must be 500 characters or fewer' });
       const state = await loadState();
       const totals = cashflowPurchases(state, date);
       const settings = await loadCashflowSettings();
+      const previous = settings.days[date];
+      if (!previous && operation !== 'set') return sendJson(response, 400, { error: 'Set the cash on hand before adding or deducting cash' });
+      const currentBalance = previous
+        ? Math.round((previous.balanceBase - (totals.cashPurchases - previous.cashPaidBaseline)) * 100) / 100
+        : 0;
+      const nextBalance = operation === 'set' ? amount : operation === 'add' ? currentBalance + amount : currentBalance - amount;
+      if (nextBalance < 0) return sendJson(response, 400, { error: 'The deduction is greater than the current cash on hand' });
+      const createdAt = new Date().toISOString();
+      const adjustment: CashflowAdjustment = {
+        id: `cash_${randomBytes(8).toString('hex')}`,
+        operation,
+        amount: Math.round(amount * 100) / 100,
+        balanceAfter: Math.round(nextBalance * 100) / 100,
+        note,
+        createdAt,
+        createdBy: user!.displayName
+      };
       settings.days[date] = {
-        balanceBase: Math.round(balance * 100) / 100,
+        balanceBase: adjustment.balanceAfter,
         cashPaidBaseline: totals.cashPurchases,
-        setAt: new Date().toISOString(),
-        setBy: user!.displayName
+        setAt: createdAt,
+        setBy: user!.displayName,
+        adjustments: [...(previous?.adjustments ?? []), adjustment]
       };
       await dbRun("INSERT INTO settings (key, value) VALUES ('cashflow', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value", [JSON.stringify(settings)]);
       return sendJson(response, 200, await cashflowSnapshot(date));
