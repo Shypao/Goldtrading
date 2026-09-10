@@ -196,6 +196,8 @@ The top of the Buying page shows today's live cash position:
 - **Cash paid today:** purchases that reduce physical cash; and
 - **Non-cash today:** Bank transfer and GCash purchases, which do not reduce physical cash.
 
+The daily cash-movement strip shows **IN** and **OUT** totals. IN is the sum of manual **Add cash** adjustments. OUT is the sum of purchases paid by Cash plus manual **Deduct cash** adjustments. **Set exact balance** is treated as a reconciliation and is not counted as cash movement.
+
 Select **View cash flow** to open today's transaction ledger. It shows the seller, purchased items, payment method, payout, cash effect, and running balance. Use the search field to match any visible transaction or adjustment text, including seller, item, payment method, amount, action, note, Admin, or time. Buying transactions and Admin cash adjustments are paginated at three records per page to keep the modal compact. The page refreshes the shared cashflow approximately every five seconds and immediately after a successful purchase.
 
 Only an administrator can select **Set cash on hand** or **Edit cash on hand**. The editor provides three actions:

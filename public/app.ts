@@ -1117,6 +1117,7 @@ function cashflowCardMarkup(){
       <div><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><strong>${balance}</strong><small>${configured?`Live balance after today's cash purchases${updated?` · adjusted ${esc(updated)} by ${esc(snapshot.setBy||'Admin')}`:''}`:'Waiting for an administrator to set the available cash'}</small></div>
       <div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin()?`<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured?'Edit cash on hand':'Set cash on hand'}</button>`:'<span class="cashflow-readonly">Admin controlled</span>'}</div>
     </div>
+    <div class="cashflow-flow-strip"><strong>${new Date(todayStr()+'T00:00:00').toLocaleDateString('en-PH',{weekday:'short',month:'short',day:'2-digit'})}</strong><span class="cashflow-in">IN ${fmtMoney(snapshot?.cashIn||0)}</span><span class="cashflow-out">OUT ${fmtMoney(snapshot?.cashOut||0)}</span></div>
     <div class="cashflow-stats">
       <div><span>Bought today</span><strong>${fmtMoney(snapshot?.totalPurchases||0)}</strong><small>${snapshot?.purchaseCount||0} item${snapshot?.purchaseCount===1?'':'s'} · all payment methods</small></div>
       <div><span>Cash paid today</span><strong>${fmtMoney(snapshot?.cashPurchases||0)}</strong><small>Deducted from cash on hand</small></div>
@@ -1220,6 +1221,7 @@ function renderCashflowDetailsContent(){
     <div class="stat"><div class="label">Cash paid</div><div class="value">${fmtMoney(snapshot.cashPurchases||0)}</div></div>
     <div class="stat"><div class="label">Non-cash</div><div class="value">${fmtMoney(snapshot.nonCashPurchases||0)}</div></div>
   </div>
+  <div class="cashflow-modal-flow"><span>Daily physical cash movement</span><div><strong class="cashflow-in">IN ${fmtMoney(snapshot.cashIn||0)}</strong><strong class="cashflow-out">OUT ${fmtMoney(snapshot.cashOut||0)}</strong></div><small>IN is Admin-added cash. OUT is Cash buying payouts plus manual deductions.</small></div>
   ${snapshot.configured?`<div class="cashflow-set-note"><strong>Latest Admin adjustment:</strong> Balance became ${fmtMoney(snapshot.balanceBase)} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>`:'<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
   <div class="cashflow-search"><div class="field"><label for="cashflow_search">Search cashflow</label><input id="cashflow_search" type="search" autocomplete="off" value="${esc(cashflowSearch)}" placeholder="Seller, item, payment, amount, note, Admin, or time" oninput="updateCashflowSearch(this.value)"></div>${cashflowSearch?'<button class="btn secondary small" onclick="updateCashflowSearch(\'\')">Clear</button>':''}</div>
   <h3 class="cashflow-ledger-title">Buying transactions</h3>${cashflowDetailRows()}

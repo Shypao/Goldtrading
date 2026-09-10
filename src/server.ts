@@ -402,6 +402,10 @@ async function cashflowSnapshot(date: string) {
   const state = await loadState();
   const totals = cashflowPurchases(state, date);
   const setting = (await loadCashflowSettings()).days[date];
+  const adjustments = setting?.adjustments ?? [];
+  const cashIn = adjustments.filter(item => item.operation === 'add').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
+  const manualCashOut = adjustments.filter(item => item.operation === 'deduct').reduce((sum, item) => sum + Number(item.amount ?? 0), 0);
+  const cashOut = totals.cashPurchases + manualCashOut;
   const cashOnHand = setting
     ? Math.round((setting.balanceBase - (totals.cashPurchases - setting.cashPaidBaseline)) * 100) / 100
     : null;
@@ -410,10 +414,14 @@ async function cashflowSnapshot(date: string) {
     ...totals,
     configured: Boolean(setting),
     cashOnHand,
+    cashIn: Math.round(cashIn * 100) / 100,
+    cashOut: Math.round(cashOut * 100) / 100,
+    manualCashOut: Math.round(manualCashOut * 100) / 100,
+    netCashflow: Math.round((cashIn - cashOut) * 100) / 100,
     balanceBase: setting?.balanceBase ?? null,
     setAt: setting?.setAt ?? '',
     setBy: setting?.setBy ?? '',
-    adjustments: (setting?.adjustments ?? []).slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+    adjustments: adjustments.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
   };
 }
 
