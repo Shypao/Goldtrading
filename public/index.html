@@ -4,6 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>ZPP Gold Trading — Buying, Inventory &amp; Liquidation</title>
+<link rel="icon" type="image/png" href="/zpp-logo.png">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Fraunces:ital,opsz,wght@0,9..144,400;0,9..144,600;0,9..144,700;1,9..144,500&family=Inter:wght@400;500;600;700&display=swap" rel="stylesheet">
 <style>
@@ -361,6 +362,19 @@
   .metal-tag.platinum{color:var(--platinum-m);}
 
   /* ---- rate sheet ---- */
+  .rate-section-title-row{display:flex;align-items:center;justify-content:space-between;gap:16px;margin-bottom:6px;}
+  .rate-section-title-row .metal-section-head{margin-bottom:0;}
+  .rate-sheet-toolbar{display:flex;justify-content:flex-end;margin:0;}
+  .rate-download-btn{
+    min-height:40px;padding:9px 14px;border-radius:5px;gap:8px;
+    display:inline-flex;align-items:center;justify-content:center;
+    font-size:12px;line-height:1;font-weight:700;
+    border-color:var(--brass);background:var(--paper-2);color:var(--brass-deep);
+    box-shadow:0 2px 7px rgba(72,52,17,.08);
+  }
+  .rate-download-btn:hover,.rate-download-btn:focus-visible{background:#E8DCBE;border-color:var(--brass-deep);box-shadow:0 3px 10px rgba(72,52,17,.14);transform:translateY(-1px);}
+  .rate-download-btn svg{width:17px;height:17px;flex:0 0 auto;stroke:currentColor;}
+  .rate-download-btn:disabled{opacity:.55;cursor:wait;}
   .metal-section{margin-bottom:30px;}
   .metal-section-head{display:flex;align-items:baseline;gap:8px;margin-bottom:6px;}
   .metal-dot{width:9px;height:9px;border-radius:50%;flex:0 0 auto;}
@@ -858,6 +872,7 @@
     .inventory-day small{font-size:9.5px;margin-top:4px;line-height:1.2;}
   }
   @media (max-width:430px){.multiplier-grid{grid-template-columns:1fr}.multiplier-modal-actions .btn{width:100%}}
+  @media (max-width:430px){.rate-section-title-row{align-items:flex-start}.rate-download-btn{padding:9px 11px}.rate-download-btn .rate-download-label{font-size:11px}}
   @keyframes toastin{from{opacity:0;transform:translateY(6px);}to{opacity:1;transform:translateY(0);}}
   .customer-hist{
     margin-top:10px;padding:12px 14px;background:var(--paper-2);border:1px solid var(--line);font-size:12px;
@@ -923,6 +938,6 @@
   </main>
 </div>
 
-<script src="./app.js?v=20260910-customer-delete"></script>
+<script src="./app.js?v=20260910-rate-jpg"></script>
 </body>
 </html>

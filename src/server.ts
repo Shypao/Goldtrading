@@ -142,10 +142,10 @@ function passwordDigest(password: string, salt: string): string {
   return scryptSync(password, salt, 64).toString('hex');
 }
 
-async function createUser(username: string, displayName: string, role: UserRole, password: string): Promise<AuthUser> {
+async function createUser(username: string, displayName: string, role: UserRole, password: string, fixedId?: string): Promise<AuthUser> {
   const normalized = username.trim().toLowerCase();
   const salt = randomBytes(16).toString('hex');
-  const id = `usr_${randomBytes(8).toString('hex')}`;
+  const id = fixedId ?? `usr_${randomBytes(8).toString('hex')}`;
   await dbRun(`INSERT INTO users (id, username, display_name, role, password_hash, salt, active, created_at)
     VALUES (?, ?, ?, ?, ?, ?, 1, ?)`,
   [id, normalized, displayName.trim(), role, passwordDigest(password, salt), salt, new Date().toISOString()]);
@@ -155,8 +155,21 @@ async function createUser(username: string, displayName: string, role: UserRole,
 async function ensureDefaultUsers(): Promise<void> {
   const count = Number((await dbGet<{ count: number }>('SELECT COUNT(*) AS count FROM users'))?.count ?? 0);
   if (count) return;
-  await createUser('admin', 'Administrator', 'admin', process.env.ZPP_ADMIN_PASSWORD ?? 'Admin@123');
-  await createUser('staff', 'Sample Staff', 'staff', process.env.ZPP_STAFF_PASSWORD ?? 'Staff@123');
+  await createUser('admin', 'Administrator', 'admin', process.env.ZPP_ADMIN_PASSWORD ?? 'Admin@123', 'usr_default_admin');
+  await createUser('staff', 'Sample Staff', 'staff', process.env.ZPP_STAFF_PASSWORD ?? 'Staff@123', 'usr_default_staff');
+}
+
+function defaultPricingSettings(): PricingSettings {
+  const effectiveDate=manilaDateKey();
+  return {
+    effectiveDate,
+    gold:{base:8500,overrides:{}},
+    silver:{base:105,overrides:{}},
+    platinum:{base:2450,overrides:{}},
+    auto:{enabled:true,lastFetchDate:'',lastAppliedDate:'',lastFetchedAt:'',usdPhp:0,spotUsd:{},draft:null},
+    dailyFormula:{effectiveDate,baseRates:{Gold:8500,Silver:105,Platinum:2450}},
+    featured:{metal:'Gold',key:'18K-BUO',low:6360,high:6560}
+  } as PricingSettings;
 }
 
 async function initializeDatabase(): Promise<void> {
@@ -168,6 +181,7 @@ async function initializeDatabase(): Promise<void> {
   }
   for (const statement of schemaStatements) await dbRun(statement);
   await dbRun("INSERT INTO settings (key, value) VALUES ('ledger_revision', '0') ON CONFLICT(key) DO NOTHING");
+  await dbRun("INSERT INTO settings (key, value) VALUES ('pricing', ?) ON CONFLICT(key) DO NOTHING", [JSON.stringify(defaultPricingSettings())]);
   await purgeStoredInventoryLocations();
   await ensureDefaultUsers();
 }
@@ -673,7 +687,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     }
     if (request.method === 'GET' && url.pathname === '/api/session') {
       const user = await sessionUser(request);
-      return user ? sendJson(response, 200, { authenticated: true, user }) : sendJson(response, 401, { authenticated: false });
+      return sendJson(response, 200, user ? { authenticated: true, user } : { authenticated: false });
     }
     const user = await sessionUser(request);
     if (url.pathname.startsWith('/api/') && !user) return sendJson(response, 401, { error: 'Sign in required' });

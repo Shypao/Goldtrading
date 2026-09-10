@@ -217,7 +217,9 @@ async function initializeAuth(){
   try{
     const response=await fetch('/api/session',{cache:'no-store'});
     if(!response.ok){ showLogin(); return; }
-    const result=await response.json(); currentUser=result.user; showApp(); await loadDB();
+    const result=await response.json();
+    if(!result.authenticated||!result.user){ showLogin(); return; }
+    currentUser=result.user; showApp(); await loadDB();
   }catch(error){ console.error('Session check failed',error); showLogin(); }
 }
 async function signIn(event){
@@ -799,7 +801,7 @@ function renderRates(){
   </section>
 
   <section class="metal-section">
-    <div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>
+    <div class="rate-section-title-row"><div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>${renderRateDownloadButton()}</div>
     <div class="base-row">
       <div class="base-box">
         <div class="base-label">24K rate — pure gold</div>
@@ -857,7 +859,7 @@ function renderStaffRates(){
     <div class="auto-panel-head"><div><h3>Active buying rates</h3><div class="metal-section-desc" style="margin:0;">Live base pricing refreshes every five seconds. Staff may override individual grades when needed.</div><div class="auto-status">Effective date: ${fmtDate(db.pricing.effectiveDate)} · Last checked: ${esc(fetched)}</div></div></div>
   </section>
   <section class="metal-section">
-    <div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>
+    <div class="rate-section-title-row"><div class="metal-section-head"><span class="metal-dot gold"></span><h3>Gold</h3><span class="count">${GOLD_GRADES.length} grades</span></div>${renderRateDownloadButton()}</div>
     <div class="grade-grid">${GOLD_GRADES.map(g=>renderGradeCard('Gold',g.key,g.label)).join('')}</div>
   </section>
   <section class="metal-section">
@@ -868,6 +870,130 @@ function renderStaffRates(){
     <div class="metal-section-head"><span class="metal-dot platinum"></span><h3>Platinum</h3><span class="count">${PLATINUM_GRADES.length} grades</span></div>
     <div class="grade-grid">${PLATINUM_GRADES.map(g=>renderGradeCard('Platinum',g.key,g.label)).join('')}</div>
   </section>`;
+}
+function renderRateDownloadButton(){
+  return `<div class="rate-sheet-toolbar"><button id="rate_download_jpg" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetJpg()" title="Save the current price rates as a JPG image"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4h14v-4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="rate-download-label">Download JPG</span></button></div>`;
+}
+
+async function downloadRateSheetJpg(){
+  const button=document.getElementById('rate_download_jpg');
+  const label=button?.querySelector('.rate-download-label');
+  if(button){ button.disabled=true; button.setAttribute('aria-busy','true'); }
+  if(label) label.textContent='Generating…';
+  try{
+    await document.fonts?.ready;
+    const canvas=document.createElement('canvas');
+    const width=1600,height=1060,pad=28,columnGap=7,cardHeight=86;
+    canvas.width=width; canvas.height=height;
+    const ctx=canvas.getContext('2d');
+    if(!ctx) throw new Error('Canvas is unavailable');
+    const colors={paper:'#F7F2E6',paper2:'#EFE7D3',card:'#FBF8EF',ink:'#1C1B19',soft:'#655E50',line:'#D8CAA5',gold:'#D19A27',goldDeep:'#7C5A17',silver:'#7C8792',platinum:'#4F7A73',cream:'#F7F2E6'};
+    ctx.fillStyle=colors.paper; ctx.fillRect(0,0,canvas.width,canvas.height);
+    ctx.textBaseline='alphabetic';
+    const roundedRect=(x,y,w,h,r=5)=>{
+      ctx.beginPath(); ctx.moveTo(x+r,y); ctx.arcTo(x+w,y,x+w,y+h,r); ctx.arcTo(x+w,y+h,x,y+h,r); ctx.arcTo(x,y+h,x,y,r); ctx.arcTo(x,y,x+w,y,r); ctx.closePath();
+    };
+    const text=(value,x,y,font,color=colors.ink,align='left')=>{
+      ctx.font=font; ctx.fillStyle=color; ctx.textAlign=align; ctx.fillText(String(value),x,y);
+    };
+    const money=value=>Math.round(Number(value)||0).toLocaleString('en-PH');
+    const logo=await new Promise(resolve=>{
+      const image=new Image();
+      image.onload=()=>resolve(image); image.onerror=()=>resolve(null);
+      image.src='/zpp-logo.png';
+    });
+    ctx.fillStyle=colors.ink; ctx.fillRect(0,0,width,132);
+    ctx.fillStyle=colors.gold; ctx.fillRect(0,129,width,3);
+    if(logo) ctx.drawImage(logo,pad,10,108,108);
+    text('ZPP GOLD TRADING',154,57,'700 31px Georgia, serif',colors.cream);
+    text('DAILY BUYING PRICE GUIDE',155,87,'700 12px Arial, sans-serif',colors.gold);
+    text('All prices shown in Philippine pesos per gram',155,108,'12px Arial, sans-serif','#C9BE9F');
+    text(fmtDate(db.pricing.effectiveDate||todayStr()).toUpperCase(),width-pad,59,'700 13px Arial, sans-serif',colors.cream,'right');
+    text('CURRENT RATE SHEET',width-pad,84,'11px Arial, sans-serif','#C9BE9F','right');
+    const drawHeading=(metal,count,color,y)=>{
+      ctx.beginPath(); ctx.fillStyle=color; ctx.arc(pad+6,y-6,6,0,Math.PI*2); ctx.fill();
+      text(metal,pad+22,y,'700 21px Georgia, serif');
+      const nameWidth=ctx.measureText(metal).width;
+      text(`${count} GRADES`,pad+31+nameWidth,y-2,'700 10px Arial, sans-serif',colors.soft);
+      ctx.beginPath(); ctx.strokeStyle=colors.line; ctx.lineWidth=1; ctx.moveTo(pad+31+nameWidth+80,y-7); ctx.lineTo(width-pad,y-7); ctx.stroke();
+    };
+    const drawBase=(x,y,label,rate,w=250)=>{
+      roundedRect(x,y,w,90,7); ctx.fillStyle=colors.card; ctx.fill(); ctx.strokeStyle=colors.gold; ctx.lineWidth=1.5; ctx.stroke();
+      ctx.fillStyle=colors.gold; ctx.fillRect(x,y+7,4,76);
+      text(label.toUpperCase(),x+18,y+25,'700 10px Arial, sans-serif',colors.soft);
+      text('₱',x+18,y+64,'700 17px Georgia, serif',colors.goldDeep);
+      text(money(rate),x+39,y+65,'700 25px Arial, sans-serif');
+      text('PER GRAM',x+w-16,y+64,'700 9px Arial, sans-serif',colors.soft,'right');
+    };
+    const drawFeatured=(x,y,w)=>{
+      roundedRect(x,y,w,90,7); ctx.fillStyle=colors.ink; ctx.fill();
+      text('FEATURED BUYING RANGE',x+20,y+24,'700 10px Arial, sans-serif','#C9BE9F');
+      const featured=db.pricing.featured;
+      if(featured){
+        const label=gradeLabel(featured.metal,featured.key);
+        text(label,x+20,y+64,'700 24px Georgia, serif',colors.cream);
+        const labelWidth=ctx.measureText(label).width;
+        text(`₱${money(featured.low)}–${money(featured.high)}`,x+34+labelWidth,y+64,'700 24px Arial, sans-serif',colors.gold);
+      }else{
+        text('Featured buying range not set',x+20,y+61,'italic 16px Georgia, serif','#C9BE9F');
+      }
+    };
+    const drawGradeCard=(grade,metal,index,startY,columns)=>{
+      const cardWidth=(width-pad*2-columnGap*(columns-1))/columns;
+      const col=index%columns,row=Math.floor(index/columns),x=pad+col*(cardWidth+columnGap),y=startY+row*(cardHeight+columnGap);
+      roundedRect(x,y,cardWidth,cardHeight,6); ctx.fillStyle=colors.card; ctx.fill(); ctx.strokeStyle=colors.line; ctx.lineWidth=1; ctx.stroke();
+      text(grade.label,x+15,y+23,'700 12px Arial, sans-serif',colors.soft);
+      if(metal==='Gold'){
+        roundedRect(x+cardWidth-72,y+10,58,20,10); ctx.fillStyle=colors.paper2; ctx.fill();
+        text(`×${configuredGradeMultiplier(metal,grade.key).toFixed(3)}`,x+cardWidth-43,y+24,'700 9px Arial, sans-serif',colors.soft,'center');
+      }
+      text('₱',x+15,y+57,'700 13px Arial, sans-serif',colors.goldDeep);
+      text(money(metalRate(metal,grade.key)),x+34,y+58,'700 20px Arial, sans-serif');
+      const numberWidth=ctx.measureText(money(metalRate(metal,grade.key))).width;
+      text('/g',x+40+numberWidth,y+58,'11px Arial, sans-serif',colors.soft);
+      text('BUYING RATE',x+15,y+76,'700 9px Arial, sans-serif',colors.goldDeep);
+    };
+
+    let y=172;
+    drawHeading('Gold',GOLD_GRADES.length,colors.gold,y); y+=16;
+    drawBase(pad,y,'24K rate — pure gold',configuredBaseRate('Gold'));
+    drawFeatured(pad+258,y,520);
+    y+=98;
+    const goldGrades=GOLD_GRADES.filter(grade=>grade.key!=='24K');
+    goldGrades.forEach((grade,index)=>drawGradeCard(grade,'Gold',index,y,6));
+    y+=Math.ceil(goldGrades.length/6)*(cardHeight+columnGap)+18;
+
+    drawHeading('Silver',SILVER_GRADES.length,colors.silver,y); y+=16;
+    drawBase(pad,y,'999 rate — independent silver rate',configuredBaseRate('Silver'));
+    drawBase(pad+258,y,'925 basis — other silver grades',configuredSilver925Rate(),300);
+    y+=98;
+    const silverGrades=SILVER_GRADES.filter(grade=>grade.key!=='999'&&grade.key!=='925');
+    silverGrades.forEach((grade,index)=>drawGradeCard(grade,'Silver',index,y,4));
+    y+=cardHeight+columnGap+18;
+
+    drawHeading('Platinum',PLATINUM_GRADES.length,colors.platinum,y); y+=16;
+    drawBase(pad,y,'999 rate — pure platinum',configuredBaseRate('Platinum'));
+    y+=98;
+    PLATINUM_GRADES.forEach((grade,index)=>drawGradeCard(grade,'Platinum',index,y,4));
+
+    ctx.beginPath(); ctx.strokeStyle=colors.line; ctx.lineWidth=1; ctx.moveTo(pad,height-31); ctx.lineTo(width-pad,height-31); ctx.stroke();
+    text('ZPP GOLD TRADING  ·  DAILY BUYING PRICE GUIDE',pad,height-13,'700 9px Arial, sans-serif',colors.soft);
+    text(`Generated ${new Date().toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'})}`,width-pad,height-13,'10px Arial, sans-serif',colors.soft,'right');
+
+    const blob=await new Promise(resolve=>canvas.toBlob(resolve,'image/jpeg',.94));
+    if(!blob) throw new Error('JPG generation failed');
+    const url=URL.createObjectURL(blob),link=document.createElement('a');
+    link.href=url; link.download=`zpp-price-rates-${db.pricing.effectiveDate||todayStr()}.jpg`;
+    document.body.appendChild(link); link.click(); link.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    toast('Price rate JPG downloaded');
+  }catch(error){
+    console.error('Price rate JPG download failed',error);
+    toast('Could not generate the price rate JPG');
+  }finally{
+    if(button){ button.disabled=false; button.removeAttribute('aria-busy'); }
+    if(label) label.textContent='Download JPG';
+  }
 }
 function renderGradeCard(metal, key, label){
   const ov = isOverridden(metal, key);
