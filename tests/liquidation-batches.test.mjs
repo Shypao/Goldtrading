@@ -10,6 +10,7 @@ async function loadInventoryApi() {
   vm.runInContext(`${source}\n;globalThis.inventoryTestApi = {
     activeInventoryRecord,
     cashflowCardMarkup,
+    cashflowDetailSnapshot,
     ensureShape,
     renderInventory,
     renderLiquidation,
@@ -23,6 +24,10 @@ async function loadInventoryApi() {
     setCashflow(snapshot) {
       currentCashflow = snapshot;
       currentUser = { role: 'admin', displayName: 'Admin' };
+    },
+    setCashflowHistory(snapshot, date) {
+      cashflowHistorySnapshot = snapshot;
+      cashflowHistoryDate = date;
     },
     today() {
       return todayStr();
@@ -94,4 +99,13 @@ test('cash-on-hand card never converts a missing synced balance into zero', asyn
   api.setCashflow({ date: api.today(), configured: true, cashOnHand: null, cashIn: 0, cashOut: 0 });
 
   assert.match(api.cashflowCardMarkup(), /<strong>Not set<\/strong>/);
+});
+
+test('cashflow details can use a retrieved historical daily snapshot', async () => {
+  const api = await loadInventoryApi();
+  api.setCashflow({ date: api.today(), configured: true, cashOnHand: 900 });
+  api.setCashflowHistory({ date: '2026-09-09', configured: true, cashOnHand: 1250, transactions: [], adjustments: [] }, '2026-09-09');
+
+  assert.equal(api.cashflowDetailSnapshot().date, '2026-09-09');
+  assert.equal(api.cashflowDetailSnapshot().cashOnHand, 1250);
 });
