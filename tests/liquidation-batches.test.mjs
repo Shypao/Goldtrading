@@ -6,12 +6,13 @@ import vm from 'node:vm';
 async function loadInventoryApi() {
   const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
     .replace(/initializeAuth\(\);\s*$/, '');
-  const context = vm.createContext({ console });
+  const context = vm.createContext({ console, document: { getElementById() { return null; } } });
   vm.runInContext(`${source}\n;globalThis.inventoryTestApi = {
     activeInventoryRecord,
     cashflowCardMarkup,
     cashflowDetailSnapshot,
     ensureShape,
+    renderBuying,
     renderInventory,
     renderLiquidation,
     setState(state) {
@@ -28,6 +29,9 @@ async function loadInventoryApi() {
     setCashflowHistory(snapshot, date) {
       cashflowHistorySnapshot = snapshot;
       cashflowHistoryDate = date;
+    },
+    setBuyingDraft(form) {
+      buyingDraftForm = form;
     },
     today() {
       return todayStr();
@@ -108,4 +112,28 @@ test('cashflow details can use a retrieved historical daily snapshot', async () 
 
   assert.equal(api.cashflowDetailSnapshot().date, '2026-09-09');
   assert.equal(api.cashflowDetailSnapshot().cashOnHand, 1250);
+});
+
+test('buying form replaces a legacy stale draft rate with the active daily rate', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.pricing.gold.base = 8000;
+  state.pricing.dailyFormula = { effectiveDate: api.today(), baseRates: { Gold: 8500 } };
+  api.setState(state);
+  api.setBuyingDraft({ b_metal: 'Gold', b_karat: '18K', b_rate: '6000' });
+
+  assert.match(api.renderBuying(), /id="b_rate"[^>]*value="6375"/);
+});
+
+test('buying form preserves an intentional per-item rate override', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.pricing.gold.base = 8000;
+  state.pricing.dailyFormula = { effectiveDate: api.today(), baseRates: { Gold: 8500 } };
+  api.setState(state);
+  api.setBuyingDraft({ b_metal: 'Gold', b_karat: '18K', b_rate: '6200', b_rate_overridden: 'true' });
+
+  const html=api.renderBuying();
+  assert.match(html, /id="b_rate"[^>]*value="6200"/);
+  assert.match(html, /class="buying-rate is-overridden"/);
 });

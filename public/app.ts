@@ -569,9 +569,8 @@ async function syncSharedPricing(){
     const previousPricing=JSON.stringify(db.pricing);
     const buyingMetal=currentTab==='buying'?val('b_metal'):'';
     const buyingKarat=currentTab==='buying'?selectedBuyingGrade():'';
-    const previousBuyingRate=buyingMetal&&buyingKarat?roundPeso(activeRate(buyingMetal,buyingKarat)?.rate):null;
     const buyingRateInput=document.getElementById('b_rate');
-    const enteredBuyingRate=buyingRateInput?roundPeso(Number(buyingRateInput.value)):null;
+    const buyingRateOverridden=buyingDraftForm.b_rate_overridden==='true';
     const response=await fetch('/api/pricing',{cache:'no-store'});
     if(response.status===401){ showLogin(); return; }
     const result=await response.json().catch(()=>null);
@@ -584,10 +583,11 @@ async function syncSharedPricing(){
     if(currentTab==='rates'){
       const editingRateField=document.activeElement?.matches('input,select,textarea');
       if(!editingRateField) render();
-    }else if(currentTab==='buying'&&buyingRateInput&&enteredBuyingRate===previousBuyingRate){
+    }else if(currentTab==='buying'&&buyingRateInput&&!buyingRateOverridden){
       const currentRate=buyingMetal&&buyingKarat?roundPeso(activeRate(buyingMetal,buyingKarat)?.rate):0;
       buyingRateInput.value=currentRate?String(currentRate):'';
       buyingDraftForm.b_rate=buyingRateInput.value;
+      buyingDraftForm.b_rate_overridden='false';
       recalcBuying();
       scheduleBuyingDraftSave();
     }
@@ -1578,8 +1578,9 @@ function renderBuying(){
   const systemRate = rateObj ? roundPeso(rateObj.rate) : 0;
   const enteredRate = buyingDraftValue('b_rate');
   const parsedRate = Number(enteredRate);
-  const rate = enteredRate!=='' && Number.isFinite(parsedRate) ? roundPeso(parsedRate) : systemRate;
-  const rateOverridden = Boolean(rateObj && rate!==systemRate);
+  const savedRateOverride=buyingDraftForm.b_rate_overridden==='true';
+  const rate = savedRateOverride&&enteredRate!==''&&Number.isFinite(parsedRate) ? roundPeso(parsedRate) : systemRate;
+  const rateOverridden = Boolean(rateObj&&savedRateOverride&&rate!==systemRate);
   const suggested = roundPeso(net*rate);
 
   return `
@@ -1632,7 +1633,7 @@ function renderBuying(){
 
         <div class="payout-calculator">
           <div><span>Net weight</span><strong id="b_net_display">${fmtWeight(net)}</strong></div>
-          <div class="buying-rate ${rateOverridden?'is-overridden':''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="1" step="1" value="${rateObj?rate:''}" placeholder="0" oninput="recalcBuying();scheduleBuyingDraftSave()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden?'':'is-hidden'}" onclick="resetBuyingRate();scheduleBuyingDraftSave()">Use daily rate</button></div>
+          <div class="buying-rate ${rateOverridden?'is-overridden':''}" id="b_rate_panel"><label id="b_rate_label" for="b_rate">Buying rate (Daily Rate Setup)</label><div><span>₱</span><input id="b_rate" type="number" min="1" step="1" value="${rateObj?rate:''}" placeholder="0" oninput="markBuyingRateOverride();recalcBuying();scheduleBuyingDraftSave()"><span>/g</span></div><button type="button" id="b_rate_reset" class="rate-reset ${rateOverridden?'':'is-hidden'}" onclick="resetBuyingRate();scheduleBuyingDraftSave()">Use daily rate</button></div>
           <div class="suggested"><span>Calculated amount</span><strong id="b_suggested_display">${fmtMoney(suggested)}</strong></div>
           <div class="final-payout"><label for="b_payout">Final payout</label><div><span>₱</span><input id="b_payout" type="number" min="0" step="1" value="${esc(buyingDraftValue('b_payout'))}" placeholder="${suggested}" oninput="scheduleBuyingDraftSave()"></div></div>
         </div>
@@ -1675,9 +1676,11 @@ function selectedBuyingGrade(){
   if(val('b_karat')==='__custom__') return customPurityGradeKey(val('b_custom_purity'));
   return val('b_karat');
 }
+function markBuyingRateOverride(){ buyingDraftForm.b_rate_overridden='true'; }
 function resetBuyingRate(){
   const metal=val('b_metal'),karat=selectedBuyingGrade(),active=karat?activeRate(metal,karat):null,input=document.getElementById('b_rate');
   if(input) input.value=active?String(roundPeso(active.rate)):'';
+  buyingDraftForm.b_rate_overridden='false';
   recalcBuying();
 }
 function recalcBuying(){
@@ -1685,6 +1688,7 @@ function recalcBuying(){
   const net=Math.max(roundWeight(gross-ded),0), rateObj=karat?activeRate(metal,karat):null, systemRate=rateObj?roundPeso(rateObj.rate):0;
   const rateInput=document.getElementById('b_rate'),enteredRate=Number(rateInput?.value),rate=rateInput?.value!==''&&Number.isFinite(enteredRate)?roundPeso(enteredRate):0;
   const rateOverridden=Boolean(rateObj&&Number.isFinite(rate)&&rate!==systemRate);
+  buyingDraftForm.b_rate_overridden=rateOverridden?'true':'false';
   const netEl=document.getElementById('b_net_display'),rateLabel=document.getElementById('b_rate_label'),ratePanel=document.getElementById('b_rate_panel'),rateReset=document.getElementById('b_rate_reset'),suggestedEl=document.getElementById('b_suggested_display'),payoutEl=document.getElementById('b_payout');
   if(netEl) netEl.textContent=fmtWeight(net);
   if(rateLabel) rateLabel.textContent=rateOverridden?'Buying rate (overridden)':karat&&customPurityFromKey(karat)!==null?`Buying rate (${gradeLabel(metal,karat)} × ${metal} base)`:'Buying rate (Daily Rate Setup)';
