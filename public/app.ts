@@ -1073,12 +1073,25 @@ async function saveCustomerEdit(){
 async function deleteCustomerRecord(){
   if(!adminEditGuard()) return;
   const customer=db.customers.find(c=>c.id===editingCustomerId); if(!customer) return;
-  if(db.stock.some(item=>item.customerId===customer.id)){ toast('This customer has purchase history and cannot be deleted'); return; }
-  if(!await confirmDeletion('Delete customer?',`Permanently remove ${customer.name} from customer management.`,[
-    {label:'Customer',value:customer.name},{label:'Contact',value:customer.contact||'No contact information'}
+  const history=db.stock.filter(item=>item.customerId===customer.id);
+  const historyNote=history.length
+    ? `${history.length} existing purchase${history.length===1?'':'s'} will remain in transaction and inventory history under the saved customer name.`
+    : 'This customer has no purchase history.';
+  if(!await confirmDeletion('Delete customer?',`Permanently remove ${customer.name} from customer management. ${historyNote}`,[
+    {label:'Customer',value:customer.name},{label:'Contact',value:customer.contact||'No contact information'},
+    {label:'Purchase history retained',value:String(history.length)}
   ])) return;
+  const previousLinks=history.map(item=>({item,customerId:item.customerId}));
+  history.forEach(item=>{ item.customerName=item.customerName||customer.name; delete item.customerId; });
   db.customers=db.customers.filter(c=>c.id!==customer.id);
-  closeAdminEditModal(); await saveDB(); render(); toast('Customer deleted');
+  closeAdminEditModal();
+  if(await saveDB()){
+    render(); toast(history.length?'Customer deleted; purchase history retained':'Customer deleted');
+  }else{
+    db.customers.push(customer);
+    previousLinks.forEach(({item,customerId})=>{ item.customerId=customerId; });
+    render();
+  }
 }
 
 /* ============================= BUYING ============================= */
