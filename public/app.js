@@ -1086,10 +1086,12 @@ function renderStaffRates() {
   </section>`;
 }
 function renderRateDownloadButton() {
-    return `<div class="rate-sheet-toolbar"><button id="rate_download_jpg" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetJpg()" title="Save the current price rates as a JPG image"><svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4h14v-4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg><span class="rate-download-label">Download JPG</span></button></div>`;
+    const icon = `<svg viewBox="0 0 24 24" fill="none" aria-hidden="true"><path d="M12 3v12m0 0 4-4m-4 4-4-4M5 15v4h14v-4" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    return `<div class="rate-sheet-toolbar"><button id="rate_download_desktop_jpg" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetJpg('desktop')" title="Save a landscape JPG for desktop viewing">${icon}<span class="rate-download-label">Desktop JPG</span></button><button id="rate_download_phone_jpg" type="button" class="btn secondary rate-download-btn" onclick="downloadRateSheetJpg('phone')" title="Save a portrait JPG with larger text for phone viewing">${icon}<span class="rate-download-label">Phone JPG</span></button></div>`;
 }
-async function downloadRateSheetJpg() {
-    const button = document.getElementById('rate_download_jpg');
+async function downloadRateSheetJpg(format = 'desktop') {
+    const isPhone = format === 'phone';
+    const button = document.getElementById(`rate_download_${format}_jpg`);
     const label = button?.querySelector('.rate-download-label');
     if (button) {
         button.disabled = true;
@@ -1100,13 +1102,15 @@ async function downloadRateSheetJpg() {
     try {
         await document.fonts?.ready;
         const canvas = document.createElement('canvas');
-        const width = 1600, height = 1060, pad = 28, columnGap = 7, cardHeight = 86;
+        const width = isPhone ? 1080 : 1600, height = isPhone ? 2680 : 1060, pad = isPhone ? 44 : 28, columnGap = isPhone ? 16 : 7, cardHeight = isPhone ? 118 : 86;
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
         if (!ctx)
             throw new Error('Canvas is unavailable');
-        const colors = { paper: '#F7F2E6', paper2: '#EFE7D3', card: '#FBF8EF', ink: '#1C1B19', soft: '#655E50', line: '#D8CAA5', gold: '#D19A27', goldDeep: '#7C5A17', silver: '#7C8792', platinum: '#4F7A73', cream: '#F7F2E6' };
+        const colors = isPhone
+            ? { paper: '#FBF7ED', paper2: '#F2E8D2', card: '#FFFCF5', ink: '#292620', soft: '#514B40', line: '#CDBD93', gold: '#BA8317', goldDeep: '#654812', silver: '#687783', platinum: '#3F6F67', cream: '#FFF9ED', header: '#332E27' }
+            : { paper: '#F7F2E6', paper2: '#EFE7D3', card: '#FBF8EF', ink: '#1C1B19', soft: '#655E50', line: '#D8CAA5', gold: '#D19A27', goldDeep: '#7C5A17', silver: '#7C8792', platinum: '#4F7A73', cream: '#F7F2E6', header: '#1C1B19' };
         ctx.fillStyle = colors.paper;
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         ctx.textBaseline = 'alphabetic';
@@ -1132,125 +1136,177 @@ async function downloadRateSheetJpg() {
             image.onerror = () => resolve(null);
             image.src = '/zpp-logo.png';
         });
-        ctx.fillStyle = colors.ink;
-        ctx.fillRect(0, 0, width, 132);
+        const headerHeight = isPhone ? 200 : 132;
+        ctx.fillStyle = colors.header;
+        ctx.fillRect(0, 0, width, headerHeight);
         ctx.fillStyle = colors.gold;
-        ctx.fillRect(0, 129, width, 3);
+        ctx.fillRect(0, headerHeight - 3, width, 3);
         if (logo)
-            ctx.drawImage(logo, pad, 10, 108, 108);
-        text('ZPP GOLD TRADING', 154, 57, '700 31px Georgia, serif', colors.cream);
-        text('DAILY BUYING PRICE GUIDE', 155, 87, '700 12px Arial, sans-serif', colors.gold);
-        text('All prices shown in Philippine pesos per gram', 155, 108, '12px Arial, sans-serif', '#C9BE9F');
-        text(fmtDate(db.pricing.effectiveDate || todayStr()).toUpperCase(), width - pad, 59, '700 13px Arial, sans-serif', colors.cream, 'right');
-        text('CURRENT RATE SHEET', width - pad, 84, '11px Arial, sans-serif', '#C9BE9F', 'right');
+            ctx.drawImage(logo, pad, isPhone ? 20 : 10, isPhone ? 154 : 108, isPhone ? 154 : 108);
+        text('ZPP GOLD TRADING', isPhone ? 220 : 154, isPhone ? 82 : 57, isPhone ? '700 46px Georgia, serif' : '700 31px Georgia, serif', colors.cream);
+        text('DAILY BUYING PRICE GUIDE', isPhone ? 222 : 155, isPhone ? 126 : 87, isPhone ? '700 22px Arial, sans-serif' : '700 12px Arial, sans-serif', colors.gold);
+        text('All prices shown in Philippine pesos per gram', isPhone ? 222 : 155, isPhone ? 158 : 108, isPhone ? '20px Arial, sans-serif' : '12px Arial, sans-serif', isPhone ? '#E1D6BE' : '#C9BE9F');
+        text(fmtDate(db.pricing.effectiveDate || todayStr()).toUpperCase(), width - pad, isPhone ? 72 : 59, isPhone ? '700 22px Arial, sans-serif' : '700 13px Arial, sans-serif', colors.cream, 'right');
+        text('CURRENT RATE SHEET', width - pad, isPhone ? 108 : 84, isPhone ? '18px Arial, sans-serif' : '11px Arial, sans-serif', isPhone ? '#E1D6BE' : '#C9BE9F', 'right');
         const drawHeading = (metal, count, color, y) => {
+            const dotRadius = isPhone ? 9 : 6;
             ctx.beginPath();
             ctx.fillStyle = color;
-            ctx.arc(pad + 6, y - 6, 6, 0, Math.PI * 2);
+            ctx.arc(pad + dotRadius, y - (isPhone ? 10 : 6), dotRadius, 0, Math.PI * 2);
             ctx.fill();
-            text(metal, pad + 22, y, '700 21px Georgia, serif');
+            text(metal, pad + (isPhone ? 32 : 22), y, isPhone ? '700 34px Georgia, serif' : '700 21px Georgia, serif');
             const nameWidth = ctx.measureText(metal).width;
-            text(`${count} GRADES`, pad + 31 + nameWidth, y - 2, '700 10px Arial, sans-serif', colors.soft);
+            text(`${count} GRADES`, pad + (isPhone ? 48 : 31) + nameWidth, y - (isPhone ? 4 : 2), isPhone ? '700 18px Arial, sans-serif' : '700 10px Arial, sans-serif', colors.soft);
             ctx.beginPath();
             ctx.strokeStyle = colors.line;
-            ctx.lineWidth = 1;
-            ctx.moveTo(pad + 31 + nameWidth + 80, y - 7);
-            ctx.lineTo(width - pad, y - 7);
+            ctx.lineWidth = isPhone ? 2 : 1;
+            ctx.moveTo(pad + (isPhone ? 48 : 31) + nameWidth + (isPhone ? 132 : 80), y - (isPhone ? 11 : 7));
+            ctx.lineTo(width - pad, y - (isPhone ? 11 : 7));
             ctx.stroke();
         };
         const drawBase = (x, y, label, rate, w = 250) => {
-            roundedRect(x, y, w, 90, 7);
+            const boxHeight = isPhone ? 130 : 90;
+            roundedRect(x, y, w, boxHeight, isPhone ? 10 : 7);
             ctx.fillStyle = colors.card;
             ctx.fill();
             ctx.strokeStyle = colors.gold;
-            ctx.lineWidth = 1.5;
+            ctx.lineWidth = isPhone ? 2 : 1.5;
             ctx.stroke();
             ctx.fillStyle = colors.gold;
-            ctx.fillRect(x, y + 7, 4, 76);
-            text(label.toUpperCase(), x + 18, y + 25, '700 10px Arial, sans-serif', colors.soft);
-            text('₱', x + 18, y + 64, '700 17px Georgia, serif', colors.goldDeep);
-            text(money(rate), x + 39, y + 65, '700 25px Arial, sans-serif');
-            text('PER GRAM', x + w - 16, y + 64, '700 9px Arial, sans-serif', colors.soft, 'right');
+            ctx.fillRect(x, y + (isPhone ? 10 : 7), isPhone ? 6 : 4, boxHeight - (isPhone ? 20 : 14));
+            text(label.toUpperCase(), x + (isPhone ? 28 : 18), y + (isPhone ? 38 : 25), isPhone ? '700 20px Arial, sans-serif' : '700 10px Arial, sans-serif', colors.soft);
+            text('₱', x + (isPhone ? 28 : 18), y + (isPhone ? 94 : 64), isPhone ? '700 28px Georgia, serif' : '700 17px Georgia, serif', colors.goldDeep);
+            text(money(rate), x + (isPhone ? 66 : 39), y + (isPhone ? 96 : 65), isPhone ? '700 40px Arial, sans-serif' : '700 25px Arial, sans-serif');
+            text('PER GRAM', x + w - (isPhone ? 26 : 16), y + (isPhone ? 93 : 64), isPhone ? '700 17px Arial, sans-serif' : '700 9px Arial, sans-serif', colors.soft, 'right');
         };
         const drawFeatured = (x, y, w) => {
-            roundedRect(x, y, w, 90, 7);
-            ctx.fillStyle = colors.ink;
+            const boxHeight = isPhone ? 130 : 90;
+            roundedRect(x, y, w, boxHeight, isPhone ? 10 : 7);
+            ctx.fillStyle = isPhone ? colors.paper2 : colors.ink;
             ctx.fill();
-            text('FEATURED BUYING RANGE', x + 20, y + 24, '700 10px Arial, sans-serif', '#C9BE9F');
+            if (isPhone) {
+                ctx.strokeStyle = colors.line;
+                ctx.lineWidth = 2;
+                ctx.stroke();
+            }
+            text('FEATURED BUYING RANGE', x + (isPhone ? 28 : 20), y + (isPhone ? 38 : 24), isPhone ? '700 20px Arial, sans-serif' : '700 10px Arial, sans-serif', isPhone ? colors.soft : '#C9BE9F');
             const featured = db.pricing.featured;
             if (featured) {
                 const label = gradeLabel(featured.metal, featured.key);
-                text(label, x + 20, y + 64, '700 24px Georgia, serif', colors.cream);
+                text(label, x + (isPhone ? 28 : 20), y + (isPhone ? 96 : 64), isPhone ? '700 38px Georgia, serif' : '700 24px Georgia, serif', isPhone ? colors.ink : colors.cream);
                 const labelWidth = ctx.measureText(label).width;
-                text(`₱${money(featured.low)}–${money(featured.high)}`, x + 34 + labelWidth, y + 64, '700 24px Arial, sans-serif', colors.gold);
+                text(`₱${money(featured.low)}–${money(featured.high)}`, x + (isPhone ? 48 : 34) + labelWidth, y + (isPhone ? 96 : 64), isPhone ? '700 38px Arial, sans-serif' : '700 24px Arial, sans-serif', isPhone ? colors.goldDeep : colors.gold);
             }
             else {
-                text('Featured buying range not set', x + 20, y + 61, 'italic 16px Georgia, serif', '#C9BE9F');
+                text('Featured buying range not set', x + (isPhone ? 28 : 20), y + (isPhone ? 91 : 61), isPhone ? 'italic 28px Georgia, serif' : 'italic 16px Georgia, serif', isPhone ? colors.soft : '#C9BE9F');
             }
         };
         const drawGradeCard = (grade, metal, index, startY, columns) => {
             const cardWidth = (width - pad * 2 - columnGap * (columns - 1)) / columns;
             const col = index % columns, row = Math.floor(index / columns), x = pad + col * (cardWidth + columnGap), y = startY + row * (cardHeight + columnGap);
-            roundedRect(x, y, cardWidth, cardHeight, 6);
+            roundedRect(x, y, cardWidth, cardHeight, isPhone ? 10 : 6);
             ctx.fillStyle = colors.card;
             ctx.fill();
             ctx.strokeStyle = colors.line;
-            ctx.lineWidth = 1;
+            ctx.lineWidth = isPhone ? 2 : 1;
             ctx.stroke();
-            text(grade.label, x + 15, y + 23, '700 12px Arial, sans-serif', colors.soft);
+            text(grade.label, x + (isPhone ? 24 : 15), y + (isPhone ? 34 : 23), isPhone ? '700 23px Arial, sans-serif' : '700 12px Arial, sans-serif', colors.soft);
             if (metal === 'Gold') {
-                roundedRect(x + cardWidth - 72, y + 10, 58, 20, 10);
+                const pillWidth = isPhone ? 112 : 58, pillHeight = isPhone ? 34 : 20;
+                roundedRect(x + cardWidth - pillWidth - (isPhone ? 20 : 14), y + (isPhone ? 14 : 10), pillWidth, pillHeight, pillHeight / 2);
                 ctx.fillStyle = colors.paper2;
                 ctx.fill();
-                text(`×${configuredGradeMultiplier(metal, grade.key).toFixed(3)}`, x + cardWidth - 43, y + 24, '700 9px Arial, sans-serif', colors.soft, 'center');
+                text(`×${configuredGradeMultiplier(metal, grade.key).toFixed(3)}`, x + cardWidth - pillWidth / 2 - (isPhone ? 20 : 14), y + (isPhone ? 38 : 24), isPhone ? '700 17px Arial, sans-serif' : '700 9px Arial, sans-serif', colors.soft, 'center');
             }
-            text('₱', x + 15, y + 57, '700 13px Arial, sans-serif', colors.goldDeep);
-            text(money(metalRate(metal, grade.key)), x + 34, y + 58, '700 20px Arial, sans-serif');
+            text('₱', x + (isPhone ? 24 : 15), y + (isPhone ? 83 : 57), isPhone ? '700 22px Arial, sans-serif' : '700 13px Arial, sans-serif', colors.goldDeep);
+            text(money(metalRate(metal, grade.key)), x + (isPhone ? 54 : 34), y + (isPhone ? 85 : 58), isPhone ? '700 34px Arial, sans-serif' : '700 20px Arial, sans-serif');
             const numberWidth = ctx.measureText(money(metalRate(metal, grade.key))).width;
-            text('/g', x + 40 + numberWidth, y + 58, '11px Arial, sans-serif', colors.soft);
-            text('BUYING RATE', x + 15, y + 76, '700 9px Arial, sans-serif', colors.goldDeep);
+            text('/g', x + (isPhone ? 64 : 40) + numberWidth, y + (isPhone ? 85 : 58), isPhone ? '20px Arial, sans-serif' : '11px Arial, sans-serif', colors.soft);
+            text('BUYING RATE', x + (isPhone ? 24 : 15), y + (isPhone ? 108 : 76), isPhone ? '700 16px Arial, sans-serif' : '700 9px Arial, sans-serif', colors.goldDeep);
         };
-        let y = 172;
+        let y = isPhone ? 254 : 172;
         drawHeading('Gold', GOLD_GRADES.length, colors.gold, y);
         y += 16;
-        drawBase(pad, y, '24K rate — pure gold', configuredBaseRate('Gold'));
-        drawFeatured(pad + 258, y, 520);
-        y += 98;
+        if (isPhone) {
+            y += 14;
+            drawBase(pad, y, '24K rate — pure gold', configuredBaseRate('Gold'), width - pad * 2);
+            y += 146;
+            drawFeatured(pad, y, width - pad * 2);
+            y += 146;
+        }
+        else {
+            drawBase(pad, y, '24K rate — pure gold', configuredBaseRate('Gold'));
+            drawFeatured(pad + 258, y, 520);
+            y += 98;
+        }
         const goldGrades = GOLD_GRADES.filter(grade => grade.key !== '24K');
-        goldGrades.forEach((grade, index) => drawGradeCard(grade, 'Gold', index, y, 6));
-        y += Math.ceil(goldGrades.length / 6) * (cardHeight + columnGap) + 18;
+        const goldColumns = isPhone ? 2 : 6;
+        goldGrades.forEach((grade, index) => drawGradeCard(grade, 'Gold', index, y, goldColumns));
+        y += Math.ceil(goldGrades.length / goldColumns) * (cardHeight + columnGap) + (isPhone ? 30 : 18);
         drawHeading('Silver', SILVER_GRADES.length, colors.silver, y);
         y += 16;
-        drawBase(pad, y, '999 rate — independent silver rate', configuredBaseRate('Silver'));
-        drawBase(pad + 258, y, '925 basis — other silver grades', configuredSilver925Rate(), 300);
-        y += 98;
+        if (isPhone) {
+            y += 14;
+            const halfWidth = (width - pad * 2 - columnGap) / 2;
+            drawBase(pad, y, '999 rate — independent silver rate', configuredBaseRate('Silver'), halfWidth);
+            drawBase(pad + halfWidth + columnGap, y, '925 basis — other silver grades', configuredSilver925Rate(), halfWidth);
+            y += 146;
+        }
+        else {
+            drawBase(pad, y, '999 rate — independent silver rate', configuredBaseRate('Silver'));
+            drawBase(pad + 258, y, '925 basis — other silver grades', configuredSilver925Rate(), 300);
+            y += 98;
+        }
         const silverGrades = SILVER_GRADES.filter(grade => grade.key !== '999' && grade.key !== '925');
-        silverGrades.forEach((grade, index) => drawGradeCard(grade, 'Silver', index, y, 4));
-        y += cardHeight + columnGap + 18;
+        const otherColumns = isPhone ? 2 : 4;
+        silverGrades.forEach((grade, index) => drawGradeCard(grade, 'Silver', index, y, otherColumns));
+        y += Math.ceil(silverGrades.length / otherColumns) * (cardHeight + columnGap) + (isPhone ? 30 : 18);
         drawHeading('Platinum', PLATINUM_GRADES.length, colors.platinum, y);
         y += 16;
-        drawBase(pad, y, '999 rate — pure platinum', configuredBaseRate('Platinum'));
-        y += 98;
-        PLATINUM_GRADES.forEach((grade, index) => drawGradeCard(grade, 'Platinum', index, y, 4));
+        if (isPhone) {
+            y += 14;
+            drawBase(pad, y, '999 rate — pure platinum', configuredBaseRate('Platinum'), width - pad * 2);
+            y += 146;
+        }
+        else {
+            drawBase(pad, y, '999 rate — pure platinum', configuredBaseRate('Platinum'));
+            y += 98;
+        }
+        PLATINUM_GRADES.forEach((grade, index) => drawGradeCard(grade, 'Platinum', index, y, otherColumns));
         ctx.beginPath();
         ctx.strokeStyle = colors.line;
         ctx.lineWidth = 1;
         ctx.moveTo(pad, height - 31);
         ctx.lineTo(width - pad, height - 31);
         ctx.stroke();
-        text('ZPP GOLD TRADING  ·  DAILY BUYING PRICE GUIDE', pad, height - 13, '700 9px Arial, sans-serif', colors.soft);
-        text(`Generated ${new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}`, width - pad, height - 13, '10px Arial, sans-serif', colors.soft, 'right');
+        text('ZPP GOLD TRADING  ·  DAILY BUYING PRICE GUIDE', pad, height - (isPhone ? 18 : 13), isPhone ? '700 16px Arial, sans-serif' : '700 9px Arial, sans-serif', colors.soft);
+        text(`Generated ${new Date().toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}`, width - pad, height - (isPhone ? 18 : 13), isPhone ? '16px Arial, sans-serif' : '10px Arial, sans-serif', colors.soft, 'right');
         const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/jpeg', .94));
         if (!blob)
             throw new Error('JPG generation failed');
+        const filename = `zpp-price-rates-${db.pricing.effectiveDate || todayStr()}-${format}.jpg`;
+        const file = new File([blob], filename, { type: 'image/jpeg' });
+        if (isPhone && navigator.share && navigator.canShare?.({ files: [file] })) {
+            try {
+                await navigator.share({ files: [file], title: 'ZPP Gold Trading price rates' });
+                toast('Phone JPG opened — choose Save Image or Photos');
+                return;
+            }
+            catch (error) {
+                if (error instanceof DOMException && error.name === 'AbortError') {
+                    toast('Phone JPG share cancelled');
+                    return;
+                }
+            }
+        }
         const url = URL.createObjectURL(blob), link = document.createElement('a');
         link.href = url;
-        link.download = `zpp-price-rates-${db.pricing.effectiveDate || todayStr()}.jpg`;
+        link.download = filename;
         document.body.appendChild(link);
         link.click();
         link.remove();
         setTimeout(() => URL.revokeObjectURL(url), 1000);
-        toast('Price rate JPG downloaded');
+        toast(`${isPhone ? 'Phone' : 'Desktop'} price rate JPG downloaded${isPhone ? ' — open it and choose Save to Photos' : ''}`);
     }
     catch (error) {
         console.error('Price rate JPG download failed', error);
@@ -1262,7 +1318,7 @@ async function downloadRateSheetJpg() {
             button.removeAttribute('aria-busy');
         }
         if (label)
-            label.textContent = 'Download JPG';
+            label.textContent = isPhone ? 'Phone JPG' : 'Desktop JPG';
     }
 }
 function renderGradeCard(metal, key, label) {
