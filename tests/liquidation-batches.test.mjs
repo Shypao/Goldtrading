@@ -6,7 +6,19 @@ import vm from 'node:vm';
 async function loadInventoryApi() {
   const source = (await readFile(new URL('../public/app.js', import.meta.url), 'utf8'))
     .replace(/initializeAuth\(\);\s*$/, '');
-  const context = vm.createContext({ console, document: { getElementById() { return null; } } });
+  const appended = [];
+  const document = {
+    body: { appendChild(element) { appended.push(element); } },
+    createElement() {
+      return {
+        addEventListener() {},
+        querySelector() { return { focus() {} }; },
+        remove() {}
+      };
+    },
+    getElementById() { return null; }
+  };
+  const context = vm.createContext({ console, document, appended });
   vm.runInContext(`${source}\n;globalThis.inventoryTestApi = {
     activeInventoryRecord,
     cashflowCardMarkup,
@@ -15,6 +27,37 @@ async function loadInventoryApi() {
     renderBuying,
     renderInventory,
     renderLiquidation,
+    prepareLiquidationBatches(items) {
+      let message = '';
+      const originalToast = toast;
+      toast = value => { message = value; };
+      pendingInventoryMove = null;
+      pendingLiquidationBatchSetup = null;
+      openInventoryMoveReview(items, { total: items.length, automatic: false });
+      if (pendingInventoryMove) confirmInventoryMoveToLiquidation();
+      toast = originalToast;
+      return JSON.parse(JSON.stringify({ pending: pendingLiquidationBatchSetup, message }));
+    },
+    openSaleModal(id) {
+      appended.length = 0;
+      openCompleteLiquidationBatch(id);
+      return appended.at(-1)?.innerHTML || '';
+    },
+    profitPreview(cost, total) {
+      const elements = {
+        complete_batch_total: { value: total },
+        complete_batch_profit: { textContent: '', style: {} },
+        complete_batch_profit_margin: { textContent: '', style: {} }
+      };
+      const originalGetElementById = document.getElementById;
+      document.getElementById = id => elements[id] || null;
+      updateCompleteLiquidationProfit(cost);
+      document.getElementById = originalGetElementById;
+      return JSON.parse(JSON.stringify({
+        profit: elements.complete_batch_profit,
+        margin: elements.complete_batch_profit_margin
+      }));
+    },
     setState(state) {
       db = state;
       currentUser = { role: 'admin', displayName: 'Admin' };
@@ -93,12 +136,52 @@ test('Liquidation view renders independent batches and their totals', async () =
   assert.match(html, /Gold Buyer/);
   assert.match(html, /Silver batch/);
   assert.match(html, /Silver Buyer/);
-  assert.match(html, /Batch grand total · buyer offer/);
   assert.match(html, /Total inventory cost/);
-  assert.match(html, /Profit/);
-  assert.match(html, /Profit margin/);
+  assert.doesNotMatch(html, /Buyer offer/i);
   assert.match(html, /PHP 500/);
   assert.match(html, /PHP 800/);
+});
+
+test('a mixed Gold and Silver selection prepares separate metal batches', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  const gold = state.stock[0];
+  const silver = { ...state.stock[0], id: 'stock-on-hand-silver', metal: 'Silver', karat: '999', customerName: 'Silver Seller' };
+  state.stock = [gold, silver];
+  state.liquidationBatches = [];
+  api.setState(state);
+
+  const result = api.prepareLiquidationBatches([gold, silver]);
+
+  assert.equal(result.message, '');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.pending.groups)), [
+    { metal: 'Gold', ids: ['stock-on-hand'] },
+    { metal: 'Silver', ids: ['stock-on-hand-silver'] }
+  ]);
+});
+
+test('record sale modal shows live profit margin fields without buyer offer', async () => {
+  const api = await loadInventoryApi();
+  api.setState(stateFixture());
+
+  const html = api.openSaleModal('LB-0001');
+
+  assert.match(html, /Total sold \(PHP\)/);
+  assert.match(html, /id="complete_batch_profit"/);
+  assert.match(html, /id="complete_batch_profit_margin"/);
+  assert.match(html, /Profit margin/);
+  assert.doesNotMatch(html, /Buyer offer/i);
+  assert.match(html, /id="complete_batch_total"[^>]*value=""/);
+
+  const gain = api.profitPreview(500, '650');
+  assert.equal(gain.profit.textContent, 'PHP 150');
+  assert.equal(gain.margin.textContent, '30.00%');
+  assert.equal(gain.profit.style.color, 'var(--sage)');
+
+  const loss = api.profitPreview(500, '400');
+  assert.equal(loss.profit.textContent, 'PHP -100');
+  assert.equal(loss.margin.textContent, '-20.00%');
+  assert.equal(loss.profit.style.color, 'var(--rust)');
 });
 
 test('cash-on-hand card never converts a missing synced balance into zero', async () => {

@@ -283,7 +283,7 @@ An administrator can select records and:
 - send selected **For Refining** records to Refining; or
 - edit an individual inventory record.
 
-Liquidation and refining batches must contain only one metal. Gold, Silver, and Platinum must be processed in separate batches.
+Liquidation and refining batches contain only one metal. A liquidation selection may include Gold, Silver, and Platinum together; the system automatically separates the selection into one batch per metal.
 
 Creating a Liquidation batch changes each included item to **For Liquidation**. Its weight and carrying cost are preserved, but it is excluded from every Current Inventory list and total until sold or returned.
 
@@ -296,14 +296,16 @@ Creating a Liquidation batch changes each included item to **For Liquidation**. 
 3. Review the metal, dates, weight, and cost.
 4. Continue to the batch details.
 5. Confirm or edit the suggested batch name.
-6. Assign the buyer and optionally record the buyer's offer and notes.
+6. Assign a buyer and optional notes to each metal batch.
 7. Select **Create batch**.
 
 The workflow moves the full available weight of every selected record. Multiple open batches can exist at the same time, and every batch has its own buyer.
 
 ### Review open batches
 
-Each batch displays its item breakdown, item count, total weight, carrying cost, buyer offer, offer difference, and clearly labelled batch grand total. Use **Edit batch** to change its name, buyer, offer, or notes. Use **Return to Inventory** to restore every item to its previous on-hand status.
+Each batch displays its item breakdown, item count, total weight, and carrying cost. You can select Gold and Silver together; the system automatically creates a separate batch for each metal so every batch can have its own buyer. Use **Edit batch** to change its name, buyer, or notes. Use **Return to Inventory** to restore every item to its previous on-hand status.
+
+When recording a batch sale, enter the final **Total sold** amount. The modal immediately shows the profit or loss and profit margin; positive results are green and losses are red.
 
 ### Record the liquidation
 

@@ -72,6 +72,12 @@ function ensureShape() {
         }
     });
     db.liquidationBatches = db.liquidationBatches || [];
+    db.liquidationBatches.forEach(batch => {
+        if (Object.prototype.hasOwnProperty.call(batch, 'buyerOffer')) {
+            delete batch.buyerOffer;
+            storageLocationCleanupNeeded = true;
+        }
+    });
     db.liquidations = db.liquidations || [];
     db.refiningBatches = db.refiningBatches || [];
     db.retailSales = db.retailSales || [];
@@ -2760,15 +2766,11 @@ function liquidateInventoryItem(id) {
 }
 function openInventoryMoveReview(selected, context) {
     const metals = Array.from(new Set(selected.map(item => item.metal)));
-    if (metals.length !== 1) {
-        toast('Choose only one metal at a time. Gold, silver, and platinum use separate liquidation batches.');
-        return;
-    }
     const dates = Array.from(new Set(selected.map(item => item.date))).sort();
     const dateLabel = dates.length === 1 ? fmtDate(dates[0]) : `${fmtDate(dates[0])} – ${fmtDate(dates[dates.length - 1])}`;
     const selectionLabel = context.individual ? 'Individual item' : context.automatic ? `${context.percentage}% · ${selected.length} of ${context.total}` : `${selected.length} selected record${selected.length === 1 ? '' : 's'}`;
     const mode = context.individual ? 'individual' : dates.length > 1 ? 'combined' : 'selected';
-    pendingInventoryMove = { percentage: context.percentage ?? null, total: context.total, ids: selected.map(item => item.id), dates, metal: metals[0], mode };
+    pendingInventoryMove = { percentage: context.percentage ?? null, total: context.total, ids: selected.map(item => item.id), dates, metals, mode };
     const totalWeight = selected.reduce((sum, item) => sum + Number(item.currentWeight), 0);
     const totalCost = selected.reduce((sum, item) => sum + Number(item.cost), 0);
     const modal = document.createElement('div');
@@ -2776,7 +2778,7 @@ function openInventoryMoveReview(selected, context) {
     modal.className = 'modal-backdrop';
     modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="inventory_move_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Review inventory movement</div><h2 id="inventory_move_title">Move ${selected.length} stock record${selected.length === 1 ? '' : 's'}?</h2></div><button class="modal-close" onclick="closeInventoryMoveConfirmation()" aria-label="Close">×</button></div>
-    <p class="move-confirmation-intro">${context.combineDates ? `The system automatically selected every eligible ${esc(metals[0])} stock record from the ${dates.length} chosen purchase date${dates.length === 1 ? '' : 's'}.` : context.automatic ? `The system automatically selected ${selected.length} eligible stock record${selected.length === 1 ? '' : 's'} for this percentage.` : context.individual ? 'This item will be prepared as an individual liquidation.' : dates.length > 1 ? 'Items from different purchase dates will be combined into one liquidation batch.' : 'The checked records will be combined into one liquidation batch.'} Review the items below before confirming. This step does not sell the stock or deduct its weight.</p>
+    <p class="move-confirmation-intro">${metals.length > 1 ? `The selected records will be separated into ${metals.length} independent batches: ${metals.map(esc).join(' and ')}.` : context.combineDates ? `The system automatically selected every eligible ${esc(metals[0])} stock record from the ${dates.length} chosen purchase date${dates.length === 1 ? '' : 's'}.` : context.automatic ? `The system automatically selected ${selected.length} eligible stock record${selected.length === 1 ? '' : 's'} for this percentage.` : context.individual ? 'This item will be prepared as an individual liquidation.' : dates.length > 1 ? 'Items from different purchase dates will be combined into one liquidation batch.' : 'The checked records will be combined into one liquidation batch.'} Review the items below before confirming. This step does not sell the stock or deduct its weight.</p>
     <div class="move-confirmation-summary">
       <div><span>Purchase date${dates.length === 1 ? '' : 's'}</span><strong>${dateLabel}</strong></div>
       <div><span>Selection</span><strong>${selectionLabel}</strong></div>
@@ -2786,7 +2788,7 @@ function openInventoryMoveReview(selected, context) {
     <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th>Status</th><th class="num-head">Weight moving</th><th class="num-head">Cost</th></tr></thead><tbody>
       ${selected.map(item => `<tr><td><strong>${esc(item.metal)} ${esc(item.karat)}</strong><br><span class="form-note">${esc(item.itemType)}${item.remarks ? ' · ' + esc(item.remarks) : ''}</span></td><td>${esc(item.customerName || '—')}</td><td>${statusPill(item.status)}</td><td class="num"><strong>${fmtWeight(item.currentWeight)}</strong><br><span class="form-note">full available weight</span></td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}
     </tbody></table></div>
-    <div class="move-confirmation-note"><strong>What happens next?</strong><span>Assign a batch name and buyer. The records will then become For Liquidation and leave Current Inventory until sold or returned.</span></div>
+    <div class="move-confirmation-note"><strong>What happens next?</strong><span>Assign a name and buyer to each metal batch. The records will then become For Liquidation and leave Current Inventory until sold or returned.</span></div>
     <div class="form-actions"><button class="btn secondary" onclick="closeInventoryMoveConfirmation()">Cancel</button><button class="btn" onclick="confirmInventoryMoveToLiquidation()">Continue to batch details</button></div>
   </div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
@@ -2807,7 +2809,16 @@ function confirmInventoryMoveToLiquidation() {
         render();
         return;
     }
-    pendingLiquidationBatchSetup = { ids: selected.map(item => item.id), metal: pending.metal };
+    const groups = [];
+    for (const item of selected) {
+        let group = groups.find(entry => entry.metal === item.metal);
+        if (!group) {
+            group = { metal: item.metal, ids: [] };
+            groups.push(group);
+        }
+        group.ids.push(item.id);
+    }
+    pendingLiquidationBatchSetup = { groups };
     closeInventoryMoveConfirmation();
     openLiquidationBatchSetup();
 }
@@ -2820,59 +2831,69 @@ function openLiquidationBatchSetup() {
     const pending = pendingLiquidationBatchSetup;
     if (!pending)
         return;
-    const items = pending.ids.map(id => db.stock.find(item => item.id === id)).filter(Boolean);
-    if (items.length !== pending.ids.length) {
+    const groups = pending.groups.map(group => ({ ...group, items: group.ids.map(id => db.stock.find(item => item.id === id)).filter(Boolean) }));
+    if (groups.some(group => group.items.length !== group.ids.length)) {
         closeLiquidationBatchSetup();
         toast('One or more selected records are no longer available');
         render();
         return;
     }
-    const totalWeight = items.reduce((sum, item) => sum + Number(item.currentWeight), 0), totalCost = items.reduce((sum, item) => sum + Number(item.cost), 0);
     const modal = document.createElement('div');
     modal.id = 'liquidation_batch_setup';
     modal.className = 'modal-backdrop';
     modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="liquidation_batch_setup_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Create liquidation batch</div><h2 id="liquidation_batch_setup_title">Assign batch and buyer</h2></div><button class="modal-close" onclick="closeLiquidationBatchSetup()" aria-label="Close">×</button></div>
-    <div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="new_liquidation_batch_name" value="${esc(suggestedLiquidationBatchName(items))}" required></div><div class="field"><label>Assigned buyer</label><input id="new_liquidation_batch_buyer" placeholder="Buyer name" required></div><div class="field"><label>Buyer offer (PHP)</label><input id="new_liquidation_batch_offer" inputmode="decimal" placeholder="Optional" oninput="formatMoneyEntry(this)"></div><div class="field"><label>Notes</label><input id="new_liquidation_batch_notes" placeholder="Optional"></div></div>
-    <div class="move-confirmation-summary"><div><span>Items</span><strong>${items.length}</strong></div><div><span>Metal</span><strong>${esc(pending.metal)}</strong></div><div><span>Total weight</span><strong>${fmtWeight(totalWeight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(totalCost)}</strong></div></div>
-    <div class="form-actions"><button class="btn secondary" onclick="closeLiquidationBatchSetup()">Cancel</button><button class="btn" onclick="createLiquidationBatch()">Create batch</button></div>
+    <div class="summary-modal-head"><div><div class="eyebrow">Create liquidation ${groups.length === 1 ? 'batch' : 'batches'}</div><h2 id="liquidation_batch_setup_title">Assign each metal batch</h2></div><button class="modal-close" onclick="closeLiquidationBatchSetup()" aria-label="Close">×</button></div>
+    <p class="move-confirmation-intro">${groups.length === 1 ? 'Complete the batch details below.' : `Your selection was separated into ${groups.length} batches so every metal keeps its own buyer, cost, and final profit.`}</p>
+    ${groups.map((group, index) => {
+        const totalWeight = group.items.reduce((sum, item) => sum + Number(item.currentWeight), 0), totalCost = group.items.reduce((sum, item) => sum + Number(item.cost), 0);
+        return `<section class="move-confirmation-note"><strong>${esc(group.metal)} batch · ${group.items.length} item${group.items.length === 1 ? '' : 's'}</strong><div class="form-grid" style="margin-top:12px;"><div class="field"><label>Batch name</label><input id="new_liquidation_batch_name_${index}" value="${esc(suggestedLiquidationBatchName(group.items))}" required></div><div class="field"><label>Assigned buyer</label><input id="new_liquidation_batch_buyer_${index}" placeholder="Buyer name" required></div><div class="field span-2"><label>Notes</label><input id="new_liquidation_batch_notes_${index}" placeholder="Optional"></div></div><div class="move-confirmation-summary"><div><span>Metal</span><strong>${esc(group.metal)}</strong></div><div><span>Items</span><strong>${group.items.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(totalWeight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(totalCost)}</strong></div></div></section>`;
+    }).join('')}
+    <div class="form-actions"><button class="btn secondary" onclick="closeLiquidationBatchSetup()">Cancel</button><button class="btn" onclick="createLiquidationBatch()">Create ${groups.length === 1 ? 'batch' : groups.length + ' batches'}</button></div>
   </div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
         closeLiquidationBatchSetup(); });
     document.body.appendChild(modal);
-    document.getElementById('new_liquidation_batch_buyer')?.focus();
+    document.getElementById('new_liquidation_batch_buyer_0')?.focus();
 }
 async function createLiquidationBatch() {
     const pending = pendingLiquidationBatchSetup;
     if (!pending)
         return;
-    const name = val('new_liquidation_batch_name').trim(), buyer = val('new_liquidation_batch_buyer').trim();
-    if (!name || !buyer) {
-        toast('Enter a batch name and assigned buyer');
+    const prepared = pending.groups.map((group, index) => ({
+        metal: group.metal,
+        name: val(`new_liquidation_batch_name_${index}`).trim(),
+        buyer: val(`new_liquidation_batch_buyer_${index}`).trim(),
+        notes: val(`new_liquidation_batch_notes_${index}`).trim(),
+        items: group.ids.map(id => db.stock.find(item => item.id === id)).filter(item => item && selectableInventory(item))
+    }));
+    if (prepared.some(group => !group.name || !group.buyer)) {
+        toast('Enter a batch name and assigned buyer for every metal');
         return;
     }
-    const items = pending.ids.map(id => db.stock.find(item => item.id === id)).filter(item => item && selectableInventory(item));
-    if (items.length !== pending.ids.length) {
+    if (prepared.some((group, index) => group.items.length !== pending.groups[index].ids.length)) {
         closeLiquidationBatchSetup();
         toast('One or more selected records are no longer available');
         render();
         return;
     }
-    const beforeState = JSON.parse(JSON.stringify(db)), id = nextSequenceId('LB', db.liquidationBatches);
-    const lines = items.map(item => ({ itemId: item.id, previousStatus: item.status, weight: roundWeight(item.currentWeight), cost: roundMoney(item.cost) }));
-    db.liquidationBatches.push({ id, name, buyer, metal: pending.metal, lines, buyerOffer: roundMoney(parseMoneyEntry(val('new_liquidation_batch_offer'))), notes: val('new_liquidation_batch_notes').trim(), createdAt: new Date().toISOString(), createdBy: currentUser?.displayName || '' });
-    items.forEach(item => { item.status = 'For Liquidation'; item.liquidationBatchId = id; });
+    const beforeState = JSON.parse(JSON.stringify(db));
+    prepared.forEach(group => {
+        const id = nextSequenceId('LB', db.liquidationBatches);
+        const lines = group.items.map(item => ({ itemId: item.id, previousStatus: item.status, weight: roundWeight(item.currentWeight), cost: roundMoney(item.cost) }));
+        db.liquidationBatches.push({ id, name: group.name, buyer: group.buyer, metal: group.metal, lines, notes: group.notes, createdAt: new Date().toISOString(), createdBy: currentUser?.displayName || '' });
+        group.items.forEach(item => { item.status = 'For Liquidation'; item.liquidationBatchId = id; });
+    });
     const saved = await saveDB();
     if (!saved) {
         db = beforeState;
         render();
-        toast('Liquidation batch was not created');
+        toast(`Liquidation ${prepared.length === 1 ? 'batch was' : 'batches were'} not created`);
         return;
     }
     inventoryMoveSelection.clear();
     closeLiquidationBatchSetup();
     goTab('liquidation');
-    toast(`${name} created for ${buyer}`);
+    toast(`${prepared.length} liquidation ${prepared.length === 1 ? 'batch' : 'batches'} created`);
 }
 function renderInventory() {
     const week = inventoryWeekRange();
@@ -3044,14 +3065,14 @@ function renderLiquidation() {
     <div class="stat-row"><div class="stat"><div class="label">Open batches</div><div class="value">${batches.length}</div></div><div class="stat"><div class="label">Items in transit</div><div class="value">${allLines.length}</div></div><div class="stat"><div class="label">Total weight</div><div class="value">${fmtWeight(totalWeight)}</div></div><div class="stat"><div class="label">Total carrying cost</div><div class="value">${fmtMoney(totalCost)}</div></div></div>
   </section>
   ${batches.map(batch => {
-        const lines = batch.lines || [], cost = lines.reduce((sum, line) => sum + Number(line.cost || 0), 0), weight = lines.reduce((sum, line) => sum + Number(line.weight || 0), 0), offer = Number(batch.buyerOffer) || 0, profit = offer - cost, profitMargin = cost ? profit / cost * 100 : 0;
+        const lines = batch.lines || [], cost = lines.reduce((sum, line) => sum + Number(line.cost || 0), 0), weight = lines.reduce((sum, line) => sum + Number(line.weight || 0), 0);
         return `<section class="block liquidation-batch-card">
       <div class="batch-head liquidation-batch-head"><div><p class="eyebrow">${esc(batch.id)} · ${esc(batch.metal)}</p><h2 class="block-title">${esc(batch.name)}</h2><p class="form-note">Assigned buyer: <strong>${esc(batch.buyer)}</strong>${batch.createdAt ? ` · Created ${new Date(batch.createdAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' })}` : ''}</p></div><div class="form-actions"><button class="btn secondary small" onclick="openLiquidationBatchEdit('${batch.id}')">Edit batch</button><button class="btn secondary small" onclick="returnLiquidationBatch('${batch.id}')">Return to Inventory</button><button class="btn small" onclick="openCompleteLiquidationBatch('${batch.id}')">Record sale</button></div></div>
       <div class="table-wrap liquidation-batch-items"><table><thead><tr><th>Item</th><th>Original seller</th><th>Purchase date</th><th>Status</th><th class="num-head">Weight</th><th class="num-head">Carrying cost</th></tr></thead><tbody>${lines.map(line => {
             const item = db.stock.find(stock => stock.id === line.itemId) || {};
             return `<tr><td><strong>${esc(item.metal || batch.metal)} ${esc(gradeLabel(item.metal || batch.metal, item.karat || ''))}</strong><br><span class="form-note">${esc(item.itemType || 'Inventory item')} · ${esc(line.itemId)}</span></td><td>${esc(item.customerName || '—')}</td><td>${fmtDate(item.date)}</td><td>${statusPill('For Liquidation')}</td><td class="num">${fmtWeight(line.weight)}</td><td class="num">${fmtMoney(line.cost)}</td></tr>`;
         }).join('')}</tbody><tfoot><tr><th colspan="4">Batch subtotal · ${lines.length} item${lines.length === 1 ? '' : 's'}</th><th class="num">${fmtWeight(weight)}</th><th class="num">${fmtMoney(cost)}</th></tr></tfoot></table></div>
-      <div class="liquidation-batch-totals"><div><span>Items</span><strong>${lines.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Total inventory cost</span><strong>${fmtMoney(cost)}</strong></div><div class="liquidation-grand-total"><span>Batch grand total · buyer offer</span><strong>${offer ? fmtMoney(offer) : 'Not entered'}</strong></div><div><span>Profit</span><strong style="color:${offer ? (profit >= 0 ? 'var(--sage)' : 'var(--rust)') : 'inherit'}">${offer ? fmtMoney(profit) : 'Waiting for offer'}</strong></div><div><span>Profit margin</span><strong style="color:${offer ? (profit >= 0 ? 'var(--sage)' : 'var(--rust)') : 'inherit'}">${offer ? profitMargin.toFixed(2) + '%' : '—'}</strong></div></div>
+      <div class="liquidation-batch-totals"><div><span>Items</span><strong>${lines.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Total inventory cost</span><strong>${fmtMoney(cost)}</strong></div></div>
       ${batch.notes ? `<div class="move-confirmation-note"><strong>Notes</strong><span>${esc(batch.notes)}</span></div>` : ''}
     </section>`;
     }).join('') || `<section class="block"><div class="empty-note">No items are currently marked For Liquidation.<div class="form-actions" style="justify-content:center;"><button class="btn" onclick="goTab('inventory')">Open Current Inventory</button></div></div></section>`}`;
@@ -3077,7 +3098,7 @@ function openLiquidationBatchEdit(id) {
     const modal = document.createElement('div');
     modal.id = 'open_liquidation_batch_modal';
     modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="open_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)}</div><h2 id="open_liquidation_batch_title">Edit liquidation batch</h2></div><button class="modal-close" onclick="closeOpenLiquidationBatchModal()" aria-label="Close">×</button></div><div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="edit_open_batch_name" value="${esc(batch.name)}"></div><div class="field"><label>Assigned buyer</label><input id="edit_open_batch_buyer" value="${esc(batch.buyer)}"></div><div class="field"><label>Buyer offer (PHP)</label><input id="edit_open_batch_offer" inputmode="decimal" value="${moneyEntryValue(batch.buyerOffer)}" oninput="formatMoneyEntry(this)"></div><div class="field"><label>Notes</label><input id="edit_open_batch_notes" value="${esc(batch.notes || '')}"></div></div><div class="form-actions"><button class="btn secondary" onclick="closeOpenLiquidationBatchModal()">Cancel</button><button class="btn" onclick="saveOpenLiquidationBatch()">Save batch</button></div></div>`;
+    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="open_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)}</div><h2 id="open_liquidation_batch_title">Edit liquidation batch</h2></div><button class="modal-close" onclick="closeOpenLiquidationBatchModal()" aria-label="Close">×</button></div><div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="edit_open_batch_name" value="${esc(batch.name)}"></div><div class="field"><label>Assigned buyer</label><input id="edit_open_batch_buyer" value="${esc(batch.buyer)}"></div><div class="field span-2"><label>Notes</label><input id="edit_open_batch_notes" value="${esc(batch.notes || '')}"></div></div><div class="form-actions"><button class="btn secondary" onclick="closeOpenLiquidationBatchModal()">Cancel</button><button class="btn" onclick="saveOpenLiquidationBatch()">Save batch</button></div></div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
         closeOpenLiquidationBatchModal(); });
     document.body.appendChild(modal);
@@ -3092,7 +3113,8 @@ async function saveOpenLiquidationBatch() {
         return;
     }
     const before = JSON.parse(JSON.stringify(batch));
-    Object.assign(batch, { name, buyer, buyerOffer: roundMoney(parseMoneyEntry(val('edit_open_batch_offer'))), notes: val('edit_open_batch_notes').trim() });
+    Object.assign(batch, { name, buyer, notes: val('edit_open_batch_notes').trim() });
+    delete batch.buyerOffer;
     if (!await saveDB()) {
         Object.assign(batch, before);
         toast('Batch changes were not saved');
@@ -3129,6 +3151,27 @@ async function returnLiquidationBatch(id) {
     toast(`${batch.name} returned to Current Inventory`);
 }
 function closeCompleteLiquidationBatch() { document.getElementById('complete_liquidation_batch_modal')?.remove(); }
+function updateCompleteLiquidationProfit(cost) {
+    const totalInput = document.getElementById('complete_batch_total');
+    const profitOutput = document.getElementById('complete_batch_profit');
+    const marginOutput = document.getElementById('complete_batch_profit_margin');
+    if (!totalInput || !profitOutput || !marginOutput)
+        return;
+    const hasAmount = String(totalInput.value || '').replace(/[,\s]/g, '') !== '';
+    if (!hasAmount) {
+        profitOutput.textContent = 'Enter total sold';
+        marginOutput.textContent = '—';
+        profitOutput.style.color = '';
+        marginOutput.style.color = '';
+        return;
+    }
+    const sold = parseMoneyEntry(totalInput.value), profit = roundMoney(sold - Number(cost || 0)), margin = Number(cost) > 0 ? profit / Number(cost) * 100 : 0;
+    const color = profit >= 0 ? 'var(--sage)' : 'var(--rust)';
+    profitOutput.textContent = fmtMoney(profit);
+    marginOutput.textContent = `${margin.toFixed(2)}%`;
+    profitOutput.style.color = color;
+    marginOutput.style.color = color;
+}
 function openCompleteLiquidationBatch(id) {
     const batch = db.liquidationBatches.find(record => record.id === id);
     if (!batch || !adminEditGuard())
@@ -3137,7 +3180,7 @@ function openCompleteLiquidationBatch(id) {
     const modal = document.createElement('div');
     modal.id = 'complete_liquidation_batch_modal';
     modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="complete_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)} · ${esc(batch.buyer)}</div><h2 id="complete_liquidation_batch_title">Record ${esc(batch.name)} sale</h2></div><button class="modal-close" onclick="closeCompleteLiquidationBatch()" aria-label="Close">×</button></div><div class="move-confirmation-summary" style="margin-top:16px;"><div><span>Items</span><strong>${(batch.lines || []).length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(cost)}</strong></div><div><span>Assigned buyer</span><strong>${esc(batch.buyer)}</strong></div></div><div class="form-grid"><div class="field"><label>Sale date</label><input id="complete_batch_date" type="date" value="${todayStr()}"></div><div class="field"><label>Payment status</label><select id="complete_batch_payment"><option>Pending</option><option>Partially Paid</option><option>Paid</option></select></div><div class="field"><label>Total sold (PHP)</label><input id="complete_batch_total" inputmode="decimal" value="${moneyEntryValue(batch.buyerOffer)}" oninput="formatMoneyEntry(this)"></div><div class="field"><label>Final notes</label><input id="complete_batch_notes" value="${esc(batch.notes || '')}"></div></div><div class="form-actions"><button class="btn secondary" onclick="closeCompleteLiquidationBatch()">Cancel</button><button class="btn" onclick="submitLiquidationBatch('${batch.id}')">Record liquidation</button></div></div>`;
+    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="complete_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)} · ${esc(batch.buyer)}</div><h2 id="complete_liquidation_batch_title">Record ${esc(batch.name)} sale</h2></div><button class="modal-close" onclick="closeCompleteLiquidationBatch()" aria-label="Close">×</button></div><div class="move-confirmation-summary" style="margin-top:16px;"><div><span>Items</span><strong>${(batch.lines || []).length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(cost)}</strong></div><div><span>Assigned buyer</span><strong>${esc(batch.buyer)}</strong></div></div><div class="form-grid"><div class="field"><label>Sale date</label><input id="complete_batch_date" type="date" value="${todayStr()}"></div><div class="field"><label>Payment status</label><select id="complete_batch_payment"><option>Pending</option><option>Partially Paid</option><option>Paid</option></select></div><div class="field"><label>Total sold (PHP)</label><input id="complete_batch_total" inputmode="decimal" value="" oninput="formatMoneyEntry(this);updateCompleteLiquidationProfit(${cost})"></div><div class="field"><label>Final notes</label><input id="complete_batch_notes" value="${esc(batch.notes || '')}"></div></div><div class="move-confirmation-summary"><div><span>Total cost</span><strong>${fmtMoney(cost)}</strong></div><div><span>Profit or loss</span><strong id="complete_batch_profit">Enter total sold</strong></div><div><span>Profit margin</span><strong id="complete_batch_profit_margin">—</strong></div></div><div class="form-actions"><button class="btn secondary" onclick="closeCompleteLiquidationBatch()">Cancel</button><button class="btn" onclick="submitLiquidationBatch('${batch.id}')">Record liquidation</button></div></div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
         closeCompleteLiquidationBatch(); });
     document.body.appendChild(modal);
