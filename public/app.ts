@@ -2349,75 +2349,26 @@ async function deleteInventoryRecord(){
 }
 
 /* ============================= LIQUIDATION ============================= */
-let activeLiquidationBatchId='';
-function selectLiquidationBatch(id){ activeLiquidationBatchId=id; render(); }
 function renderLiquidation(){
   const batches=db.liquidationBatches.slice().sort((a,b)=>String(b.createdAt||'').localeCompare(String(a.createdAt||'')));
-  if(!batches.some(batch=>batch.id===activeLiquidationBatchId)) activeLiquidationBatchId=batches[0]?.id||'';
-  const batch=batches.find(record=>record.id===activeLiquidationBatchId),lines=batch?.lines||[];
-  const cost=lines.reduce((sum,line)=>sum+Number(line.cost||0),0),weight=lines.reduce((sum,line)=>sum+Number(line.weight||0),0),offer=Number(batch?.buyerOffer)||0,difference=offer-cost;
-  return `<section class="block">
-    <div class="batch-head"><div><h2 class="block-title">1. Inventory moved for liquidation</h2><p class="form-note">Choose an open batch below. Its items remain outside Current Inventory until sold or returned.</p></div><button class="btn" onclick="goTab('inventory')">Add from Inventory</button></div>
-    ${batches.length?`<div class="liquidation-batch-switcher">${batches.map(record=>{
-      const batchWeight=(record.lines||[]).reduce((sum,line)=>sum+Number(line.weight||0),0),batchCost=(record.lines||[]).reduce((sum,line)=>sum+Number(line.cost||0),0);
-      return `<button class="${record.id===activeLiquidationBatchId?'active':''}" onclick="selectLiquidationBatch('${record.id}')"><strong>${esc(record.name)}</strong><span>${esc(record.buyer)} · ${fmtWeight(batchWeight)} · ${fmtMoney(batchCost)}</span></button>`;
-    }).join('')}</div>
-    <div class="item-check-wrap liquidation-items">
-      <div class="item-check-row head"><span></span><span>Item</span><span>Available</span><span>Cost</span><span>Status</span><span>Release wt (g)</span></div>
-      ${lines.map(line=>{const item=db.stock.find(stock=>stock.id===line.itemId)||{};return `<div class="item-check-row" data-item="${esc(line.itemId)}">
-        <button class="btn danger small" style="padding:4px 7px;" aria-label="Return ${esc(item.karat||'item')} to inventory" onclick="returnLiquidationBatchItem('${batch.id}','${esc(line.itemId)}')">×</button>
-        <span>${fmtDate(item.date)} · ${esc(gradeLabel(item.metal||batch.metal,item.karat||''))} ${esc(item.itemType||'Inventory item')} · ${esc(item.customerName||'—')}</span>
-        <span class="num">${fmtWeight(line.weight)}</span><span class="num">${fmtMoney(line.cost)}</span><span>${statusPill('For Liquidation')}</span>
-        <input type="number" value="${Number(line.weight).toFixed(2)}" readonly>
-      </div>`;}).join('')}
-    </div>`:`<div class="empty-note">No stock has been moved from Inventory.<div class="form-actions" style="justify-content:center;"><button class="btn" onclick="goTab('inventory')">Open Inventory</button></div></div>`}
+  const allLines=batches.flatMap(batch=>batch.lines||[]);
+  const totalWeight=allLines.reduce((sum,line)=>sum+Number(line.weight||0),0),totalCost=allLines.reduce((sum,line)=>sum+Number(line.cost||0),0);
+  return `<section class="block liquidation-overview">
+    <div class="batch-head"><div><p class="eyebrow">Off-hand stock committed to buyers</p><h2 class="block-title">Open liquidation batches</h2><p class="form-note">These items are excluded from Current Inventory until the batch is sold or returned.</p></div><button class="btn" onclick="goTab('inventory')">Create batch from Inventory</button></div>
+    <div class="stat-row"><div class="stat"><div class="label">Open batches</div><div class="value">${batches.length}</div></div><div class="stat"><div class="label">Items in transit</div><div class="value">${allLines.length}</div></div><div class="stat"><div class="label">Total weight</div><div class="value">${fmtWeight(totalWeight)}</div></div><div class="stat"><div class="label">Total carrying cost</div><div class="value">${fmtMoney(totalCost)}</div></div></div>
   </section>
-  ${batch?`<section class="block">
-    <h2 class="block-title">2. Batch details</h2>
-    <div class="form-grid">
-      <div class="field"><label>Batch name</label><input id="inline_liquidation_name" value="${esc(batch.name)}"></div>
-      <div class="field"><label>Buyer / refiner</label><input id="inline_liquidation_buyer" value="${esc(batch.buyer)}"></div>
-      <div class="field"><label>Batch grand total / buyer offer (PHP)</label><input id="inline_liquidation_offer" inputmode="decimal" value="${moneyEntryValue(batch.buyerOffer)}" placeholder="0" oninput="formatMoneyEntry(this);updateInlineLiquidationPreview()"></div>
-      <div class="field"><label>Remarks</label><input id="inline_liquidation_notes" value="${esc(batch.notes||'')}" placeholder="Optional"></div>
-    </div>
-    <div class="stat-row" style="margin-top:16px;">
-      <div class="stat"><div class="label">Selected weight</div><div class="value">${fmtWeight(weight)}</div></div>
-      <div class="stat"><div class="label">Batch grand total · buyer offer</div><div class="value" id="inline_liquidation_proceeds">${offer?fmtMoney(offer):'Not entered'}</div></div>
-      <div class="stat"><div class="label">Selected inventory cost</div><div class="value">${fmtMoney(cost)}</div></div>
-      <div class="stat"><div class="label">Profit</div><div class="value" id="inline_liquidation_margin" style="color:${difference>=0?'var(--sage)':'var(--rust)'}">${fmtMoney(difference)}</div><div class="sub" id="inline_liquidation_margin_pct">${cost?(difference/cost*100).toFixed(2):'0.00'}% profit margin</div></div>
-    </div>
-    <div class="form-actions"><button class="btn secondary" onclick="saveInlineLiquidationBatch()">Save batch details</button><button class="btn secondary" onclick="returnLiquidationBatch('${batch.id}')">Return batch to Inventory</button><button class="btn" onclick="recordInlineLiquidationBatch()">Record liquidation</button></div>
-  </section>`:''}`;
-}
-function updateInlineLiquidationPreview(){
-  const batch=db.liquidationBatches.find(record=>record.id===activeLiquidationBatchId); if(!batch) return;
-  const cost=(batch.lines||[]).reduce((sum,line)=>sum+Number(line.cost||0),0),offer=parseMoneyEntry(val('inline_liquidation_offer')),difference=offer-cost;
-  const proceeds=document.getElementById('inline_liquidation_proceeds'),margin=document.getElementById('inline_liquidation_margin'),marginPct=document.getElementById('inline_liquidation_margin_pct');
-  if(proceeds) proceeds.textContent=offer?fmtMoney(offer):'Not entered';
-  if(margin){margin.textContent=fmtMoney(difference);margin.style.color=difference>=0?'var(--sage)':'var(--rust)';}
-  if(marginPct) marginPct.textContent=`${cost?(difference/cost*100).toFixed(2):'0.00'}% profit margin`;
-}
-async function saveInlineLiquidationBatch(openSale=false){
-  const batch=db.liquidationBatches.find(record=>record.id===activeLiquidationBatchId); if(!batch||!adminEditGuard()) return false;
-  const name=val('inline_liquidation_name').trim(),buyer=val('inline_liquidation_buyer').trim();
-  if(!name||!buyer){toast('Batch name and buyer are required');return false;}
-  const before=JSON.parse(JSON.stringify(batch));
-  Object.assign(batch,{name,buyer,buyerOffer:roundMoney(parseMoneyEntry(val('inline_liquidation_offer'))),notes:val('inline_liquidation_notes').trim()});
-  if(!await saveDB()){Object.assign(batch,before);render();toast('Batch changes were not saved');return false;}
-  render();
-  if(openSale) openCompleteLiquidationBatch(batch.id); else toast('Liquidation batch updated');
-  return true;
-}
-function recordInlineLiquidationBatch(){ saveInlineLiquidationBatch(true); }
-async function returnLiquidationBatchItem(batchId,itemId){
-  const batch=db.liquidationBatches.find(record=>record.id===batchId),line=batch?.lines?.find(entry=>entry.itemId===itemId),item=db.stock.find(record=>record.id===itemId);
-  if(!batch||!line||!item||!adminEditGuard()) return;
-  if(!confirm(`Return ${item.metal} ${gradeLabel(item.metal,item.karat)} to Current Inventory?`)) return;
-  const beforeState=JSON.parse(JSON.stringify(db)); item.status=line.previousStatus||'Available'; delete item.liquidationBatchId;
-  batch.lines=batch.lines.filter(entry=>entry.itemId!==itemId);
-  if(!batch.lines.length) db.liquidationBatches=db.liquidationBatches.filter(record=>record.id!==batch.id);
-  if(!await saveDB()){db=beforeState;render();toast('The item was not returned');return;}
-  render();toast('Item returned to Current Inventory');
+  ${batches.map(batch=>{
+    const lines=batch.lines||[],cost=lines.reduce((sum,line)=>sum+Number(line.cost||0),0),weight=lines.reduce((sum,line)=>sum+Number(line.weight||0),0),offer=Number(batch.buyerOffer)||0,profit=offer-cost,profitMargin=cost?profit/cost*100:0;
+    return `<section class="block liquidation-batch-card">
+      <div class="batch-head liquidation-batch-head"><div><p class="eyebrow">${esc(batch.id)} · ${esc(batch.metal)}</p><h2 class="block-title">${esc(batch.name)}</h2><p class="form-note">Assigned buyer: <strong>${esc(batch.buyer)}</strong>${batch.createdAt?` · Created ${new Date(batch.createdAt).toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'})}`:''}</p></div><div class="form-actions"><button class="btn secondary small" onclick="openLiquidationBatchEdit('${batch.id}')">Edit batch</button><button class="btn secondary small" onclick="returnLiquidationBatch('${batch.id}')">Return to Inventory</button><button class="btn small" onclick="openCompleteLiquidationBatch('${batch.id}')">Record sale</button></div></div>
+      <div class="table-wrap liquidation-batch-items"><table><thead><tr><th>Item</th><th>Original seller</th><th>Purchase date</th><th>Status</th><th class="num-head">Weight</th><th class="num-head">Carrying cost</th></tr></thead><tbody>${lines.map(line=>{
+        const item=db.stock.find(stock=>stock.id===line.itemId)||{};
+        return `<tr><td><strong>${esc(item.metal||batch.metal)} ${esc(gradeLabel(item.metal||batch.metal,item.karat||''))}</strong><br><span class="form-note">${esc(item.itemType||'Inventory item')} · ${esc(line.itemId)}</span></td><td>${esc(item.customerName||'—')}</td><td>${fmtDate(item.date)}</td><td>${statusPill('For Liquidation')}</td><td class="num">${fmtWeight(line.weight)}</td><td class="num">${fmtMoney(line.cost)}</td></tr>`;
+      }).join('')}</tbody><tfoot><tr><th colspan="4">Batch subtotal · ${lines.length} item${lines.length===1?'':'s'}</th><th class="num">${fmtWeight(weight)}</th><th class="num">${fmtMoney(cost)}</th></tr></tfoot></table></div>
+      <div class="liquidation-batch-totals"><div><span>Items</span><strong>${lines.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Total inventory cost</span><strong>${fmtMoney(cost)}</strong></div><div class="liquidation-grand-total"><span>Batch grand total · buyer offer</span><strong>${offer?fmtMoney(offer):'Not entered'}</strong></div><div><span>Profit</span><strong style="color:${offer?(profit>=0?'var(--sage)':'var(--rust)'):'inherit'}">${offer?fmtMoney(profit):'Waiting for offer'}</strong></div><div><span>Profit margin</span><strong style="color:${offer?(profit>=0?'var(--sage)':'var(--rust)'):'inherit'}">${offer?profitMargin.toFixed(2)+'%':'—'}</strong></div></div>
+      ${batch.notes?`<div class="move-confirmation-note"><strong>Notes</strong><span>${esc(batch.notes)}</span></div>`:''}
+    </section>`;
+  }).join('')||`<section class="block"><div class="empty-note">No items are currently marked For Liquidation.<div class="form-actions" style="justify-content:center;"><button class="btn" onclick="goTab('inventory')">Open Current Inventory</button></div></div></section>`}`;
 }
 function liquidationAmountLabel(record){
   const amounts=new Map();
