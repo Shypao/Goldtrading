@@ -177,6 +177,8 @@ Use **Reset multipliers** only when you intend to restore all original Gold calc
 
 The override remains active until someone selects **reset PHP rate**. Resetting returns the grade to its calculated rate.
 
+Use **Remarks** beside the featured buying range to save a short note with the pinned quote. The note appears on the rate page and in downloaded JPG/PNG rate sheets. The Gold 73% grade remains available inside the website but is intentionally omitted from downloadable rate-sheet images.
+
 ### Save the rate sheet (Admin)
 
 1. Set the **Effective date**.

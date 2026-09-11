@@ -25,8 +25,15 @@ async function loadInventoryApi() {
     cashflowDetailSnapshot,
     ensureShape,
     renderBuying,
+    renderFeaturedBox,
     renderInventory,
     renderLiquidation,
+    rateSheetGoldGradeKeys() {
+      const grades = typeof rateSheetGoldGrades === 'function'
+        ? rateSheetGoldGrades()
+        : GOLD_GRADES.filter(grade => grade.key !== '24K' && grade.key !== '18K-BUO');
+      return Array.from(grades, grade => grade.key);
+    },
     prepareLiquidationBatches(items) {
       let message = '';
       const originalToast = toast;
@@ -240,4 +247,24 @@ test('buying form preserves an intentional per-item rate override', async () => 
   const html=api.renderBuying();
   assert.match(html, /id="b_rate"[^>]*value="6200"/);
   assert.match(html, /class="buying-rate is-overridden"/);
+});
+
+test('downloadable rate sheets omit 73 percent without removing it from website grades', async () => {
+  const api = await loadInventoryApi();
+  api.setState(stateFixture());
+
+  assert.equal(api.rateSheetGoldGradeKeys().includes('73%'), false);
+  assert.match(api.renderBuying(), /73%/);
+});
+
+test('featured buying range provides a remarks button and shows the saved remark', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.pricing.featured = { metal: 'Gold', key: '18K', low: 6200, high: 6400, remarks: 'Clean items only' };
+  api.setState(state);
+
+  const html = api.renderFeaturedBox();
+
+  assert.match(html, />Remarks</);
+  assert.match(html, /Clean items only/);
 });

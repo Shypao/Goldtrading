@@ -531,12 +531,12 @@ async function resetOverride(metal, key) {
     await (isAdmin() ? savePricingDB() : saveDB());
     render();
 }
-async function setFeatured(metal, key, low, high) {
-    db.pricing.featured = { metal, key, low: parseFloat(low) || 0, high: parseFloat(high) || 0 };
+async function setFeatured(metal, key, low, high, remarks = '') {
+    db.pricing.featured = { metal, key, low: parseFloat(low) || 0, high: parseFloat(high) || 0, remarks: String(remarks || '').trim() };
     await savePricingDB();
     render();
 }
-async function clearFeatured() { db.pricing.featured = null; await savePricingDB(); render(); }
+async function clearFeatured() { db.pricing.featured = null; featuredRemarksDraft = ''; await savePricingDB(); render(); }
 let pricingFetchBusy = false;
 const overrideEditors = new Set();
 const TROY_OUNCE_GRAMS = 31.1034768;
@@ -1126,6 +1126,9 @@ function downloadRateSheetFromModal(format, imageType) {
     closeRateSheetDownloadModal();
     downloadRateSheetImage(format, imageType);
 }
+function rateSheetGoldGrades() {
+    return GOLD_GRADES.filter(grade => grade.key !== '24K' && grade.key !== '18K-BUO' && grade.key !== '73%');
+}
 async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
     const resolvedFormat = format === 'auto' ? (window.matchMedia('(max-width: 700px)').matches ? 'phone' : 'desktop') : format;
     const isPhone = resolvedFormat === 'phone';
@@ -1167,6 +1170,16 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
             ctx.fillStyle = color;
             ctx.textAlign = align;
             ctx.fillText(String(value), x, y);
+        };
+        const clippedText = (value, maxWidth, font) => {
+            ctx.font = font;
+            const source = String(value || '');
+            if (ctx.measureText(source).width <= maxWidth)
+                return source;
+            let clipped = source;
+            while (clipped && ctx.measureText(clipped + '…').width > maxWidth)
+                clipped = clipped.slice(0, -1);
+            return clipped + '…';
         };
         const money = value => Math.round(Number(value) || 0).toLocaleString('en-PH');
         const logo = await new Promise(resolve => {
@@ -1235,6 +1248,10 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
                 text(label, x + (isPhone ? 28 : 20), y + (isPhone ? 96 : 64), isPhone ? '700 38px Georgia, serif' : '700 24px Georgia, serif', isPhone ? colors.ink : colors.cream);
                 const labelWidth = ctx.measureText(label).width;
                 text(`₱${money(featured.low)}–${money(featured.high)}`, x + (isPhone ? 48 : 34) + labelWidth, y + (isPhone ? 96 : 64), isPhone ? '700 38px Arial, sans-serif' : '700 24px Arial, sans-serif', isPhone ? colors.goldDeep : colors.gold);
+                if (featured.remarks) {
+                    const remarksFont = isPhone ? 'italic 17px Arial, sans-serif' : 'italic 10px Arial, sans-serif';
+                    text(clippedText(`Remarks: ${featured.remarks}`, w - (isPhone ? 56 : 40), remarksFont), x + (isPhone ? 28 : 20), y + (isPhone ? 121 : 83), remarksFont, isPhone ? colors.soft : '#C9BE9F');
+                }
             }
             else {
                 text('Featured buying range not set', x + (isPhone ? 28 : 20), y + (isPhone ? 91 : 61), isPhone ? 'italic 28px Georgia, serif' : 'italic 16px Georgia, serif', isPhone ? colors.soft : '#C9BE9F');
@@ -1263,7 +1280,7 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
             text('/g', x + (isPhone ? 64 : 40) + numberWidth, y + (isPhone ? 85 : 58), isPhone ? '20px Arial, sans-serif' : '11px Arial, sans-serif', colors.soft);
             text('BUYING RATE', x + (isPhone ? 24 : 15), y + (isPhone ? 108 : 76), isPhone ? '700 16px Arial, sans-serif' : '700 9px Arial, sans-serif', colors.goldDeep);
         };
-        const goldGrades = GOLD_GRADES.filter(grade => grade.key !== '24K' && grade.key !== '18K-BUO');
+        const goldGrades = rateSheetGoldGrades();
         let y = isPhone ? 254 : 172;
         drawHeading('Gold', goldGrades.length + 1, colors.gold, y);
         y += 16;
@@ -1456,6 +1473,45 @@ async function resetGradeFormula() {
         toast(`${metal} PHP base reset to the live rate`);
     }
 }
+let featuredRemarksDraft = '';
+function closeFeaturedRemarksEditor() { document.getElementById('featured_remarks_modal')?.remove(); }
+function openFeaturedRemarksEditor() {
+    if (!isAdmin())
+        return;
+    closeFeaturedRemarksEditor();
+    const remarks = String(db.pricing.featured?.remarks ?? featuredRemarksDraft ?? '');
+    const modal = document.createElement('div');
+    modal.id = 'featured_remarks_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<form class="summary-modal" onsubmit="saveFeaturedRemarks(event)" role="dialog" aria-modal="true" aria-labelledby="featured_remarks_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Featured buying range</div><h2 id="featured_remarks_title">Remarks</h2></div><button type="button" class="modal-close" onclick="closeFeaturedRemarksEditor()" aria-label="Close">×</button></div>
+    <div class="field" style="margin-top:16px;"><label for="featured_remarks_text">Remark shown with the pinned range</label><textarea id="featured_remarks_text" maxlength="120" placeholder="Example: Clean items only">${esc(remarks)}</textarea><span class="hint">This remark also appears in downloaded JPG and PNG rate sheets.</span></div>
+    <div class="form-actions"><button type="button" class="btn secondary" onclick="closeFeaturedRemarksEditor()">Cancel</button><button type="submit" class="btn">Save remarks</button></div>
+  </form>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeFeaturedRemarksEditor(); });
+    document.body.appendChild(modal);
+    document.getElementById('featured_remarks_text')?.focus();
+}
+async function saveFeaturedRemarks(event) {
+    event.preventDefault();
+    const remarks = val('featured_remarks_text').trim();
+    if (db.pricing.featured) {
+        db.pricing.featured.remarks = remarks;
+        if (!await savePricingDB())
+            return;
+        closeFeaturedRemarksEditor();
+        render();
+        toast('Featured remarks saved');
+        return;
+    }
+    featuredRemarksDraft = remarks;
+    closeFeaturedRemarksEditor();
+    const button = document.getElementById('featured_remarks_button');
+    if (button)
+        button.textContent = remarks ? 'Remarks ✓' : 'Remarks';
+    toast(remarks ? 'Remarks ready to save with the pinned range' : 'Remarks cleared');
+}
 function renderFeaturedBox() {
     const f = db.pricing.featured;
     if (!f) {
@@ -1466,6 +1522,7 @@ function renderFeaturedBox() {
         <select id="fx_key">${GRADES['Gold'].map(k => `<option value="${k}">${gradeLabel('Gold', k)}</option>`).join('')}</select>
         <input id="fx_low" type="text" inputmode="decimal" placeholder="Low">
         <input id="fx_high" type="text" inputmode="decimal" placeholder="High">
+        <button id="featured_remarks_button" class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="openFeaturedRemarksEditor()">Remarks${featuredRemarksDraft ? ' ✓' : ''}</button>
         <button class="btn small" onclick="saveFeaturedFromForm()">Pin</button>
       </div>
     </div>`;
@@ -1473,6 +1530,8 @@ function renderFeaturedBox() {
     return `<div class="featured-box">
     <span class="fx-grade">${esc(gradeLabel(f.metal, f.key))}</span>
     <span class="fx-range">₱${Number(f.low).toLocaleString()}–${Number(f.high).toLocaleString()}</span>
+    ${f.remarks ? `<span class="fx-label">${esc(f.remarks)}</span>` : ''}
+    <button class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="openFeaturedRemarksEditor()">Remarks</button>
     <button class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="clearFeatured()">Unpin</button>
   </div>`;
 }
@@ -1482,13 +1541,15 @@ function updateFxKeyOptions() {
     if (sel)
         sel.innerHTML = GRADES[m].map(k => `<option value="${k}">${gradeLabel(m, k)}</option>`).join('');
 }
-function saveFeaturedFromForm() {
+async function saveFeaturedFromForm() {
     const metal = val('fx_metal'), key = val('fx_key'), low = val('fx_low'), high = val('fx_high');
     if (low === '' || high === '') {
         toast('Enter both a low and high value');
         return;
     }
-    setFeatured(metal, key, low, high);
+    const remarks = featuredRemarksDraft;
+    featuredRemarksDraft = '';
+    await setFeatured(metal, key, low, high, remarks);
 }
 function val(id) { const e = document.getElementById(id); return e ? e.value : ''; }
 /* ============================= ADMIN EDIT MODALS ============================= */
