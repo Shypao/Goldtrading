@@ -29,6 +29,9 @@ async function loadInventoryApi() {
     renderFeaturedBox,
     renderInventory,
     renderLiquidation,
+    matchingBuyingCustomerNames(query) {
+      return Array.from(matchingBuyingCustomers(query), customer => customer.name);
+    },
     rateSheetGoldGradeKeys() {
       const grades = typeof rateSheetGoldGrades === 'function'
         ? rateSheetGoldGrades()
@@ -298,20 +301,21 @@ test('featured buying range does not include customer selection', async () => {
   assert.doesNotMatch(html, /Maria Santos/);
 });
 
-test('saved customers are suggested in Buying customer information', async () => {
+test('Buying customer information uses a searchable custom suggestion list', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();
-  state.customers = [{ id: 'cust-1', name: 'Maria Santos', contact: '', notes: '' }];
+  state.customers = [{ id: 'cust-1', name: 'Maria Santos', contact: '', notes: '' }, { id: 'cust-2', name: 'Mario Reyes', contact: '', notes: '' }];
   api.setState(state);
 
   const html = api.renderBuying();
 
   assert.match(html, /Customer Information/);
-  assert.match(html, /id="b_customer_choice"/);
-  assert.match(html, /Walk-in seller \(no name\)/);
-  assert.match(html, /Enter a new customer/);
-  assert.doesNotMatch(html, /<datalist/);
-  assert.match(html, /Maria Santos/);
+  assert.match(html, /role="combobox"/);
+  assert.match(html, /id="b_customer_suggestions"/);
+  assert.match(html, /Leave blank for a walk-in seller/);
+  assert.doesNotMatch(html, /<datalist|id="b_customer_choice"/);
+  assert.equal(api.matchingBuyingCustomerNames('mari').join('|'), 'Maria Santos|Mario Reyes');
+  assert.equal(api.matchingBuyingCustomerNames('unknown').length, 0);
 });
 
 test('featured buying range still displays its saved remarks', async () => {

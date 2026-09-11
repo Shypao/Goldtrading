@@ -2161,8 +2161,7 @@ async function clearBuyingDraft() {
 function renderBuying() {
     const sellerName = buyingDraftValue('b_seller_name');
     const savedCustomer = db.customers.find(customer => String(customer.name).trim().toLowerCase() === sellerName.trim().toLowerCase());
-    const customerChoice = !sellerName ? '' : savedCustomer ? savedCustomer.name : '__new__';
-    const customerOptions = db.customers.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(customer => `<option value="${esc(customer.name)}" ${customerChoice === customer.name ? 'selected' : ''}>${esc(customer.name)}</option>`).join('');
+    const customerStatus = !sellerName ? 'Leave blank for a walk-in seller.' : savedCustomer ? `Using saved customer: ${savedCustomer.name}` : `No exact match — “${sellerName}” will be saved as a new customer.`;
     const metal = buyingDraftValue('b_metal', 'Gold') || 'Gold';
     const karats = distinctKarats(metal);
     const requestedKarat = buyingDraftValue('b_karat');
@@ -2188,9 +2187,9 @@ function renderBuying() {
       <div class="step-number">1</div>
       <div class="step-content">
         <h2>Customer Information</h2>
-        <p>Choose a saved customer, enter a new name, or continue as a walk-in seller.</p>
+        <p>Start typing a name. Matching saved customers will appear automatically.</p>
         <div class="form-grid buying-customer-grid">
-          <div class="field"><label for="b_customer_choice">Customer</label><select id="b_customer_choice" onchange="handleBuyingCustomerChoice()"><option value="" ${customerChoice === '' ? 'selected' : ''}>Walk-in seller (no name)</option>${customerOptions}<option value="__new__" ${customerChoice === '__new__' ? 'selected' : ''}>＋ Enter a new customer</option></select><input id="b_seller_name" type="hidden" value="${esc(sellerName)}"><div id="b_new_customer_field" class="custom-purity-field ${customerChoice === '__new__' ? '' : 'is-hidden'}"><label for="b_new_customer_name">New customer name</label><input id="b_new_customer_name" value="${customerChoice === '__new__' ? esc(sellerName) : ''}" placeholder="Enter customer name" autocomplete="off" oninput="syncBuyingCustomerName()"></div></div>
+          <div class="field customer-combobox"><label for="b_seller_name">Customer name <span class="hint">(optional)</span></label><input id="b_seller_name" value="${esc(sellerName)}" placeholder="Type a customer name" autocomplete="off" role="combobox" aria-autocomplete="list" aria-controls="b_customer_suggestions" aria-expanded="false" oninput="updateBuyingCustomerSuggestions(this.value);scheduleBuyingDraftSave()" onfocus="updateBuyingCustomerSuggestions(this.value)" onblur="closeBuyingCustomerSuggestionsSoon()"><div id="b_customer_suggestions" class="customer-suggestions is-hidden" role="listbox"></div><span id="b_customer_match_status" class="customer-match-status ${savedCustomer ? 'is-existing' : sellerName ? 'is-new' : ''}">${esc(customerStatus)}</span></div>
           <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${esc(buyingDraftValue('b_date', todayStr()) || todayStr())}" onchange="scheduleBuyingDraftSave()"></div>
           <div class="field"><label>Payment method</label><select id="b_pay" onchange="scheduleBuyingDraftSave()">${['Cash', 'Bank transfer', 'GCash'].map(method => `<option ${buyingDraftValue('b_pay', 'Cash') === method ? 'selected' : ''}>${method}</option>`).join('')}</select></div>
         </div>
@@ -2258,22 +2257,40 @@ function renderBuying() {
 
   `;
 }
-function handleBuyingCustomerChoice() {
-    const choice = val('b_customer_choice'), sellerInput = document.getElementById('b_seller_name'), newCustomerInput = document.getElementById('b_new_customer_name');
-    const enteringNew = choice === '__new__';
-    document.getElementById('b_new_customer_field')?.classList.toggle('is-hidden', !enteringNew);
-    if (sellerInput)
-        sellerInput.value = enteringNew ? (newCustomerInput?.value || '') : choice;
-    if (enteringNew)
-        setTimeout(() => newCustomerInput?.focus(), 0);
+function matchingBuyingCustomers(query) {
+    const normalized = String(query || '').trim().toLowerCase();
+    if (!normalized)
+        return [];
+    return db.customers.filter(customer => String(customer.name || '').toLowerCase().includes(normalized)).sort((a, b) => String(a.name).localeCompare(String(b.name))).slice(0, 6);
+}
+function updateBuyingCustomerSuggestions(value) {
+    const query = String(value || '').trim(), matches = matchingBuyingCustomers(query), suggestions = document.getElementById('b_customer_suggestions'), input = document.getElementById('b_seller_name'), status = document.getElementById('b_customer_match_status');
+    const exact = db.customers.find(customer => String(customer.name).trim().toLowerCase() === query.toLowerCase());
+    if (status) {
+        status.textContent = !query ? 'Leave blank for a walk-in seller.' : exact ? `Using saved customer: ${exact.name}` : `No exact match — “${query}” will be saved as a new customer.`;
+        status.className = `customer-match-status ${exact ? 'is-existing' : query ? 'is-new' : ''}`;
+    }
+    if (!suggestions || !input)
+        return;
+    suggestions.innerHTML = query && matches.length ? matches.map(customer => `<button type="button" role="option" onclick="selectBuyingCustomer('${esc(customer.id)}')"><strong>${esc(customer.name)}</strong><span>Saved customer</span></button>`).join('') : query ? '<div class="customer-no-match">No saved customer matches. Continue typing to create a new customer.</div>' : '';
+    const visible = Boolean(query);
+    suggestions.classList.toggle('is-hidden', !visible);
+    input.setAttribute('aria-expanded', String(visible));
+}
+function selectBuyingCustomer(customerId) {
+    const customer = db.customers.find(item => item.id === customerId), input = document.getElementById('b_seller_name');
+    if (!customer || !input)
+        return;
+    input.value = customer.name;
+    updateBuyingCustomerSuggestions(customer.name);
+    closeBuyingCustomerSuggestions();
     scheduleBuyingDraftSave();
 }
-function syncBuyingCustomerName() {
-    const sellerInput = document.getElementById('b_seller_name');
-    if (sellerInput)
-        sellerInput.value = val('b_new_customer_name');
-    scheduleBuyingDraftSave();
+function closeBuyingCustomerSuggestions() {
+    document.getElementById('b_customer_suggestions')?.classList.add('is-hidden');
+    document.getElementById('b_seller_name')?.setAttribute('aria-expanded', 'false');
 }
+function closeBuyingCustomerSuggestionsSoon() { setTimeout(closeBuyingCustomerSuggestions, 160); }
 function updateBuyingGrades() {
     const metal = val('b_metal'), select = document.getElementById('b_karat'), grades = distinctKarats(metal);
     select.innerHTML = grades.map(k => `<option value="${k}">${esc(gradeLabel(metal, k))}</option>`).join('') + '<option value="__custom__">Custom purity (%)</option>';
@@ -2410,7 +2427,7 @@ function purchaseCustomer() {
 function focusPurchaseSeller() {
     closePurchaseSummary();
     document.getElementById('buying_customer_step')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setTimeout(() => document.getElementById(val('b_customer_choice') === '__new__' ? 'b_new_customer_name' : 'b_customer_choice')?.focus(), 250);
+    setTimeout(() => document.getElementById('b_seller_name')?.focus(), 250);
 }
 function openPurchaseSummary() {
     if (!purchaseBatch.length) {
