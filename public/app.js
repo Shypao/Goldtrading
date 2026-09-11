@@ -2160,7 +2160,9 @@ async function clearBuyingDraft() {
 }
 function renderBuying() {
     const sellerName = buyingDraftValue('b_seller_name');
-    const customerSuggestions = db.customers.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(customer => `<option value="${esc(customer.name)}"></option>`).join('');
+    const savedCustomer = db.customers.find(customer => String(customer.name).trim().toLowerCase() === sellerName.trim().toLowerCase());
+    const customerChoice = !sellerName ? '' : savedCustomer ? savedCustomer.name : '__new__';
+    const customerOptions = db.customers.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(customer => `<option value="${esc(customer.name)}" ${customerChoice === customer.name ? 'selected' : ''}>${esc(customer.name)}</option>`).join('');
     const metal = buyingDraftValue('b_metal', 'Gold') || 'Gold';
     const karats = distinctKarats(metal);
     const requestedKarat = buyingDraftValue('b_karat');
@@ -2186,9 +2188,9 @@ function renderBuying() {
       <div class="step-number">1</div>
       <div class="step-content">
         <h2>Customer Information</h2>
-        <p>Enter the customer's name if available. The name can be left blank.</p>
+        <p>Choose a saved customer, enter a new name, or continue as a walk-in seller.</p>
         <div class="form-grid buying-customer-grid">
-          <div class="field"><label>Customer name <span class="hint">(optional)</span></label><input id="b_seller_name" list="buying_customer_names" value="${esc(sellerName)}" placeholder="Select or enter a customer" autocomplete="off" oninput="scheduleBuyingDraftSave()"><datalist id="buying_customer_names">${customerSuggestions}</datalist></div>
+          <div class="field"><label for="b_customer_choice">Customer</label><select id="b_customer_choice" onchange="handleBuyingCustomerChoice()"><option value="" ${customerChoice === '' ? 'selected' : ''}>Walk-in seller (no name)</option>${customerOptions}<option value="__new__" ${customerChoice === '__new__' ? 'selected' : ''}>＋ Enter a new customer</option></select><input id="b_seller_name" type="hidden" value="${esc(sellerName)}"><div id="b_new_customer_field" class="custom-purity-field ${customerChoice === '__new__' ? '' : 'is-hidden'}"><label for="b_new_customer_name">New customer name</label><input id="b_new_customer_name" value="${customerChoice === '__new__' ? esc(sellerName) : ''}" placeholder="Enter customer name" autocomplete="off" oninput="syncBuyingCustomerName()"></div></div>
           <div class="field"><label>Purchase date</label><input id="b_date" type="date" value="${esc(buyingDraftValue('b_date', todayStr()) || todayStr())}" onchange="scheduleBuyingDraftSave()"></div>
           <div class="field"><label>Payment method</label><select id="b_pay" onchange="scheduleBuyingDraftSave()">${['Cash', 'Bank transfer', 'GCash'].map(method => `<option ${buyingDraftValue('b_pay', 'Cash') === method ? 'selected' : ''}>${method}</option>`).join('')}</select></div>
         </div>
@@ -2255,6 +2257,22 @@ function renderBuying() {
   <section class="block" id="purchase_batch_panel">${renderPurchaseBatchPanelMarkup()}</section>
 
   `;
+}
+function handleBuyingCustomerChoice() {
+    const choice = val('b_customer_choice'), sellerInput = document.getElementById('b_seller_name'), newCustomerInput = document.getElementById('b_new_customer_name');
+    const enteringNew = choice === '__new__';
+    document.getElementById('b_new_customer_field')?.classList.toggle('is-hidden', !enteringNew);
+    if (sellerInput)
+        sellerInput.value = enteringNew ? (newCustomerInput?.value || '') : choice;
+    if (enteringNew)
+        setTimeout(() => newCustomerInput?.focus(), 0);
+    scheduleBuyingDraftSave();
+}
+function syncBuyingCustomerName() {
+    const sellerInput = document.getElementById('b_seller_name');
+    if (sellerInput)
+        sellerInput.value = val('b_new_customer_name');
+    scheduleBuyingDraftSave();
 }
 function updateBuyingGrades() {
     const metal = val('b_metal'), select = document.getElementById('b_karat'), grades = distinctKarats(metal);
@@ -2392,7 +2410,7 @@ function purchaseCustomer() {
 function focusPurchaseSeller() {
     closePurchaseSummary();
     document.getElementById('buying_customer_step')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
-    setTimeout(() => document.getElementById('b_seller_name')?.focus(), 250);
+    setTimeout(() => document.getElementById(val('b_customer_choice') === '__new__' ? 'b_new_customer_name' : 'b_customer_choice')?.focus(), 250);
 }
 function openPurchaseSummary() {
     if (!purchaseBatch.length) {

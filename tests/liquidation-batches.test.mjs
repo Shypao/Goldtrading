@@ -307,7 +307,10 @@ test('saved customers are suggested in Buying customer information', async () =>
   const html = api.renderBuying();
 
   assert.match(html, /Customer Information/);
-  assert.match(html, /id="buying_customer_names"/);
+  assert.match(html, /id="b_customer_choice"/);
+  assert.match(html, /Walk-in seller \(no name\)/);
+  assert.match(html, /Enter a new customer/);
+  assert.doesNotMatch(html, /<datalist/);
   assert.match(html, /Maria Santos/);
 });
 
