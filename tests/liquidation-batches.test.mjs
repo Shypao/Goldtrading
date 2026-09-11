@@ -268,15 +268,31 @@ test('downloadable rate sheets add section spacing before Silver and Platinum', 
   assert.equal(margins.phone, 56);
 });
 
-test('featured buying range shows the saved remark without an edit button after pinning', async () => {
+test('featured buying range offers the saved customer names in a dropdown', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();
-  state.pricing.featured = { metal: 'Gold', key: '18K', low: 6200, high: 6400, remarks: 'Clean items only' };
+  state.customers = [{ id: 'cust-1', name: 'Maria Santos', contact: '', notes: '' }];
+  state.pricing.featured = null;
+  api.setState(state);
+
+  const html = api.renderFeaturedBox();
+
+  assert.match(html, /id="fx_customer"/);
+  assert.match(html, /Customer name \(optional\)/);
+  assert.match(html, /Maria Santos/);
+});
+
+test('featured buying range shows the saved customer and remark without an edit button after pinning', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.customers = [{ id: 'cust-1', name: 'Maria Santos', contact: '', notes: '' }];
+  state.pricing.featured = { metal: 'Gold', key: '18K', low: 6200, high: 6400, remarks: 'Clean items only', customerId: 'cust-1', customerName: 'Maria Santos' };
   api.setState(state);
 
   const html = api.renderFeaturedBox();
 
   assert.match(html, /Clean items only/);
+  assert.match(html, /Maria Santos/);
   assert.doesNotMatch(html, /openFeaturedRemarksEditor/);
   assert.match(html, />Unpin</);
 });

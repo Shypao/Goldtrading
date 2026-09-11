@@ -531,8 +531,12 @@ async function resetOverride(metal, key) {
     await (isAdmin() ? savePricingDB() : saveDB());
     render();
 }
-async function setFeatured(metal, key, low, high, remarks = '') {
-    db.pricing.featured = { metal, key, low: parseFloat(low) || 0, high: parseFloat(high) || 0, remarks: String(remarks || '').trim() };
+async function setFeatured(metal, key, low, high, remarks = '', customerId = '') {
+    const customer = db.customers.find(item => item.id === customerId);
+    db.pricing.featured = {
+        metal, key, low: parseFloat(low) || 0, high: parseFloat(high) || 0,
+        remarks: String(remarks || '').trim(), customerId: customer?.id || '', customerName: customer?.name || ''
+    };
     await savePricingDB();
     render();
 }
@@ -1251,9 +1255,11 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
                 text(label, x + (isPhone ? 28 : 20), y + (isPhone ? 96 : 64), isPhone ? '700 38px Georgia, serif' : '700 24px Georgia, serif', isPhone ? colors.ink : colors.cream);
                 const labelWidth = ctx.measureText(label).width;
                 text(`₱${money(featured.low)}–${money(featured.high)}`, x + (isPhone ? 48 : 34) + labelWidth, y + (isPhone ? 96 : 64), isPhone ? '700 38px Arial, sans-serif' : '700 24px Arial, sans-serif', isPhone ? colors.goldDeep : colors.gold);
-                if (featured.remarks) {
+                const customer = db.customers.find(item => item.id === featured.customerId)?.name || featured.customerName || '';
+                const featuredDetails = [customer ? `Customer: ${customer}` : '', featured.remarks ? `Remarks: ${featured.remarks}` : ''].filter(Boolean).join(' · ');
+                if (featuredDetails) {
                     const remarksFont = isPhone ? 'italic 17px Arial, sans-serif' : 'italic 10px Arial, sans-serif';
-                    text(clippedText(`Remarks: ${featured.remarks}`, w - (isPhone ? 56 : 40), remarksFont), x + (isPhone ? 28 : 20), y + (isPhone ? 121 : 83), remarksFont, isPhone ? colors.soft : '#C9BE9F');
+                    text(clippedText(featuredDetails, w - (isPhone ? 56 : 40), remarksFont), x + (isPhone ? 28 : 20), y + (isPhone ? 121 : 83), remarksFont, isPhone ? colors.soft : '#C9BE9F');
                 }
             }
             else {
@@ -1520,6 +1526,7 @@ async function saveFeaturedRemarks(event) {
 function renderFeaturedBox() {
     const f = db.pricing.featured;
     if (!f) {
+        const customerOptions = db.customers.slice().sort((a, b) => String(a.name).localeCompare(String(b.name))).map(customer => `<option value="${esc(customer.id)}">${esc(customer.name)}</option>`).join('');
         return `<div class="featured-box">
       <span class="fx-label">Pin a grade to quote a buying range to staff</span>
       <div class="fx-edit">
@@ -1527,14 +1534,17 @@ function renderFeaturedBox() {
         <select id="fx_key">${GRADES['Gold'].map(k => `<option value="${k}">${gradeLabel('Gold', k)}</option>`).join('')}</select>
         <input id="fx_low" type="text" inputmode="decimal" placeholder="Low">
         <input id="fx_high" type="text" inputmode="decimal" placeholder="High">
+        <select id="fx_customer" aria-label="Customer name"><option value="">Customer name (optional)</option>${customerOptions}</select>
         <button id="featured_remarks_button" class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="openFeaturedRemarksEditor()">Remarks${featuredRemarksDraft ? ' ✓' : ''}</button>
         <button class="btn small" onclick="saveFeaturedFromForm()">Pin</button>
       </div>
     </div>`;
     }
+    const customerName = db.customers.find(customer => customer.id === f.customerId)?.name || f.customerName || '';
     return `<div class="featured-box">
     <span class="fx-grade">${esc(gradeLabel(f.metal, f.key))}</span>
     <span class="fx-range">₱${Number(f.low).toLocaleString()}–${Number(f.high).toLocaleString()}</span>
+    ${customerName ? `<span class="fx-label">${esc(customerName)}</span>` : ''}
     ${f.remarks ? `<span class="fx-label">${esc(f.remarks)}</span>` : ''}
     <button class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="clearFeatured()">Unpin</button>
   </div>`;
@@ -1553,7 +1563,7 @@ async function saveFeaturedFromForm() {
     }
     const remarks = featuredRemarksDraft;
     featuredRemarksDraft = '';
-    await setFeatured(metal, key, low, high, remarks);
+    await setFeatured(metal, key, low, high, remarks, val('fx_customer'));
 }
 function val(id) { const e = document.getElementById(id); return e ? e.value : ''; }
 /* ============================= ADMIN EDIT MODALS ============================= */
