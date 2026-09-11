@@ -508,13 +508,38 @@ export function cashflowMovementTotals(
   };
 }
 
+export function cashflowMovementTotalsForRecords(
+  records: LedgerRecord[],
+  date: string,
+  adjustments: Array<Pick<CashflowAdjustment, 'operation' | 'amount' | 'createdAt'>>,
+  baseline?: CashflowMovementBaseline
+): CashflowMovementBaseline {
+  const resets=adjustments.filter(item=>item.operation==='reset'&&Number.isFinite(Date.parse(String(item.createdAt??''))));
+  const latestReset=resets.sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0];
+  if(latestReset){
+    const resetAt=Date.parse(latestReset.createdAt);
+    const cashRecords=records.filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')===date&&String(record.paymentMethod??'').toLowerCase()==='cash');
+    const movementAdjustments=adjustments.filter(item=>item.operation==='add'||item.operation==='deduct');
+    const allMovementsAreTimed=cashRecords.every(record=>Number.isFinite(Date.parse(String(record.recordedAt??''))))&&movementAdjustments.every(item=>Number.isFinite(Date.parse(String(item.createdAt??''))));
+    if(allMovementsAreTimed){
+      const round=(value:number)=>Math.round(value*100)/100;
+      const cashPurchases=cashRecords.filter(record=>Date.parse(String(record.recordedAt))>resetAt).reduce((sum,record)=>sum+Number(record.payout??0),0);
+      const cashIn=movementAdjustments.filter(item=>item.operation==='add'&&Date.parse(item.createdAt)>resetAt).reduce((sum,item)=>sum+Number(item.amount??0),0);
+      const manualCashOut=movementAdjustments.filter(item=>item.operation==='deduct'&&Date.parse(item.createdAt)>resetAt).reduce((sum,item)=>sum+Number(item.amount??0),0);
+      return {cashIn:round(cashIn),manualCashOut:round(manualCashOut),cashOut:round(cashPurchases+manualCashOut)};
+    }
+  }
+  const cashPurchases=records.filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')===date&&String(record.paymentMethod??'').toLowerCase()==='cash').reduce((sum,record)=>sum+Number(record.payout??0),0);
+  return cashflowMovementTotals({cashPurchases},adjustments,baseline);
+}
+
 async function cashflowSnapshot(date: string) {
   const state = await loadState();
   const totals = cashflowPurchases(state, date);
   const settings=await loadCashflowSettings();
   const setting = await carryForwardCashflowSetting(state,date,settings);
   const adjustments = setting?.adjustments ?? [];
-  const movements=cashflowMovementTotals(totals,adjustments,setting?.movementBaseline);
+  const movements=cashflowMovementTotalsForRecords(state.stock,date,adjustments,setting?.movementBaseline);
   const cashOnHand = setting ? cashflowBalanceForSetting(state,date,setting) : null;
   return {
     date,
