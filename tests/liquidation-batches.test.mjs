@@ -22,6 +22,7 @@ async function loadInventoryApi() {
   vm.runInContext(`${source}\n;globalThis.inventoryTestApi = {
     activeInventoryRecord,
     cashflowCardMarkup,
+    toggleCashflowCard,
     cashflowDetailSnapshot,
     ensureShape,
     renderBuying,
@@ -217,6 +218,21 @@ test('admin can open a confirmation before resetting IN and OUT counters', async
   assert.match(modal, /Reset IN and OUT to PHP 0/);
   assert.match(modal, /does not delete buying transactions/i);
   assert.match(modal, /Confirm reset/);
+});
+
+test('cashflow card can minimize its actions and daily stat blocks', async () => {
+  const api = await loadInventoryApi();
+  api.setState(stateFixture());
+
+  assert.match(api.cashflowCardMarkup(), />Minimize</);
+  assert.match(api.cashflowCardMarkup(), /cashflow-stats/);
+  api.toggleCashflowCard();
+  const minimized = api.cashflowCardMarkup();
+  assert.match(minimized, /is-minimized/);
+  assert.match(minimized, />Expand</);
+  assert.doesNotMatch(minimized, /cashflow-stats/);
+  assert.doesNotMatch(minimized, /View cash flow/);
+  assert.match(minimized, /cashflow-flow-strip/);
 });
 
 test('cashflow details can use a retrieved historical daily snapshot', async () => {

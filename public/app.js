@@ -1739,22 +1739,29 @@ async function deleteCustomerRecord() {
 let purchaseBatch = [];
 let buyingDraftForm = {};
 let buyingDraftSaveTimer = null;
+let cashflowCardMinimized = false;
+function toggleCashflowCard() {
+    cashflowCardMinimized = !cashflowCardMinimized;
+    const card = document.getElementById('buying_cashflow_card');
+    if (card)
+        card.innerHTML = cashflowCardMarkup();
+}
 function cashflowCardMarkup() {
     const snapshot = currentCashflow?.date === todayStr() ? currentCashflow : null;
     const configured = Boolean(snapshot?.configured) && snapshot?.cashOnHand !== null && Number.isFinite(Number(snapshot?.cashOnHand));
     const balance = configured ? fmtMoney(snapshot.cashOnHand) : 'Not set';
     const updated = snapshot?.setAt ? new Date(snapshot.setAt).toLocaleString('en-PH', { dateStyle: 'medium', timeStyle: 'short' }) : '';
-    return `<section class="cashflow-card ${configured && Number(snapshot.cashOnHand) < 0 ? 'is-negative' : ''}">
+    return `<section class="cashflow-card ${configured && Number(snapshot.cashOnHand) < 0 ? 'is-negative' : ''} ${cashflowCardMinimized ? 'is-minimized' : ''}">
     <div class="cashflow-main">
-      <div><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><strong>${balance}</strong><small>${configured ? `Live balance after today's cash purchases${updated ? ` · adjusted ${esc(updated)} by ${esc(snapshot.setBy || 'Admin')}` : ''}` : 'Waiting for an administrator to set the available cash'}</small></div>
-      <div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin() ? `${configured ? '<button class="btn secondary" onclick="openCashflowResetConfirmation()">Reset IN / OUT</button>' : ''}<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured ? 'Edit cash on hand' : 'Set cash on hand'}</button>` : '<span class="cashflow-readonly">Admin controlled</span>'}</div>
+      <div class="cashflow-balance"><div class="cashflow-title-row"><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><button class="cashflow-toggle" onclick="toggleCashflowCard()" aria-expanded="${!cashflowCardMinimized}">${cashflowCardMinimized ? 'Expand' : 'Minimize'}</button></div><strong>${balance}</strong>${cashflowCardMinimized ? '' : `<small>${configured ? `Live balance after today's cash purchases${updated ? ` · adjusted ${esc(updated)} by ${esc(snapshot.setBy || 'Admin')}` : ''}` : 'Waiting for an administrator to set the available cash'}</small>`}</div>
+      ${cashflowCardMinimized ? '' : `<div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin() ? `${configured ? '<button class="btn secondary" onclick="openCashflowResetConfirmation()">Reset IN / OUT</button>' : ''}<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured ? 'Edit cash on hand' : 'Set cash on hand'}</button>` : '<span class="cashflow-readonly">Admin controlled</span>'}</div>`}
     </div>
     <div class="cashflow-flow-strip"><strong>${new Date(todayStr() + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'short', month: 'short', day: '2-digit' })}</strong><span class="cashflow-in">IN ${fmtMoney(snapshot?.cashIn || 0)}</span><span class="cashflow-out">OUT ${fmtMoney(snapshot?.cashOut || 0)}</span></div>
-    <div class="cashflow-stats">
+    ${cashflowCardMinimized ? '' : `<div class="cashflow-stats">
       <div><span>Bought today</span><strong>${fmtMoney(snapshot?.totalPurchases || 0)}</strong><small>${snapshot?.purchaseCount || 0} item${snapshot?.purchaseCount === 1 ? '' : 's'} · all payment methods</small></div>
       <div><span>Cash paid today</span><strong>${fmtMoney(snapshot?.cashPurchases || 0)}</strong><small>Deducted from cash on hand</small></div>
       <div><span>Non-cash today</span><strong>${fmtMoney(snapshot?.nonCashPurchases || 0)}</strong><small>Bank transfer and GCash</small></div>
-    </div>
+    </div>`}
   </section>`;
 }
 async function syncCashflow() {
