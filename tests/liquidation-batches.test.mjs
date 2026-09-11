@@ -284,7 +284,7 @@ test('downloadable rate sheets add section spacing before Silver and Platinum', 
   assert.equal(margins.phone, 56);
 });
 
-test('featured buying range offers the saved customer names in a dropdown', async () => {
+test('featured buying range does not include customer selection', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();
   state.customers = [{ id: 'cust-1', name: 'Maria Santos', contact: '', notes: '' }];
@@ -293,22 +293,33 @@ test('featured buying range offers the saved customer names in a dropdown', asyn
 
   const html = api.renderFeaturedBox();
 
-  assert.match(html, /id="fx_customer"/);
-  assert.match(html, /Customer name \(optional\)/);
-  assert.match(html, /Maria Santos/);
+  assert.doesNotMatch(html, /fx_customer/);
+  assert.doesNotMatch(html, /Customer name/);
+  assert.doesNotMatch(html, /Maria Santos/);
 });
 
-test('featured buying range shows the saved customer and remark without an edit button after pinning', async () => {
+test('saved customers are suggested in Buying customer information', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();
   state.customers = [{ id: 'cust-1', name: 'Maria Santos', contact: '', notes: '' }];
-  state.pricing.featured = { metal: 'Gold', key: '18K', low: 6200, high: 6400, remarks: 'Clean items only', customerId: 'cust-1', customerName: 'Maria Santos' };
+  api.setState(state);
+
+  const html = api.renderBuying();
+
+  assert.match(html, /Customer Information/);
+  assert.match(html, /id="buying_customer_names"/);
+  assert.match(html, /Maria Santos/);
+});
+
+test('featured buying range still displays its saved remarks', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.pricing.featured = { metal: 'Gold', key: '18K', low: 6200, high: 6400, remarks: 'Clean items only' };
   api.setState(state);
 
   const html = api.renderFeaturedBox();
 
   assert.match(html, /Clean items only/);
-  assert.match(html, /Maria Santos/);
   assert.doesNotMatch(html, /openFeaturedRemarksEditor/);
   assert.match(html, />Unpin</);
 });
