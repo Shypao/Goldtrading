@@ -1129,6 +1129,9 @@ function downloadRateSheetFromModal(format, imageType) {
 function rateSheetGoldGrades() {
     return GOLD_GRADES.filter(grade => grade.key !== '24K' && grade.key !== '18K-BUO' && grade.key !== '73%');
 }
+function rateSheetSectionMargin(isPhone) {
+    return isPhone ? 56 : 30;
+}
 async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
     const resolvedFormat = format === 'auto' ? (window.matchMedia('(max-width: 700px)').matches ? 'phone' : 'desktop') : format;
     const isPhone = resolvedFormat === 'phone';
@@ -1144,7 +1147,7 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
     try {
         await document.fonts?.ready;
         const canvas = document.createElement('canvas');
-        const width = isPhone ? 1080 : 1600, height = isPhone ? 2680 : 1060, pad = isPhone ? 44 : 28, columnGap = isPhone ? 16 : 7, cardHeight = isPhone ? 118 : 86;
+        const width = isPhone ? 1080 : 1600, height = isPhone ? 2800 : 1120, pad = isPhone ? 44 : 28, columnGap = isPhone ? 16 : 7, cardHeight = isPhone ? 118 : 86;
         canvas.width = width;
         canvas.height = height;
         const ctx = canvas.getContext('2d');
@@ -1299,6 +1302,7 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
         const goldColumns = isPhone ? 2 : 6;
         goldGrades.forEach((grade, index) => drawGradeCard(grade, 'Gold', index, y, goldColumns));
         y += Math.ceil(goldGrades.length / goldColumns) * (cardHeight + columnGap) + (isPhone ? 30 : 18);
+        y += rateSheetSectionMargin(isPhone);
         drawHeading('Silver', SILVER_GRADES.length, colors.silver, y);
         y += 16;
         if (isPhone) {
@@ -1317,6 +1321,7 @@ async function downloadRateSheetImage(format = 'auto', imageType = 'jpg') {
         const otherColumns = isPhone ? 2 : 4;
         silverGrades.forEach((grade, index) => drawGradeCard(grade, 'Silver', index, y, otherColumns));
         y += Math.ceil(silverGrades.length / otherColumns) * (cardHeight + columnGap) + (isPhone ? 30 : 18);
+        y += rateSheetSectionMargin(isPhone);
         drawHeading('Platinum', PLATINUM_GRADES.length, colors.platinum, y);
         y += 16;
         if (isPhone) {

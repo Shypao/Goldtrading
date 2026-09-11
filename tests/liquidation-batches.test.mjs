@@ -34,6 +34,9 @@ async function loadInventoryApi() {
         : GOLD_GRADES.filter(grade => grade.key !== '24K' && grade.key !== '18K-BUO');
       return Array.from(grades, grade => grade.key);
     },
+    rateSheetSectionMargins() {
+      return { desktop: rateSheetSectionMargin(false), phone: rateSheetSectionMargin(true) };
+    },
     prepareLiquidationBatches(items) {
       let message = '';
       const originalToast = toast;
@@ -255,6 +258,14 @@ test('downloadable rate sheets omit 73 percent without removing it from website 
 
   assert.equal(api.rateSheetGoldGradeKeys().includes('73%'), false);
   assert.match(api.renderBuying(), /73%/);
+});
+
+test('downloadable rate sheets add section spacing before Silver and Platinum', async () => {
+  const api = await loadInventoryApi();
+  const margins = api.rateSheetSectionMargins();
+
+  assert.equal(margins.desktop, 30);
+  assert.equal(margins.phone, 56);
 });
 
 test('featured buying range shows the saved remark without an edit button after pinning', async () => {
