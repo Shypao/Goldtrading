@@ -1207,7 +1207,6 @@ function renderFeaturedBox(){
     <span class="fx-grade">${esc(gradeLabel(f.metal,f.key))}</span>
     <span class="fx-range">₱${Number(f.low).toLocaleString()}–${Number(f.high).toLocaleString()}</span>
     ${f.remarks?`<span class="fx-label">${esc(f.remarks)}</span>`:''}
-    <button class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="openFeaturedRemarksEditor()">Remarks</button>
     <button class="btn small secondary" style="color:var(--cream-text);border-color:#45412F;" onclick="clearFeatured()">Unpin</button>
   </div>`;
 }

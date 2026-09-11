@@ -257,7 +257,7 @@ test('downloadable rate sheets omit 73 percent without removing it from website 
   assert.match(api.renderBuying(), /73%/);
 });
 
-test('featured buying range provides a remarks button and shows the saved remark', async () => {
+test('featured buying range shows the saved remark without an edit button after pinning', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();
   state.pricing.featured = { metal: 'Gold', key: '18K', low: 6200, high: 6400, remarks: 'Clean items only' };
@@ -265,6 +265,7 @@ test('featured buying range provides a remarks button and shows the saved remark
 
   const html = api.renderFeaturedBox();
 
-  assert.match(html, />Remarks</);
   assert.match(html, /Clean items only/);
+  assert.doesNotMatch(html, /openFeaturedRemarksEditor/);
+  assert.match(html, />Unpin</);
 });
