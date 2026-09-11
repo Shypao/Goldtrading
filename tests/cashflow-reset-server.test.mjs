@@ -19,6 +19,23 @@ function calculate(totals, adjustments, baseline) {
   return JSON.parse(result.stdout);
 }
 
+function purchasesSinceSetting(records, date, setting) {
+  const script = `
+    import * as server from './src/server.ts';
+    const result = typeof server.cashPurchasesSinceSetting === 'function'
+      ? server.cashPurchasesSinceSetting(${JSON.stringify(records)}, ${JSON.stringify(date)}, ${JSON.stringify(setting)})
+      : null;
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+    cwd: new URL('..', import.meta.url),
+    encoding: 'utf8',
+    env: { ...process.env, ZPP_UPSTREAM_URL: 'http://unused.invalid' }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
 test('cashflow movement reset zeroes existing IN and OUT without hiding future movement', () => {
   const adjustments = [
     { operation: 'add', amount: 66572 },
@@ -36,4 +53,20 @@ test('cashflow movement reset zeroes existing IN and OUT without hiding future m
     manualCashOut: 0,
     cashOut: 1000
   });
+});
+
+test('cash balance uses purchases after the latest Admin setting instead of a stale deleted-record baseline', () => {
+  const setting = {
+    balanceBase: 722764,
+    cashPaidBaseline: 22816,
+    setAt: '2026-09-11T05:12:40.788Z',
+    setBy: 'Administrator'
+  };
+  const records = [
+    { id: 'buy-1', date: '2026-09-11', recordedAt: '2026-09-11T13:15:17.151Z', paymentMethod: 'Cash', payout: 132747 },
+    { id: 'buy-2', date: '2026-09-11', recordedAt: '2026-09-11T13:18:50.499Z', paymentMethod: 'Cash', payout: 33269 },
+    { id: 'buy-3', date: '2026-09-11', recordedAt: '2026-09-11T13:30:10.863Z', paymentMethod: 'Cash', payout: 7000 }
+  ];
+
+  assert.equal(purchasesSinceSetting(records, '2026-09-11', setting), 173016);
 });

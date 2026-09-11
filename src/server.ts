@@ -441,9 +441,20 @@ function cashflowPurchases(state: LedgerState, date: string) {
   };
 }
 
+export function cashPurchasesSinceSetting(records: LedgerRecord[], date: string, setting: CashflowDaySetting): number {
+  const cashRecords=records.filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')===date&&String(record.paymentMethod??'').toLowerCase()==='cash');
+  const setAt=Date.parse(setting.setAt||'');
+  const allPurchasesAreTimed=Number.isFinite(setAt)&&cashRecords.every(record=>Number.isFinite(Date.parse(String(record.recordedAt??''))));
+  if(allPurchasesAreTimed){
+    const amount=cashRecords.filter(record=>Date.parse(String(record.recordedAt))>setAt).reduce((sum,record)=>sum+Number(record.payout??0),0);
+    return Math.round(amount*100)/100;
+  }
+  const currentTotal=cashRecords.reduce((sum,record)=>sum+Number(record.payout??0),0);
+  return Math.round(Math.max(currentTotal-Number(setting.cashPaidBaseline??0),0)*100)/100;
+}
+
 function cashflowBalanceForSetting(state: LedgerState, date: string, setting: CashflowDaySetting): number {
-  const totals=cashflowPurchases(state,date);
-  return Math.round((setting.balanceBase-(totals.cashPurchases-setting.cashPaidBaseline))*100)/100;
+  return Math.round((setting.balanceBase-cashPurchasesSinceSetting(state.stock,date,setting))*100)/100;
 }
 
 function cashPurchasesBetween(state: LedgerState, afterDate: string, beforeDate: string): number {
@@ -504,9 +515,7 @@ async function cashflowSnapshot(date: string) {
   const setting = await carryForwardCashflowSetting(state,date,settings);
   const adjustments = setting?.adjustments ?? [];
   const movements=cashflowMovementTotals(totals,adjustments,setting?.movementBaseline);
-  const cashOnHand = setting
-    ? Math.round((setting.balanceBase - (totals.cashPurchases - setting.cashPaidBaseline)) * 100) / 100
-    : null;
+  const cashOnHand = setting ? cashflowBalanceForSetting(state,date,setting) : null;
   return {
     date,
     ...totals,
@@ -832,9 +841,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       const settings = await loadCashflowSettings();
       const previous = await carryForwardCashflowSetting(state,date,settings);
       if (!previous && operation !== 'set') return sendJson(response, 400, { error: 'Set the cash on hand before adding or deducting cash' });
-      const currentBalance = previous
-        ? Math.round((previous.balanceBase - (totals.cashPurchases - previous.cashPaidBaseline)) * 100) / 100
-        : 0;
+      const currentBalance = previous ? cashflowBalanceForSetting(state,date,previous) : 0;
       if (operation === 'reset') {
         if (!previous) return sendJson(response, 400, { error: 'Set the cash on hand before resetting IN and OUT' });
         const createdAt=new Date().toISOString();
