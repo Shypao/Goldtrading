@@ -23,7 +23,11 @@ const ARRAY_STORES = ['customers', 'stock', 'liquidationBatches', 'liquidations'
 let ledgerDB = null;
 let storageLocationCleanupNeeded = false;
 function uid(p) { return (p || 'id') + '_' + Math.random().toString(36).slice(2, 9); }
-function todayStr() { const d = new Date(), off = d.getTimezoneOffset(); return new Date(d.getTime() - off * 60000).toISOString().slice(0, 10); }
+function todayStr() {
+    const parts = new Intl.DateTimeFormat('en-US', { timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit' }).formatToParts(new Date());
+    const value = Object.fromEntries(parts.map(part => [part.type, part.value]));
+    return `${value.year}-${value.month}-${value.day}`;
+}
 function monthStr() { return todayStr().slice(0, 7); }
 function fmtMoney(n) { n = Number(n) || 0; return 'PHP ' + Math.round(n).toLocaleString('en-PH', { maximumFractionDigits: 0 }); }
 function fmtWeight(n) { return (Number(n) || 0).toFixed(2) + ' g'; }
@@ -842,6 +846,13 @@ let purchaseHistoryFrom = '';
 let purchaseHistoryTo = '';
 let liquidationHistoryFrom = '';
 let liquidationHistoryTo = '';
+function shiftDateKey(dateKey, days) {
+    const date = new Date(`${dateKey}T00:00:00Z`);
+    date.setUTCDate(date.getUTCDate() + days);
+    return date.toISOString().slice(0, 10);
+}
+let readinessFrom = shiftDateKey(todayStr(), -13);
+let readinessTo = todayStr();
 function toggleDashboardReport(panel) {
     dashboardReportPanel = dashboardReportPanel === panel ? '' : panel;
     render();
@@ -951,6 +962,72 @@ function liquidationHistoryFilterLabel() {
         return `Through ${fmtDate(liquidationHistoryTo)}`;
     return 'All liquidation dates';
 }
+function readinessDateMatch(item) {
+    return (!readinessFrom || item.date >= readinessFrom) && (!readinessTo || item.date <= readinessTo);
+}
+function applyReadinessDates() {
+    const from = val('readiness_from'), to = val('readiness_to');
+    if (from && to && from > to) {
+        toast('The From date must be before the To date');
+        return;
+    }
+    readinessFrom = from;
+    readinessTo = to;
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function setReadinessDatePreset(preset) {
+    if (preset === 'today') {
+        readinessFrom = todayStr();
+        readinessTo = todayStr();
+    }
+    else if (preset === 'two-weeks') {
+        readinessFrom = shiftDateKey(todayStr(), -13);
+        readinessTo = todayStr();
+    }
+    else {
+        readinessFrom = '';
+        readinessTo = '';
+    }
+    render();
+    requestAnimationFrame(() => document.getElementById('dashboard_report_content')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function readinessFilterLabel() {
+    if (readinessFrom && readinessTo)
+        return readinessFrom === readinessTo ? fmtDate(readinessFrom) : `${fmtDate(readinessFrom)} to ${fmtDate(readinessTo)}`;
+    if (readinessFrom)
+        return `From ${fmtDate(readinessFrom)}`;
+    if (readinessTo)
+        return `Through ${fmtDate(readinessTo)}`;
+    return 'All purchase dates';
+}
+function todayPurchaseMetalSummary(purchases, metal) {
+    const items = purchases.filter(item => item.metal === metal);
+    return {
+        metal,
+        items,
+        count: items.length,
+        weight: items.reduce((sum, item) => sum + Number(item.netWeight || 0), 0),
+        payout: items.reduce((sum, item) => sum + Number(item.payout || 0), 0)
+    };
+}
+function closeTodayMetalPurchases() { document.getElementById('today_metal_purchases_modal')?.remove(); }
+function openTodayMetalPurchases(metal) {
+    const items = db.stock.filter(item => !item.sourceRefiningBatchId && item.date === todayStr() && item.metal === metal).slice().sort((a, b) => String(b.recordedAt || '').localeCompare(String(a.recordedAt || '')));
+    const summary = todayPurchaseMetalSummary(items, metal);
+    closeTodayMetalPurchases();
+    const modal = document.createElement('div');
+    modal.id = 'today_metal_purchases_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="summary-modal daily-metal-modal" role="dialog" aria-modal="true" aria-labelledby="today_metal_purchases_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">Daily purchase report · ${fmtDate(todayStr())}</div><h2 id="today_metal_purchases_title">${esc(metal)} purchased today</h2></div><button class="modal-close" onclick="closeTodayMetalPurchases()" aria-label="Close">×</button></div>
+    <div class="daily-metal-summary"><div><span>Items</span><strong>${summary.count}</strong></div><div><span>Total weight</span><strong>${fmtWeight(summary.weight)}</strong></div><div><span>Total payout</span><strong>${fmtMoney(summary.payout)}</strong></div></div>
+    ${tableOrEmpty(items, item => `<tr><td>${esc(item.customerName || 'Walk-in')}</td><td><span class="metal-tag ${metal.toLowerCase()}">${esc(gradeLabel(metal, item.karat))}</span> · ${esc(item.itemType || '—')}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.payout)}</td><td>${esc(item.paymentMethod || '—')}</td></tr>`, ['Seller', 'Grade / item', 'Net weight', 'Payout', 'Payment'], 'No ' + metal.toLowerCase() + ' purchases recorded today.')}
+  </div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeTodayMetalPurchases(); });
+    document.body.appendChild(modal);
+}
 function renderDashboard() {
     const today = todayStr(), mon = monthStr();
     const purchases = db.stock.filter(s => !s.sourceRefiningBatchId);
@@ -962,6 +1039,7 @@ function renderDashboard() {
     const inventoryMonth = db.stock.filter(s => s.date.startsWith(mon) && Number(s.currentWeight) > 0 && !['For Liquidation', 'Liquidated', 'Refined', 'Sold'].includes(s.status));
     const inventoryAmountMonth = inventoryMonth.reduce((a, s) => a + Number(s.cost), 0);
     const inventoryWeightMonth = inventoryMonth.reduce((a, s) => a + Number(s.currentWeight), 0);
+    const todayMetalSummaries = ['Gold', 'Silver', 'Platinum'].map(metal => todayPurchaseMetalSummary(pToday, metal));
     const liqMonth = db.liquidations.filter(l => l.date.startsWith(mon));
     const liqMargin = liqMonth.reduce((a, l) => a + Number(l.margin), 0);
     const retailMonth = db.retailSales.filter(r => r.date.startsWith(mon));
@@ -975,6 +1053,18 @@ function renderDashboard() {
       <div class="stat"><div class="label">Purchases this month</div><div class="value">${pMonth.length}</div><div class="sub">${fmtMoney(payoutMonth)} paid out</div></div>
       ${isAdmin() ? `<div class="stat"><div class="label">Liquidation margin (month)</div><div class="value">${fmtMoney(liqMargin)}</div><div class="sub">${liqMonth.length} batch(es) released</div></div>
       <div class="stat"><div class="label">Retail margin (month)</div><div class="value">${fmtMoney(retailMargin)}</div><div class="sub">${retailMonth.length} item(s) sold</div></div>` : ''}
+    </div>
+  </section>
+
+  <section class="block daily-metal-report">
+    <div class="daily-metal-report-head"><div><h2 class="block-title">Today's purchases by metal</h2><p class="form-note">Select a metal to see every purchase recorded on ${fmtDate(today)}.</p></div><strong>${fmtMoney(payoutToday)} total payout</strong></div>
+    <div class="daily-metal-grid">
+      ${todayMetalSummaries.map(summary => `<button type="button" class="daily-metal-card ${summary.metal.toLowerCase()}" onclick="openTodayMetalPurchases('${summary.metal}')">
+        <span class="daily-metal-name"><span class="metal-dot ${summary.metal.toLowerCase()}"></span>${summary.metal}</span>
+        <strong>${fmtMoney(summary.payout)}</strong>
+        <small>${summary.count} item${summary.count === 1 ? '' : 's'} · ${fmtWeight(summary.weight)}</small>
+        <span class="daily-metal-open">View today's purchases →</span>
+      </button>`).join('')}
     </div>
   </section>
 
@@ -1729,6 +1819,7 @@ async function deleteCustomerRecord() {
 let purchaseBatch = [];
 let buyingDraftForm = {};
 let buyingDraftSaveTimer = null;
+let buyingDraftSavedDate = '';
 let cashflowCardMinimized = false;
 function toggleCashflowCard() {
     cashflowCardMinimized = !cashflowCardMinimized;
@@ -2126,10 +2217,20 @@ async function loadBuyingDraft() {
         const draft = await response.json();
         purchaseBatch = Array.isArray(draft.items) ? draft.items : [];
         buyingDraftForm = draft.form && typeof draft.form === 'object' ? draft.form : {};
+        buyingDraftSavedDate = String(draft.savedDate || buyingDraftForm.b_date || '');
+        rollDefaultBuyingDraftDateForward();
     }
     catch (error) {
         console.error('Buying draft load failed', error);
     }
+}
+function rollDefaultBuyingDraftDateForward() {
+    const today = todayStr(), draftDate = String(buyingDraftForm.b_date || '');
+    if (!draftDate || draftDate !== buyingDraftSavedDate || draftDate === today)
+        return false;
+    buyingDraftForm.b_date = today;
+    buyingDraftSavedDate = today;
+    return true;
 }
 async function saveBuyingDraft() {
     captureBuyingDraftForm();
@@ -2137,6 +2238,8 @@ async function saveBuyingDraft() {
         const response = await fetch('/api/buying-draft', { method: 'PUT', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ items: purchaseBatch, form: buyingDraftForm }) });
         if (!response.ok)
             throw new Error('Draft save failed');
+        const result = await response.json().catch(() => null);
+        buyingDraftSavedDate = String(result?.savedDate || todayStr());
     }
     catch (error) {
         console.error('Buying draft save failed', error);
@@ -2151,6 +2254,7 @@ function scheduleBuyingDraftSave() {
 async function clearBuyingDraft() {
     clearTimeout(buyingDraftSaveTimer);
     buyingDraftForm = {};
+    buyingDraftSavedDate = '';
     try {
         await fetch('/api/buying-draft', { method: 'DELETE' });
     }
@@ -2159,6 +2263,7 @@ async function clearBuyingDraft() {
     }
 }
 function renderBuying() {
+    rollDefaultBuyingDraftDateForward();
     const sellerName = buyingDraftValue('b_seller_name');
     const savedCustomer = db.customers.find(customer => String(customer.name).trim().toLowerCase() === sellerName.trim().toLowerCase());
     const customerStatus = !sellerName ? 'Leave blank for a walk-in seller.' : savedCustomer ? `Using saved customer: ${savedCustomer.name}` : `No exact match — “${sellerName}” will be saved as a new customer.`;
@@ -2661,6 +2766,28 @@ function selectInventoryMetalCategory(metal) {
     inventoryMoveSelection.clear();
     render();
 }
+function showTodayInventoryTotals(metal) {
+    inventoryWeekOffset = 0;
+    inventorySelectedDate = todayStr();
+    invFilter = { metal, karat: 'All', type: 'All', status: 'All' };
+    inventorySearch = '';
+    inventoryMoveSelection.clear();
+    render();
+    requestAnimationFrame(() => document.getElementById('inventory_daily_totals')?.scrollIntoView({ behavior: 'smooth', block: 'start' }));
+}
+function purchaseTotalsByPurity(records) {
+    const groups = new Map();
+    records.forEach(item => {
+        const key = `${item.metal}|${item.karat}`;
+        const entry = groups.get(key) || { metal: item.metal, karat: item.karat, count: 0, purchasedWeight: 0, payout: 0, remainingWeight: 0 };
+        entry.count += 1;
+        entry.purchasedWeight += Number(item.netWeight || 0);
+        entry.payout += Number(item.payout || 0);
+        entry.remainingWeight += Number(item.currentWeight || 0);
+        groups.set(key, entry);
+    });
+    return Array.from(groups.values()).sort((a, b) => a.metal.localeCompare(b.metal) || (GRADE_META[a.metal]?.findIndex(grade => grade.key === a.karat) ?? 99) - (GRADE_META[b.metal]?.findIndex(grade => grade.key === b.karat) ?? 99));
+}
 function selectableInventory(item) { return Number(item.currentWeight) > 0 && (item.status === 'Available' || item.status === 'For Refining'); }
 function movableInventory(item) { return selectableInventory(item); }
 function categorizableInventory(item) { return activeInventoryRecord(item); }
@@ -3052,8 +3179,9 @@ function renderInventory() {
         inventorySelectedDate = week.start;
     const dates = Array.from({ length: 7 }, (_, index) => dateKeyPlusDays(week.start, index));
     const dailyRows = dates.map(date => {
-        const stock = db.stock.filter(item => item.date === date && activeInventoryRecord(item)), available = stock.filter(selectableInventory);
-        return { date, stock, available, weight: available.reduce((sum, item) => sum + Number(item.currentWeight), 0), cost: available.reduce((sum, item) => sum + Number(item.cost), 0) };
+        const purchases = db.stock.filter(item => item.date === date && !item.sourceRefiningBatchId);
+        const stock = purchases.filter(activeInventoryRecord), available = stock.filter(selectableInventory);
+        return { date, purchases, stock, available, weight: available.reduce((sum, item) => sum + Number(item.currentWeight), 0), cost: available.reduce((sum, item) => sum + Number(item.cost), 0) };
     });
     const allActiveStock = db.stock.filter(activeInventoryRecord);
     const allAvailableStock = allActiveStock.filter(selectableInventory);
@@ -3072,6 +3200,8 @@ function renderInventory() {
         (invFilter.type === 'All' || s.itemType === invFilter.type) &&
         (invFilter.status === 'All' || s.status === invFilter.status) &&
         inventorySearchMatch(s)).sort((a, b) => b.date.localeCompare(a.date));
+    const dailyPurchaseSource = inventorySelectedDate === 'All' ? [] : selectedDay.purchases.filter(item => invFilter.metal === 'All' || item.metal === invFilter.metal);
+    const dailyPurchaseTotals = purchaseTotalsByPurity(dailyPurchaseSource);
     const currentStock = allActiveStock;
     const breakdownSource = currentStock.filter(item => invFilter.metal === 'All' || item.metal === invFilter.metal);
     const breakdownMap = new Map();
@@ -3110,10 +3240,15 @@ function renderInventory() {
 
   <section class="block">
     <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Complete stock or daily view</p><h2 class="block-title" style="margin:0;">Inventory records</h2><p class="form-note">Use All dates to see everything together, or choose a day for a focused view.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
+    <div class="inventory-today-totals"><div>${['All', 'Gold', 'Silver'].map(metal => `<button class="btn secondary small" onclick="showTodayInventoryTotals('${metal}')">Today's ${metal}</button>`).join('')}</div></div>
     <div class="inventory-days">
       <button class="inventory-day inventory-all-dates ${inventorySelectedDate === 'All' ? 'active' : ''}" onclick="selectAllInventoryDates()"><strong>All dates</strong><span>Complete current stock</span><small>${allActiveStock.length} record${allActiveStock.length === 1 ? '' : 's'}<br>${fmtWeight(allAvailableStock.reduce((sum, item) => sum + Number(item.currentWeight), 0))} available</small></button>
-      ${dailyRows.map(day => `<button class="inventory-day ${day.date === inventorySelectedDate ? 'active' : ''}" onclick="selectInventoryDate('${day.date}')"><strong>${new Date(day.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}</strong><span>${fmtDate(day.date)}</span><small>${day.stock.length} record${day.stock.length === 1 ? '' : 's'}<br>${fmtWeight(day.weight)} available</small></button>`).join('')}
+      ${dailyRows.map(day => `<button class="inventory-day ${day.date === inventorySelectedDate ? 'active' : ''}" onclick="selectInventoryDate('${day.date}')"><strong>${new Date(day.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}</strong><span>${fmtDate(day.date)}</span><small>${day.purchases.length} purchase${day.purchases.length === 1 ? '' : 's'}<br>${fmtWeight(day.purchases.reduce((sum, item) => sum + Number(item.netWeight || 0), 0))} bought</small></button>`).join('')}
     </div>
+    ${inventorySelectedDate === 'All' ? `<div class="inventory-daily-prompt">Choose a day above, or use <strong>Today's totals</strong>, to view totals for every purity.</div>` : `<div id="inventory_daily_totals" class="inventory-daily-totals">
+      <div class="inventory-daily-totals-head"><div><h2 class="block-title">Purchase totals by purity · ${fmtDate(selectedDay.date)}</h2><p class="form-note">${invFilter.metal === 'All' ? 'All metals' : esc(invFilter.metal)} purchased on this date.</p></div></div>
+      ${dailyPurchaseTotals.length ? `<div class="table-wrap inventory-daily-purity-table"><table><thead><tr><th>Metal</th><th>Karat / purity</th><th class="num-head">Purchase lines</th><th class="num-head">Purchased weight</th><th class="num-head">Total payout</th><th class="num-head">Remaining weight</th></tr></thead><tbody>${dailyPurchaseTotals.map(entry => `<tr><td><span class="metal-tag ${entry.metal.toLowerCase()}">${entry.metal}</span></td><td><strong>${esc(gradeLabel(entry.metal, entry.karat))}</strong></td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.purchasedWeight)}</td><td class="num">${fmtMoney(entry.payout)}</td><td class="num">${fmtWeight(entry.remainingWeight)}</td></tr>`).join('')}</tbody></table></div>` : `<div class="empty-note">No ${invFilter.metal === 'All' ? 'purchases' : esc(invFilter.metal) + ' purchases'} were recorded on this date.</div>`}
+    </div>`}
     <h2 class="block-title">${inventorySelectedDate === 'All' ? 'All purchase dates' : `${new Date(selectedDay.date + 'T00:00:00').toLocaleDateString('en-PH', { weekday: 'long' })}, ${fmtDate(selectedDay.date)}`}</h2>
     <div class="stat-row">
       <div class="stat"><div class="label">Current stock records</div><div class="value">${selectedDay.stock.length}</div><div class="sub">active inventory lines ${inventorySelectedDate === 'All' ? 'across all dates' : 'on this date'}</div></div>
@@ -4209,7 +4344,8 @@ function renderLiquidationHistory() {
 }
 function renderReports() {
     const allPurchases = db.stock.filter(s => !s.sourceRefiningBatchId);
-    const readyStock = db.stock.filter(s => (s.status === 'Available' || s.status === 'For Refining') && s.currentWeight > 0);
+    const allReadyStock = db.stock.filter(s => (s.status === 'Available' || s.status === 'For Refining') && s.currentWeight > 0);
+    const readyStock = allReadyStock.filter(readinessDateMatch).slice().sort((a, b) => b.date.localeCompare(a.date));
     const renderPurchaseReport = () => {
         const purchases = allPurchases.filter(purchaseHistoryDateMatch).slice().sort((a, b) => b.date.localeCompare(a.date));
         const purchaseWeight = purchases.reduce((sum, item) => sum + Number(item.netWeight || 0), 0);
@@ -4235,6 +4371,11 @@ function renderReports() {
     };
     const renderReadinessReport = () => `<div id="dashboard_report_content" class="dashboard-report-content"><section class="block">
     <div class="batch-head"><div><h2 class="block-title">Liquidation readiness</h2><p class="form-note">On-hand inventory that can be assigned to a liquidation batch or sent for refining.</p></div><button class="btn small" onclick="goTab('inventory')">Open inventory</button></div>
+    <div class="purchase-history-filter-card">
+      <div class="purchase-history-filter-top"><div><strong>Purchase date</strong><span>Defaults to the latest two weeks so the list stays manageable.</span></div><div class="purchase-history-presets"><button class="btn secondary small" onclick="setReadinessDatePreset('today')">Today</button><button class="btn secondary small" onclick="setReadinessDatePreset('two-weeks')">Last 2 weeks</button><button class="btn secondary small" onclick="setReadinessDatePreset('all')" ${readinessFrom || readinessTo ? '' : 'disabled'}>All dates</button></div></div>
+      <div class="purchase-history-date-row"><div class="field"><label for="readiness_from">From</label><input id="readiness_from" type="date" value="${esc(readinessFrom)}"></div><div class="field"><label for="readiness_to">To</label><input id="readiness_to" type="date" value="${esc(readinessTo)}"></div><button class="btn" onclick="applyReadinessDates()">Apply dates</button></div>
+      <div class="purchase-history-active-range"><span>Showing:</span><strong>${esc(readinessFilterLabel())}</strong><span>· ${readyStock.length} of ${allReadyStock.length} eligible items</span></div>
+    </div>
     ${dashboardReportSearch('Search date, metal, purity, item type, or status', readyStock.length)}
     ${tableOrEmpty(readyStock, s => `<tr data-dashboard-search="${dashboardSearchValue(s.date, fmtDate(s.date), s.metal, s.karat, s.itemType, s.status, s.customerName)}"><td>${fmtDate(s.date)}</td><td><span class="metal-tag ${s.metal.toLowerCase()}">${s.metal}</span> ${esc(s.karat)}</td><td>${esc(s.itemType)}</td>
       <td class="num">${fmtWeight(s.currentWeight)}</td><td>${statusPill(s.status)}</td></tr>`, ['Date', 'Metal / karat', 'Type', 'Weight available', 'Status'], 'Nothing is currently eligible for liquidation.')}
@@ -4247,7 +4388,7 @@ function renderReports() {
     <div class="dashboard-report-buttons">
       <button class="btn ${dashboardReportPanel === 'purchases' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'purchases'}" onclick="toggleDashboardReport('purchases')"><span>Purchase history</span><strong>${allPurchases.length}</strong></button>
       <button class="btn ${dashboardReportPanel === 'liquidations' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'liquidations'}" onclick="toggleDashboardReport('liquidations')"><span>Liquidation history</span><strong>${db.liquidations.length}</strong></button>
-      <button class="btn ${dashboardReportPanel === 'readiness' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'readiness'}" onclick="toggleDashboardReport('readiness')"><span>Liquidation readiness</span><strong>${readyStock.length}</strong></button>
+      <button class="btn ${dashboardReportPanel === 'readiness' ? '' : 'secondary'}" aria-pressed="${dashboardReportPanel === 'readiness'}" onclick="toggleDashboardReport('readiness')"><span>Liquidation readiness</span><strong>${allReadyStock.length}</strong></button>
     </div>
   </section>
   ${selectedReport}

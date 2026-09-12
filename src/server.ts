@@ -941,9 +941,10 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
       if (items.length > 100 || items.some(item => !item || typeof item !== 'object')) {
         return sendJson(response, 400, { error: 'Invalid buying draft' });
       }
+      const savedDate = manilaDateKey();
       await dbRun("INSERT INTO settings (key, value) VALUES (?, ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-        [buyingDraftKey(user!), JSON.stringify({ items, form })]);
-      return sendJson(response, 200, { ok: true });
+        [buyingDraftKey(user!), JSON.stringify({ items, form, savedDate })]);
+      return sendJson(response, 200, { ok: true, savedDate });
     }
     if (request.method === 'DELETE' && url.pathname === '/api/buying-draft') {
       await dbRun('DELETE FROM settings WHERE key = ?', [buyingDraftKey(user!)]);
