@@ -402,8 +402,19 @@ function manilaDateKey(): string {
   }).format(new Date());
 }
 
+export function manilaCashflowDateKey(value: Date = new Date()): string {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Manila', year: 'numeric', month: '2-digit', day: '2-digit'
+  }).format(new Date(value.getTime()-4*60*60*1000));
+}
+
+function cashflowRecordDateKey(record: LedgerRecord): string {
+  const recordedAt=Date.parse(String(record.recordedAt??''));
+  return Number.isFinite(recordedAt)?manilaCashflowDateKey(new Date(recordedAt)):String(record.date??'');
+}
+
 function cashflowPurchases(state: LedgerState, date: string) {
-  const purchases = state.stock.filter(record => !record.sourceRefiningBatchId && String(record.date ?? '') === date);
+  const purchases = state.stock.filter(record => !record.sourceRefiningBatchId && cashflowRecordDateKey(record) === date);
   const totalPurchases = purchases.reduce((sum, record) => sum + Number(record.payout ?? 0), 0);
   const cashPurchases = purchases
     .filter(record => String(record.paymentMethod ?? '').toLowerCase() === 'cash')
@@ -442,7 +453,7 @@ function cashflowPurchases(state: LedgerState, date: string) {
 }
 
 export function cashPurchasesSinceSetting(records: LedgerRecord[], date: string, setting: CashflowDaySetting): number {
-  const cashRecords=records.filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')===date&&String(record.paymentMethod??'').toLowerCase()==='cash');
+  const cashRecords=records.filter(record=>!record.sourceRefiningBatchId&&cashflowRecordDateKey(record)===date&&String(record.paymentMethod??'').toLowerCase()==='cash');
   const setAt=Date.parse(setting.setAt||'');
   const allPurchasesAreTimed=Number.isFinite(setAt)&&cashRecords.every(record=>Number.isFinite(Date.parse(String(record.recordedAt??''))));
   if(allPurchasesAreTimed){
@@ -453,25 +464,28 @@ export function cashPurchasesSinceSetting(records: LedgerRecord[], date: string,
   return Math.round(Math.max(currentTotal-Number(setting.cashPaidBaseline??0),0)*100)/100;
 }
 
-function cashflowBalanceForSetting(state: LedgerState, date: string, setting: CashflowDaySetting): number {
-  return Math.round((setting.balanceBase-cashPurchasesSinceSetting(state.stock,date,setting))*100)/100;
+export function cashflowBalanceForSettingRecords(records: LedgerRecord[], date: string, setting: CashflowDaySetting): number {
+  return Math.round((setting.balanceBase-cashPurchasesSinceSetting(records,date,setting))*100)/100;
 }
 
-function cashPurchasesBetween(state: LedgerState, afterDate: string, beforeDate: string): number {
-  const amount=state.stock
-    .filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')>afterDate&&String(record.date??'')<beforeDate&&String(record.paymentMethod??'').toLowerCase()==='cash')
+function cashflowBalanceForSetting(state: LedgerState, date: string, setting: CashflowDaySetting): number {
+  return cashflowBalanceForSettingRecords(state.stock,date,setting);
+}
+
+export function cashflowCarriedBalance(records: LedgerRecord[], previousDate: string, date: string, previousSetting: CashflowDaySetting): number {
+  const previousBalance=cashflowBalanceForSettingRecords(records,previousDate,previousSetting);
+  const skippedCashPurchases=records
+    .filter(record=>!record.sourceRefiningBatchId&&cashflowRecordDateKey(record)>previousDate&&cashflowRecordDateKey(record)<date&&String(record.paymentMethod??'').toLowerCase()==='cash')
     .reduce((sum,record)=>sum+Number(record.payout??0),0);
-  return Math.round(amount*100)/100;
+  return Math.round((previousBalance-skippedCashPurchases)*100)/100;
 }
 
 async function carryForwardCashflowSetting(state: LedgerState, date: string, settings: CashflowSettings): Promise<CashflowDaySetting | undefined> {
   if (settings.days[date]) return settings.days[date];
   const previousDate=Object.keys(settings.days).filter(key=>validDateKey(key)&&key<date).sort().pop();
   if (!previousDate) return undefined;
-  const previousBalance=cashflowBalanceForSetting(state,previousDate,settings.days[previousDate]);
-  const skippedCashPurchases=cashPurchasesBetween(state,previousDate,date);
-  const carriedBalance=Math.round((previousBalance-skippedCashPurchases)*100)/100;
-  const createdAt=new Date(`${date}T00:00:00+08:00`).toISOString();
+  const carriedBalance=cashflowCarriedBalance(state.stock,previousDate,date,settings.days[previousDate]);
+  const createdAt=new Date(`${date}T04:00:00+08:00`).toISOString();
   const setting: CashflowDaySetting={
     balanceBase:carriedBalance,
     cashPaidBaseline:0,
@@ -518,7 +532,7 @@ export function cashflowMovementTotalsForRecords(
   const latestReset=resets.sort((a,b)=>String(b.createdAt).localeCompare(String(a.createdAt)))[0];
   if(latestReset){
     const resetAt=Date.parse(latestReset.createdAt);
-    const cashRecords=records.filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')===date&&String(record.paymentMethod??'').toLowerCase()==='cash');
+    const cashRecords=records.filter(record=>!record.sourceRefiningBatchId&&cashflowRecordDateKey(record)===date&&String(record.paymentMethod??'').toLowerCase()==='cash');
     const movementAdjustments=adjustments.filter(item=>item.operation==='add'||item.operation==='deduct');
     const allMovementsAreTimed=cashRecords.every(record=>Number.isFinite(Date.parse(String(record.recordedAt??''))))&&movementAdjustments.every(item=>Number.isFinite(Date.parse(String(item.createdAt??''))));
     if(allMovementsAreTimed){
@@ -529,7 +543,7 @@ export function cashflowMovementTotalsForRecords(
       return {cashIn:round(cashIn),manualCashOut:round(manualCashOut),cashOut:round(cashPurchases+manualCashOut)};
     }
   }
-  const cashPurchases=records.filter(record=>!record.sourceRefiningBatchId&&String(record.date??'')===date&&String(record.paymentMethod??'').toLowerCase()==='cash').reduce((sum,record)=>sum+Number(record.payout??0),0);
+  const cashPurchases=records.filter(record=>!record.sourceRefiningBatchId&&cashflowRecordDateKey(record)===date&&String(record.paymentMethod??'').toLowerCase()==='cash').reduce((sum,record)=>sum+Number(record.payout??0),0);
   return cashflowMovementTotals({cashPurchases},adjustments,baseline);
 }
 
@@ -540,6 +554,7 @@ async function cashflowSnapshot(date: string) {
   const setting = await carryForwardCashflowSetting(state,date,settings);
   const adjustments = setting?.adjustments ?? [];
   const movements=cashflowMovementTotalsForRecords(state.stock,date,adjustments,setting?.movementBaseline);
+  const cashPurchasesAfterSetting=setting?cashPurchasesSinceSetting(state.stock,date,setting):0;
   const cashOnHand = setting ? cashflowBalanceForSetting(state,date,setting) : null;
   return {
     date,
@@ -551,6 +566,7 @@ async function cashflowSnapshot(date: string) {
     manualCashOut: movements.manualCashOut,
     netCashflow: Math.round((movements.cashIn - movements.cashOut) * 100) / 100,
     balanceBase: setting?.balanceBase ?? null,
+    cashPurchasesAfterSetting,
     setAt: setting?.setAt ?? '',
     setBy: setting?.setBy ?? '',
     adjustments: adjustments.slice().sort((a, b) => b.createdAt.localeCompare(a.createdAt))
@@ -844,14 +860,14 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
     if (url.pathname.startsWith('/api/') && !user) return sendJson(response, 401, { error: 'Sign in required' });
     if (request.method === 'GET' && url.pathname === '/api/state') return sendJson(response, 200, await publicStateFor(user!));
     if (request.method === 'GET' && url.pathname === '/api/cashflow') {
-      const date = url.searchParams.get('date') || manilaDateKey();
+      const date = url.searchParams.get('date') || manilaCashflowDateKey();
       if (!validDateKey(date)) return sendJson(response, 400, { error: 'Invalid cashflow date' });
       return sendJson(response, 200, await cashflowSnapshot(date));
     }
     if (request.method === 'PUT' && url.pathname === '/api/cashflow') {
       if (user!.role !== 'admin') return sendJson(response, 403, { error: 'Administrator access required' });
       const body = await readJsonBody(request) as Record<string, unknown>;
-      const date = String(body.date ?? manilaDateKey());
+      const date = String(body.date ?? manilaCashflowDateKey());
       const operation = String(body.operation ?? 'set') as CashflowAdjustment['operation'];
       const amount = Number(body.amount ?? body.balance);
       const note = String(body.note ?? '').trim();

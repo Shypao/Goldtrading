@@ -14,6 +14,7 @@ async function loadDashboardReports() {
     todayStr,
     shiftDateKey,
     todayPurchaseMetalSummary,
+    dailyMetalPurityBreakdownMarkup,
     purchaseTotalsByPurity,
     setInventoryView(date, metal = 'All') {
       inventoryWeekOffset = 0;
@@ -122,6 +123,21 @@ test('dashboard groups only today purchases into clickable metal totals', async 
   assert.match(html, /PHP 18,000/);
   assert.match(html, /PHP 1,000/);
   assert.doesNotMatch(html, /PHP 999,999/);
+});
+
+test('dashboard metal details include totals grouped by purity', async () => {
+  const api = await loadDashboardReports();
+  const html = api.dailyMetalPurityBreakdownMarkup([
+    { metal: 'Gold', karat: '18K', netWeight: 2.5, currentWeight: 2, payout: 10000 },
+    { metal: 'Gold', karat: '18K', netWeight: 1.5, currentWeight: 0, payout: 6000 },
+    { metal: 'Gold', karat: '14K', netWeight: 3, currentWeight: 3, payout: 9000 }
+  ], 'Gold');
+
+  assert.match(html, /Gold totals by purity/);
+  assert.match(html, /18K/);
+  assert.match(html, /14K/);
+  assert.match(html, /4\.00 g/);
+  assert.match(html, /PHP 16,000/);
 });
 
 test('liquidation readiness defaults to two weeks and sorts newest purchases first', async () => {

@@ -53,6 +53,99 @@ function movementTotalsForRecords(records, date, adjustments, baseline) {
   return JSON.parse(result.stdout);
 }
 
+function cashflowBusinessDate(isoTimestamp) {
+  const script = `
+    import * as server from './src/server.ts';
+    const result = typeof server.manilaCashflowDateKey === 'function'
+      ? server.manilaCashflowDateKey(new Date(${JSON.stringify(isoTimestamp)}))
+      : null;
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+    cwd: new URL('..', import.meta.url),
+    encoding: 'utf8',
+    env: { ...process.env, ZPP_UPSTREAM_URL: 'http://unused.invalid' }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function balanceForSetting(records, date, setting) {
+  const script = `
+    import * as server from './src/server.ts';
+    const result = typeof server.cashflowBalanceForSettingRecords === 'function'
+      ? server.cashflowBalanceForSettingRecords(${JSON.stringify(records)}, ${JSON.stringify(date)}, ${JSON.stringify(setting)})
+      : null;
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8', env: { ...process.env, ZPP_UPSTREAM_URL: 'http://unused.invalid' }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+function carriedBalance(records, previousDate, date, setting) {
+  const script = `
+    import * as server from './src/server.ts';
+    const result = typeof server.cashflowCarriedBalance === 'function'
+      ? server.cashflowCarriedBalance(${JSON.stringify(records)}, ${JSON.stringify(previousDate)}, ${JSON.stringify(date)}, ${JSON.stringify(setting)})
+      : null;
+    process.stdout.write(JSON.stringify(result));
+  `;
+  const result = spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8', env: { ...process.env, ZPP_UPSTREAM_URL: 'http://unused.invalid' }
+  });
+  assert.equal(result.status, 0, result.stderr);
+  return JSON.parse(result.stdout);
+}
+
+test('cashflow business day changes at 4 AM Manila instead of midnight', () => {
+  assert.equal(cashflowBusinessDate('2026-09-12T19:59:59.000Z'), '2026-09-12');
+  assert.equal(cashflowBusinessDate('2026-09-12T20:00:00.000Z'), '2026-09-13');
+});
+
+test('a purchase recorded before 4 AM belongs to the previous cashflow day', () => {
+  const setting = {
+    balanceBase: 100000,
+    cashPaidBaseline: 0,
+    setAt: '2026-09-12T00:00:00.000Z',
+    setBy: 'Admin'
+  };
+  const records = [{
+    id: 'after-midnight',
+    date: '2026-09-13',
+    recordedAt: '2026-09-12T19:30:00.000Z',
+    paymentMethod: 'Cash',
+    payout: 2500
+  }];
+
+  assert.equal(purchasesSinceSetting(records, '2026-09-12', setting), 2500);
+});
+
+test('cash on hand subtracts only cash purchases after the latest balance checkpoint', () => {
+  const setting = { balanceBase: 233386, cashPaidBaseline: 0, setAt: '2026-09-12T07:40:00.000Z', setBy: 'Admin' };
+  const records = [
+    { id: 'included', date: '2026-09-12', recordedAt: '2026-09-12T07:30:00.000Z', paymentMethod: 'Cash', payout: 2490 },
+    { id: 'one', date: '2026-09-12', recordedAt: '2026-09-12T07:57:00.000Z', paymentMethod: 'Cash', payout: 3617 },
+    { id: 'two', date: '2026-09-12', recordedAt: '2026-09-12T08:04:00.000Z', paymentMethod: 'Cash', payout: 300 },
+    { id: 'three', date: '2026-09-12', recordedAt: '2026-09-12T08:31:00.000Z', paymentMethod: 'Cash', payout: 65550 },
+    { id: 'noncash', date: '2026-09-12', recordedAt: '2026-09-12T08:35:00.000Z', paymentMethod: 'GCash', payout: 10000 }
+  ];
+
+  assert.equal(balanceForSetting(records, '2026-09-12', setting), 163919);
+});
+
+test('4 AM rollover carries closing cash while starting a separate day', () => {
+  const setting = { balanceBase: 100000, cashPaidBaseline: 0, setAt: '2026-09-12T00:00:00.000Z', setBy: 'Admin' };
+  const records = [
+    { id: 'previous-day', date: '2026-09-13', recordedAt: '2026-09-12T19:59:59.000Z', paymentMethod: 'Cash', payout: 2500 },
+    { id: 'new-day', date: '2026-09-13', recordedAt: '2026-09-12T20:00:00.000Z', paymentMethod: 'Cash', payout: 1000 }
+  ];
+
+  assert.equal(carriedBalance(records, '2026-09-12', '2026-09-13', setting), 97500);
+});
+
 test('cashflow movement reset zeroes existing IN and OUT without hiding future movement', () => {
   const adjustments = [
     { operation: 'add', amount: 66572 },

@@ -97,10 +97,19 @@ async function loadInventoryApi() {
     },
     today() {
       return todayStr();
+    },
+    cashflowDate(value) {
+      return typeof cashflowDateStr === 'function' ? cashflowDateStr(new Date(value)) : null;
     }
   };`, context);
   return context.inventoryTestApi;
 }
+
+test('cashflow day rolls over at 4:00 AM Manila time', async () => {
+  const api = await loadInventoryApi();
+  assert.equal(api.cashflowDate('2026-09-12T19:59:59.000Z'), '2026-09-12');
+  assert.equal(api.cashflowDate('2026-09-12T20:00:00.000Z'), '2026-09-13');
+});
 
 function stateFixture() {
   return {

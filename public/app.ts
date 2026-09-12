@@ -29,6 +29,12 @@ function todayStr(){
   const value=Object.fromEntries(parts.map(part=>[part.type,part.value]));
   return `${value.year}-${value.month}-${value.day}`;
 }
+function cashflowDateStr(value=new Date()){
+  const shifted=new Date(value.getTime()-4*60*60*1000);
+  const parts=new Intl.DateTimeFormat('en-US',{timeZone:'Asia/Manila',year:'numeric',month:'2-digit',day:'2-digit'}).formatToParts(shifted);
+  const date=Object.fromEntries(parts.map(part=>[part.type,part.value]));
+  return `${date.year}-${date.month}-${date.day}`;
+}
 function monthStr(){ return todayStr().slice(0,7); }
 function fmtMoney(n){ n=Number(n)||0; return 'PHP ' + Math.round(n).toLocaleString('en-PH',{maximumFractionDigits:0}); }
 function fmtWeight(n){ return (Number(n)||0).toFixed(2) + ' g'; }
@@ -773,6 +779,12 @@ function todayPurchaseMetalSummary(purchases,metal){
     payout:items.reduce((sum,item)=>sum+Number(item.payout||0),0)
   };
 }
+function dailyMetalPurityBreakdownMarkup(items,metal){
+  const totals=purchaseTotalsByPurity(items);
+  return `<section class="daily-metal-purity-breakdown"><h3>${esc(metal)} totals by purity</h3>
+    ${tableOrEmpty(totals,entry=>`<tr><td><strong>${esc(gradeLabel(entry.metal,entry.karat))}</strong></td><td class="num">${entry.count}</td><td class="num">${fmtWeight(entry.purchasedWeight)}</td><td class="num">${fmtMoney(entry.payout)}</td><td class="num">${fmtWeight(entry.remainingWeight)}</td></tr>`,['Karat / purity','Purchase lines','Purchased net weight','Total payout','Remaining weight'],'No '+metal.toLowerCase()+' purchases recorded today.')}
+  </section>`;
+}
 function closeTodayMetalPurchases(){ document.getElementById('today_metal_purchases_modal')?.remove(); }
 function openTodayMetalPurchases(metal){
   const items=db.stock.filter(item=>!item.sourceRefiningBatchId&&item.date===todayStr()&&item.metal===metal).slice().sort((a,b)=>String(b.recordedAt||'').localeCompare(String(a.recordedAt||'')));
@@ -782,6 +794,8 @@ function openTodayMetalPurchases(metal){
   modal.innerHTML=`<div class="summary-modal daily-metal-modal" role="dialog" aria-modal="true" aria-labelledby="today_metal_purchases_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Daily purchase report · ${fmtDate(todayStr())}</div><h2 id="today_metal_purchases_title">${esc(metal)} purchased today</h2></div><button class="modal-close" onclick="closeTodayMetalPurchases()" aria-label="Close">×</button></div>
     <div class="daily-metal-summary"><div><span>Items</span><strong>${summary.count}</strong></div><div><span>Total weight</span><strong>${fmtWeight(summary.weight)}</strong></div><div><span>Total payout</span><strong>${fmtMoney(summary.payout)}</strong></div></div>
+    ${dailyMetalPurityBreakdownMarkup(items,metal)}
+    <h3 class="daily-metal-transactions-heading">Individual purchases</h3>
     ${tableOrEmpty(items,item=>`<tr><td>${esc(item.customerName||'Walk-in')}</td><td><span class="metal-tag ${metal.toLowerCase()}">${esc(gradeLabel(metal,item.karat))}</span> · ${esc(item.itemType||'—')}</td><td class="num">${fmtWeight(item.netWeight)}</td><td class="num">${fmtMoney(item.payout)}</td><td>${esc(item.paymentMethod||'—')}</td></tr>`,['Seller','Grade / item','Net weight','Payout','Payment'],'No '+metal.toLowerCase()+' purchases recorded today.')}
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeTodayMetalPurchases();});
@@ -823,7 +837,7 @@ function renderDashboard(){
         <span class="daily-metal-name"><span class="metal-dot ${summary.metal.toLowerCase()}"></span>${summary.metal}</span>
         <strong>${fmtMoney(summary.payout)}</strong>
         <small>${summary.count} item${summary.count===1?'':'s'} · ${fmtWeight(summary.weight)}</small>
-        <span class="daily-metal-open">View today's purchases →</span>
+        <span class="daily-metal-open">View purity breakdown →</span>
       </button>`).join('')}
     </div>
   </section>
@@ -1447,16 +1461,17 @@ function toggleCashflowCard(){
   if(card) card.innerHTML=cashflowCardMarkup();
 }
 function cashflowCardMarkup(){
-  const snapshot=currentCashflow?.date===todayStr()?currentCashflow:null;
+  const cashflowDate=cashflowDateStr();
+  const snapshot=currentCashflow?.date===cashflowDate?currentCashflow:null;
   const configured=Boolean(snapshot?.configured)&&snapshot?.cashOnHand!==null&&Number.isFinite(Number(snapshot?.cashOnHand));
   const balance=configured?fmtMoney(snapshot.cashOnHand):'Not set';
   const updated=snapshot?.setAt?new Date(snapshot.setAt).toLocaleString('en-PH',{dateStyle:'medium',timeStyle:'short'}):'';
   return `<section class="cashflow-card ${configured&&Number(snapshot.cashOnHand)<0?'is-negative':''} ${cashflowCardMinimized?'is-minimized':''}">
     <div class="cashflow-main">
-      <div class="cashflow-balance"><div class="cashflow-title-row"><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(todayStr())}</span><button class="cashflow-toggle" onclick="toggleCashflowCard()" aria-expanded="${!cashflowCardMinimized}">${cashflowCardMinimized?'Expand':'Minimize'}</button></div><strong>${balance}</strong>${cashflowCardMinimized?'':`<small>${configured?`Live balance after today's cash purchases${updated?` · adjusted ${esc(updated)} by ${esc(snapshot.setBy||'Admin')}`:''}`:'Waiting for an administrator to set the available cash'}</small>`}</div>
+      <div class="cashflow-balance"><div class="cashflow-title-row"><span class="cashflow-eyebrow">Cash on hand · ${fmtDate(cashflowDate)}</span><button class="cashflow-toggle" onclick="toggleCashflowCard()" aria-expanded="${!cashflowCardMinimized}">${cashflowCardMinimized?'Expand':'Minimize'}</button></div><strong>${balance}</strong>${cashflowCardMinimized?'':`<small>${configured?`Live balance after cash purchases for this cashflow day${updated?` · adjusted ${esc(updated)} by ${esc(snapshot.setBy||'Admin')}`:''}`:'Waiting for an administrator to set the available cash'}</small>`}</div>
       ${cashflowCardMinimized?'':`<div class="cashflow-actions"><button class="btn secondary" onclick="openCashflowDetails()">View cash flow</button>${isAdmin()?`${configured?'<button class="btn secondary" onclick="openCashflowResetConfirmation()">Reset IN / OUT</button>':''}<button class="btn cashflow-edit" onclick="openCashflowEditor()">${configured?'Edit cash on hand':'Set cash on hand'}</button>`:'<span class="cashflow-readonly">Admin controlled</span>'}</div>`}
     </div>
-    <div class="cashflow-flow-strip"><strong>${new Date(todayStr()+'T00:00:00').toLocaleDateString('en-PH',{weekday:'short',month:'short',day:'2-digit'})}</strong><span class="cashflow-in">IN ${fmtMoney(snapshot?.cashIn||0)}</span><span class="cashflow-out">OUT ${fmtMoney(snapshot?.cashOut||0)}</span></div>
+    <div class="cashflow-flow-strip"><strong>${new Date(cashflowDate+'T00:00:00').toLocaleDateString('en-PH',{weekday:'short',month:'short',day:'2-digit'})}</strong><span class="cashflow-in">IN ${fmtMoney(snapshot?.cashIn||0)}</span><span class="cashflow-out">OUT ${fmtMoney(snapshot?.cashOut||0)}</span></div>
     ${cashflowCardMinimized?'':`<div class="cashflow-stats">
       <div><span>Bought today</span><strong>${fmtMoney(snapshot?.totalPurchases||0)}</strong><small>${snapshot?.purchaseCount||0} item${snapshot?.purchaseCount===1?'':'s'} · all payment methods</small></div>
       <div><span>Cash paid today</span><strong>${fmtMoney(snapshot?.cashPurchases||0)}</strong><small>Deducted from cash on hand</small></div>
@@ -1468,14 +1483,16 @@ async function syncCashflow(){
   if(cashflowSyncBusy||!currentUser||!(location.protocol==='http:'||location.protocol==='https:')) return;
   cashflowSyncBusy=true;
   try{
-    const response=await fetch(`/api/cashflow?date=${encodeURIComponent(todayStr())}`,{cache:'no-store'});
+    const requestedDate=cashflowDateStr();
+    const previousDate=currentCashflow?.date||'';
+    const response=await fetch(`/api/cashflow?date=${encodeURIComponent(requestedDate)}`,{cache:'no-store'});
     if(response.status===401){ showLogin(); return; }
     const result=await response.json().catch(()=>null);
     if(!response.ok) throw new Error(result?.error||'Cashflow sync failed');
-    if(!result||result.date!==todayStr()||(result.configured&&(result.cashOnHand===null||!Number.isFinite(Number(result.cashOnHand))))) throw new Error('Cashflow sync returned an invalid balance');
+    if(!result||result.date!==requestedDate||(result.configured&&(result.cashOnHand===null||!Number.isFinite(Number(result.cashOnHand))))) throw new Error('Cashflow sync returned an invalid balance');
     currentCashflow=result;
-    if(!cashflowHistoryDate||cashflowHistoryDate===todayStr()){
-      cashflowHistoryDate=todayStr(); cashflowHistorySnapshot=result;
+    if(!cashflowHistoryDate||cashflowHistoryDate===previousDate||cashflowHistoryDate===requestedDate){
+      cashflowHistoryDate=requestedDate; cashflowHistorySnapshot=result;
     }
     const card=document.getElementById('buying_cashflow_card');
     if(card) card.innerHTML=cashflowCardMarkup();
@@ -1534,7 +1551,7 @@ function updateCashflowAdjustmentSearch(value){
 function cashflowDetailRows(){
   const snapshot=cashflowDetailSnapshot();
   const transactions=filteredCashflowTransactions();
-  if(!transactions.length) return `<div class="empty-note">${cashflowSearch?'No buying transactions match your search.':`No buying transactions recorded on ${fmtDate(cashflowHistoryDate||todayStr())}.`}</div>`;
+  if(!transactions.length) return `<div class="empty-note">${cashflowSearch?'No buying transactions match your search.':`No buying transactions recorded on ${fmtDate(cashflowHistoryDate||cashflowDateStr())}.`}</div>`;
   const matchingIds=new Set(transactions.map(transaction=>transaction.id));
   let running=Number(snapshot.cashOnHand);
   const setAt=Date.parse(snapshot.setAt||'');
@@ -1554,7 +1571,7 @@ function cashflowDetailRows(){
 }
 function cashflowAdjustmentRows(){
   const adjustments=filteredCashflowAdjustments();
-  if(!adjustments.length) return `<div class="empty-note">${cashflowAdjustmentSearch?'No Admin cash adjustments match your search.':`No cash adjustments recorded on ${fmtDate(cashflowHistoryDate||todayStr())}.`}</div>`;
+  if(!adjustments.length) return `<div class="empty-note">${cashflowAdjustmentSearch?'No Admin cash adjustments match your search.':`No cash adjustments recorded on ${fmtDate(cashflowHistoryDate||cashflowDateStr())}.`}</div>`;
   const labels={set:'Set balance',add:'Cash added',deduct:'Cash deducted',reset:'IN / OUT reset'};
   const pages=Math.max(1,Math.ceil(adjustments.length/CASHFLOW_PAGE_SIZE));
   cashflowAdjustmentPage=Math.min(Math.max(cashflowAdjustmentPage,1),pages);
@@ -1565,10 +1582,10 @@ function cashflowAdjustmentRows(){
 function renderCashflowDetailsContent(){
   const container=document.getElementById('cashflow_details_content');
   if(!container) return;
-  const snapshot=cashflowDetailSnapshot(),viewDate=cashflowHistoryDate||todayStr();
+  const snapshot=cashflowDetailSnapshot(),viewDate=cashflowHistoryDate||cashflowDateStr(),currentDate=cashflowDateStr();
   const title=document.getElementById('cashflow_details_title'); if(title) title.textContent=`Cash movement · ${fmtDate(viewDate)}`;
   const adjustmentTitle=document.getElementById('cashflow_adjustment_details_title'); if(adjustmentTitle) adjustmentTitle.textContent=`Admin cash adjustments · ${fmtDate(viewDate)}`;
-  container.innerHTML=`<div class="cashflow-history-picker"><button class="btn secondary small" onclick="changeCashflowHistoryDay(-1)">Previous day</button><div class="field"><label for="cashflow_history_date">Retrieve cashflow date</label><input id="cashflow_history_date" type="date" max="${todayStr()}" value="${esc(viewDate)}" onchange="changeCashflowHistoryDate(this.value)"></div><button class="btn secondary small" onclick="changeCashflowHistoryDay(1)" ${viewDate>=todayStr()?'disabled':''}>Next day</button></div>
+  container.innerHTML=`<div class="cashflow-history-picker"><button class="btn secondary small" onclick="changeCashflowHistoryDay(-1)">Previous day</button><div class="field"><label for="cashflow_history_date">Retrieve cashflow date</label><input id="cashflow_history_date" type="date" max="${currentDate}" value="${esc(viewDate)}" onchange="changeCashflowHistoryDate(this.value)"></div><button class="btn secondary small" onclick="changeCashflowHistoryDay(1)" ${viewDate>=currentDate?'disabled':''}>Next day</button></div>
   ${cashflowHistoryLoading?'<div class="empty-note">Loading saved cashflow…</div>':`<div class="stat-row cashflow-modal-stats">
     <div class="stat"><div class="label">Cash on hand</div><div class="value">${snapshot.configured?fmtMoney(snapshot.cashOnHand):'Not set'}</div></div>
     <div class="stat"><div class="label">Bought on this date</div><div class="value">${fmtMoney(snapshot.totalPurchases||0)}</div><div class="sub">${snapshot.purchaseCount||0} item${snapshot.purchaseCount===1?'':'s'}</div></div>
@@ -1576,13 +1593,13 @@ function renderCashflowDetailsContent(){
     <div class="stat"><div class="label">Non-cash</div><div class="value">${fmtMoney(snapshot.nonCashPurchases||0)}</div></div>
   </div>
   <div class="cashflow-modal-flow"><span>Daily physical cash movement</span><div><strong class="cashflow-in">IN ${fmtMoney(snapshot.cashIn||0)}</strong><strong class="cashflow-out">OUT ${fmtMoney(snapshot.cashOut||0)}</strong></div><small>IN is Admin-added cash. OUT is Cash buying payouts plus manual deductions.</small></div>
-  ${snapshot.configured?`<div class="cashflow-set-note"><strong>Latest Admin adjustment:</strong> Balance became ${fmtMoney(snapshot.balanceBase)} at ${esc(cashflowTime(snapshot.setAt))}. Cash purchases recorded after this point are deducted automatically.</div>`:'<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
+  ${snapshot.configured?`<div class="cashflow-set-note"><strong>Cash-on-hand formula:</strong> ${fmtMoney(snapshot.balanceBase)} latest balance − ${fmtMoney(snapshot.cashPurchasesAfterSetting||0)} Cash purchases after ${esc(cashflowTime(snapshot.setAt))} = ${fmtMoney(snapshot.cashOnHand)}. Purchases marked “Included in latest set” are not deducted again.</div>`:'<div class="cashflow-set-note"><strong>Cash on hand is not set.</strong> An administrator must enter the current physical cash before a running balance can be shown.</div>'}
   <div class="cashflow-search"><div class="field"><label for="cashflow_search">Search buying transactions</label><input id="cashflow_search" type="search" autocomplete="off" value="${esc(cashflowSearch)}" placeholder="Seller, item, payment, amount, or time" oninput="updateCashflowSearch(this.value)"></div>${cashflowSearch?'<button class="btn secondary small" onclick="updateCashflowSearch(\'\')">Clear</button>':''}</div>
   <h3 class="cashflow-ledger-title">Buying transactions</h3>${cashflowDetailRows()}
   <div class="cashflow-adjustment-launch"><div><strong>Admin cash adjustments</strong><span>Review cash added, deducted, or reconciled separately.</span></div><button class="btn secondary" onclick="openCashflowAdjustmentDetails()">View adjustments <span class="badge-count">${snapshot.adjustments?.length||0}</span></button></div>`}`;
 }
 async function changeCashflowHistoryDate(date){
-  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>todayStr()){toast('Choose today or an earlier date');return;}
+  if(!/^\d{4}-\d{2}-\d{2}$/.test(date)||date>cashflowDateStr()){toast('Choose the current cashflow day or an earlier date');return;}
   const previousDate=cashflowHistoryDate,previousSnapshot=cashflowHistorySnapshot;
   cashflowHistoryDate=date; cashflowPurchasePage=1; cashflowAdjustmentPage=1; cashflowSearch=''; cashflowAdjustmentSearch=''; cashflowHistoryLoading=true; renderCashflowDetailsContent();
   try{
@@ -1596,20 +1613,21 @@ async function changeCashflowHistoryDate(date){
   finally{cashflowHistoryLoading=false;renderCashflowDetailsContent();renderCashflowAdjustmentDetailsContent();}
 }
 function changeCashflowHistoryDay(offset){
-  const current=cashflowHistoryDate||todayStr(),next=dateKeyPlusDays(current,offset);
-  if(next<=todayStr()) changeCashflowHistoryDate(next);
+  const current=cashflowHistoryDate||cashflowDateStr(),next=dateKeyPlusDays(current,offset);
+  if(next<=cashflowDateStr()) changeCashflowHistoryDate(next);
 }
 async function openCashflowDetails(){
   closeCashflowDetails();
-  cashflowPurchasePage=1; cashflowAdjustmentPage=1; cashflowSearch=''; cashflowAdjustmentSearch=''; cashflowHistoryDate=todayStr(); cashflowHistorySnapshot=currentCashflow;
+  const cashflowDate=cashflowDateStr();
+  cashflowPurchasePage=1; cashflowAdjustmentPage=1; cashflowSearch=''; cashflowAdjustmentSearch=''; cashflowHistoryDate=cashflowDate; cashflowHistorySnapshot=currentCashflow;
   const modal=document.createElement('div'); modal.id='cashflow_details_modal'; modal.className='modal-backdrop';
   modal.innerHTML=`<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="cashflow_details_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Buying cashflow history</div><h2 id="cashflow_details_title">Cash movement · ${fmtDate(todayStr())}</h2><p class="form-note">Choose an earlier date to retrieve its saved cash balance, purchases, and adjustments.</p></div><button class="modal-close" onclick="closeCashflowDetails()" aria-label="Close">×</button></div>
+    <div class="summary-modal-head"><div><div class="eyebrow">Buying cashflow history</div><h2 id="cashflow_details_title">Cash movement · ${fmtDate(cashflowDate)}</h2><p class="form-note">Daily totals start a new day at 4:00 AM Manila time. Earlier cashflow days remain available here.</p></div><button class="modal-close" onclick="closeCashflowDetails()" aria-label="Close">×</button></div>
     <div id="cashflow_details_content"></div>
-    <div class="form-actions" style="justify-content:flex-end;"><button class="btn secondary" onclick="changeCashflowHistoryDate(cashflowHistoryDate||todayStr())">Refresh</button><button class="btn" onclick="closeCashflowDetails()">Close</button></div>
+    <div class="form-actions" style="justify-content:flex-end;"><button class="btn secondary" onclick="changeCashflowHistoryDate(cashflowHistoryDate||cashflowDateStr())">Refresh</button><button class="btn" onclick="closeCashflowDetails()">Close</button></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeCashflowDetails();});
-  document.body.appendChild(modal); renderCashflowDetailsContent(); await changeCashflowHistoryDate(todayStr());
+  document.body.appendChild(modal); renderCashflowDetailsContent(); await changeCashflowHistoryDate(cashflowDate);
 }
 function closeCashflowAdjustmentDetails(){ document.getElementById('cashflow_adjustment_details_modal')?.remove(); }
 function renderCashflowAdjustmentDetailsContent(){
@@ -1620,9 +1638,9 @@ function openCashflowAdjustmentDetails(){
   closeCashflowAdjustmentDetails(); cashflowAdjustmentPage=1; cashflowAdjustmentSearch='';
   const modal=document.createElement('div'); modal.id='cashflow_adjustment_details_modal'; modal.className='modal-backdrop cashflow-adjustment-backdrop';
   modal.innerHTML=`<div class="inventory-move-modal cashflow-adjustment-modal" role="dialog" aria-modal="true" aria-labelledby="cashflow_adjustment_details_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Cashflow history</div><h2 id="cashflow_adjustment_details_title">Admin cash adjustments · ${fmtDate(cashflowHistoryDate||todayStr())}</h2><p class="form-note">Cash added is green, cash deducted is red, and exact balance reconciliation is neutral.</p></div><button class="modal-close" onclick="closeCashflowAdjustmentDetails()" aria-label="Close">×</button></div>
+    <div class="summary-modal-head"><div><div class="eyebrow">Cashflow history</div><h2 id="cashflow_adjustment_details_title">Admin cash adjustments · ${fmtDate(cashflowHistoryDate||cashflowDateStr())}</h2><p class="form-note">Cash added is green, cash deducted is red, and exact balance reconciliation is neutral.</p></div><button class="modal-close" onclick="closeCashflowAdjustmentDetails()" aria-label="Close">×</button></div>
     <div id="cashflow_adjustment_details_content"></div>
-    <div class="form-actions" style="justify-content:flex-end;"><button class="btn secondary" onclick="changeCashflowHistoryDate(cashflowHistoryDate||todayStr())">Refresh</button><button class="btn" onclick="closeCashflowAdjustmentDetails()">Close</button></div>
+    <div class="form-actions" style="justify-content:flex-end;"><button class="btn secondary" onclick="changeCashflowHistoryDate(cashflowHistoryDate||cashflowDateStr())">Refresh</button><button class="btn" onclick="closeCashflowAdjustmentDetails()">Close</button></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeCashflowAdjustmentDetails();});
   document.body.appendChild(modal); renderCashflowAdjustmentDetailsContent();
@@ -1661,11 +1679,12 @@ function openCashflowResetConfirmation(){
 async function resetCashflowMovements(){
   if(!isAdmin()) return;
   try{
-    const response=await fetch('/api/cashflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:todayStr(),operation:'reset',amount:0,note:'IN and OUT counters reset'})});
+    const cashflowDate=cashflowDateStr();
+    const response=await fetch('/api/cashflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:cashflowDate,operation:'reset',amount:0,note:'IN and OUT counters reset'})});
     const result=await response.json().catch(()=>null);
     if(!response.ok) throw new Error(result?.error||'Could not reset IN and OUT');
     currentCashflow=result; closeCashflowResetConfirmation();
-    if(!cashflowHistoryDate||cashflowHistoryDate===todayStr()){cashflowHistoryDate=todayStr();cashflowHistorySnapshot=result;renderCashflowDetailsContent();renderCashflowAdjustmentDetailsContent();}
+    if(!cashflowHistoryDate||cashflowHistoryDate===cashflowDate){cashflowHistoryDate=cashflowDate;cashflowHistorySnapshot=result;renderCashflowDetailsContent();renderCashflowAdjustmentDetailsContent();}
     const card=document.getElementById('buying_cashflow_card'); if(card) card.innerHTML=cashflowCardMarkup();
     toast('IN and OUT reset to PHP 0');
   }catch(error){ toast(error.message||'Could not reset IN and OUT'); }
@@ -1681,11 +1700,12 @@ async function saveCashflowOverride(event){
   const operation=val('cashflow_operation'),amount=Number(val('cashflow_amount')),note=val('cashflow_note').trim();
   if(!Number.isFinite(amount)||amount<0){ toast('Enter a valid non-negative cash amount'); return; }
   try{
-    const response=await fetch('/api/cashflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:todayStr(),operation,amount,note})});
+    const cashflowDate=cashflowDateStr();
+    const response=await fetch('/api/cashflow',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify({date:cashflowDate,operation,amount,note})});
     const result=await response.json().catch(()=>null);
     if(!response.ok) throw new Error(result?.error||'Could not save cash on hand');
     currentCashflow=result; closeCashflowEditor();
-    if(!cashflowHistoryDate||cashflowHistoryDate===todayStr()){cashflowHistoryDate=todayStr();cashflowHistorySnapshot=result;renderCashflowDetailsContent();renderCashflowAdjustmentDetailsContent();}
+    if(!cashflowHistoryDate||cashflowHistoryDate===cashflowDate){cashflowHistoryDate=cashflowDate;cashflowHistorySnapshot=result;renderCashflowDetailsContent();renderCashflowAdjustmentDetailsContent();}
     const card=document.getElementById('buying_cashflow_card'); if(card) card.innerHTML=cashflowCardMarkup();
     toast(operation==='add'?'Cash added':operation==='deduct'?'Cash deducted':'Cash on hand updated');
   }catch(error){ toast(error.message||'Could not save cash on hand'); }
