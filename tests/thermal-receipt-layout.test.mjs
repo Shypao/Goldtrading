@@ -20,10 +20,11 @@ test('thermal receipt width includes its padding so printed totals are not clipp
   );
 });
 
-test('58 mm receipts use the full roll with text inside the 48 mm printable area', async () => {
+test('58 mm receipts keep all text inside the VOZY P50 print-head boundary', async () => {
   const source = await readFile(appPath, 'utf8');
 
-  assert.match(source, /const paperPadding = paperWidth === 80 \? 4 : 5;/);
+  assert.match(source, /const receiptWidth = paperWidth === 80 \? 80 : 46;/);
+  assert.match(source, /const paperPadding = paperWidth === 80 \? 4 : 2;/);
   assert.match(
     source,
     /@page\{size:\$\{paperWidth\}mm auto;margin:0\}/,
@@ -31,7 +32,9 @@ test('58 mm receipts use the full roll with text inside the 48 mm printable area
   );
   assert.match(
     source,
-    /width:\$\{paperWidth\}mm;padding:\$\{paperPadding\}mm/,
-    '58 mm paper should keep text within 5 mm internal padding on both sides',
+    /width:\$\{receiptWidth\}mm;padding:\$\{paperPadding\}mm/,
+    'the 58 mm profile should leave a 2 mm guard inside the 48 mm print head',
   );
+  assert.match(source, /\.receipt-calc\{font-size:\$\{paperWidth === 80 \? 10 : 9\}px;white-space:nowrap\}/);
+  assert.match(source, /\.receipt-total\{font-size:\$\{paperWidth === 80 \? 14 : 12\}px;gap:6px\}/);
 });
