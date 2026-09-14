@@ -2658,11 +2658,11 @@ function printPurchaseReceipt(batchId) {
         return;
     }
     const paperWidth = Number(val('receipt_paper_size')) === 80 ? 80 : 58;
-    const paperMargin = paperWidth === 80 ? 4 : 5;
+    const paperPadding = paperWidth === 80 ? 4 : 5;
     document.getElementById('thermal_print_page_style')?.remove();
     const pageStyle = document.createElement('style');
     pageStyle.id = 'thermal_print_page_style';
-    pageStyle.textContent = `@page{size:${paperWidth}mm auto;margin:${paperMargin}mm}`;
+    pageStyle.textContent = `@page{size:${paperWidth}mm auto;margin:0}body.printing-thermal-receipt .thermal-receipt,body.printing-thermal-receipt .thermal-receipt.paper-80{width:${paperWidth}mm;padding:${paperPadding}mm}`;
     document.head.appendChild(pageStyle);
     document.body.classList.add('printing-thermal-receipt');
     window.addEventListener('afterprint', cleanupThermalPrintState, { once: true });

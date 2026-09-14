@@ -10,7 +10,7 @@ test('thermal receipt width includes its padding so printed totals are not clipp
 
   assert.match(
     source,
-    /\.thermal-receipt\{[^}]*box-sizing:border-box;[^}]*width:58mm;/,
+    /\.thermal-receipt\{[^}]*box-sizing:border-box;[^}]*width:58mm;[^}]*padding:5mm;/,
     'receipt padding must remain inside the selected thermal paper width',
   );
   assert.match(
@@ -20,13 +20,18 @@ test('thermal receipt width includes its padding so printed totals are not clipp
   );
 });
 
-test('58 mm receipts stay inside the printer 48 mm printable area', async () => {
+test('58 mm receipts use the full roll with text inside the 48 mm printable area', async () => {
   const source = await readFile(appPath, 'utf8');
 
-  assert.match(source, /const paperMargin = paperWidth === 80 \? 4 : 5;/);
+  assert.match(source, /const paperPadding = paperWidth === 80 \? 4 : 5;/);
   assert.match(
     source,
-    /@page\{size:\$\{paperWidth\}mm auto;margin:\$\{paperMargin\}mm\}/,
-    '58 mm paper should use 5 mm side margins; 80 mm paper should use 4 mm margins',
+    /@page\{size:\$\{paperWidth\}mm auto;margin:0\}/,
+    'the receipt page should use the full selected roll width',
+  );
+  assert.match(
+    source,
+    /width:\$\{paperWidth\}mm;padding:\$\{paperPadding\}mm/,
+    '58 mm paper should keep text within 5 mm internal padding on both sides',
   );
 });
