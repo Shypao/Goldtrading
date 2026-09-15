@@ -57,6 +57,17 @@ async function loadInventoryApi() {
       openCompleteLiquidationBatch(id);
       return appended.at(-1)?.innerHTML || '';
     },
+    openBatchEdit(id) {
+      appended.length = 0;
+      openLiquidationBatchEdit(id);
+      return appended.at(-1)?.innerHTML || '';
+    },
+    appendToBatch(batchId, itemIds) {
+      const batch = db.liquidationBatches.find(record => record.id === batchId);
+      const items = itemIds.map(id => db.stock.find(item => item.id === id)).filter(Boolean);
+      appendItemsToLiquidationBatch(batch, items);
+      return JSON.parse(JSON.stringify({ batch, items, batchCount: db.liquidationBatches.length }));
+    },
     openCashflowResetModal() {
       appended.length = 0;
       if (typeof openCashflowResetConfirmation === 'function') openCashflowResetConfirmation();
@@ -170,7 +181,7 @@ test('Liquidation view renders independent batches and their totals', async () =
   assert.match(html, /PHP 800/);
 });
 
-test('a mixed Gold and Silver selection prepares separate metal batches', async () => {
+test('a mixed Gold and Silver selection stays in one liquidation batch', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();
   const gold = state.stock[0];
@@ -183,9 +194,36 @@ test('a mixed Gold and Silver selection prepares separate metal batches', async 
 
   assert.equal(result.message, '');
   assert.deepEqual(JSON.parse(JSON.stringify(result.pending.groups)), [
-    { metal: 'Gold', ids: ['stock-on-hand'] },
-    { metal: 'Silver', ids: ['stock-on-hand-silver'] }
+    { metal: 'Mixed', ids: ['stock-on-hand', 'stock-on-hand-silver'] }
   ]);
+});
+
+test('editing a batch offers available inventory from other metals', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock.push({ id: 'stock-silver-new', date: '2026-09-12', customerName: 'New Silver Seller', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', currentWeight: 4, netWeight: 4, cost: 300 });
+  api.setState(state);
+
+  const html = api.openBatchEdit('LB-0001');
+
+  assert.match(html, /\+ Add New Item/);
+  assert.match(html, /Current batch items/);
+  assert.match(html, /New Silver Seller/);
+  assert.match(html, /Available Gold, Silver, or Platinum inventory/);
+});
+
+test('adding Silver to a Gold batch converts it to Mixed and preserves both lines', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock.push({ id: 'stock-silver-new', date: '2026-09-12', customerName: 'Silver Seller', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', currentWeight: 4, netWeight: 4, cost: 300 });
+  api.setState(state);
+
+  const result = api.appendToBatch('LB-0001', ['stock-silver-new']);
+
+  assert.equal(result.batch.metal, 'Mixed');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.batch.lines.map(line => line.itemId))), ['stock-transit-a', 'stock-silver-new']);
+  assert.equal(result.items[0].status, 'For Liquidation');
+  assert.equal(result.items[0].liquidationBatchId, 'LB-0001');
 });
 
 test('record sale modal shows live profit margin fields without buyer offer', async () => {

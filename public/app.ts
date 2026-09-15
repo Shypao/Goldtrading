@@ -2405,7 +2405,7 @@ function openInventoryMoveReview(selected,context){
   modal.id='inventory_move_confirmation'; modal.className='modal-backdrop';
   modal.innerHTML=`<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="inventory_move_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Review inventory movement</div><h2 id="inventory_move_title">Move ${selected.length} stock record${selected.length===1?'':'s'}?</h2></div><button class="modal-close" onclick="closeInventoryMoveConfirmation()" aria-label="Close">×</button></div>
-    <p class="move-confirmation-intro">${metals.length>1?`The selected records will be separated into ${metals.length} independent batches: ${metals.map(esc).join(' and ')}.`:context.combineDates?`The system automatically selected every eligible ${esc(metals[0])} stock record from the ${dates.length} chosen purchase date${dates.length===1?'':'s'}.`:context.automatic?`The system automatically selected ${selected.length} eligible stock record${selected.length===1?'':'s'} for this percentage.`:context.individual?'This item will be prepared as an individual liquidation.':dates.length>1?'Items from different purchase dates will be combined into one liquidation batch.':'The checked records will be combined into one liquidation batch.'} Review the items below before confirming. This step does not sell the stock or deduct its weight.</p>
+    <p class="move-confirmation-intro">${metals.length>1?`The selected ${metals.map(esc).join(' and ')} records will stay together in one mixed-metal batch.`:context.combineDates?`The system automatically selected every eligible ${esc(metals[0])} stock record from the ${dates.length} chosen purchase date${dates.length===1?'':'s'}.`:context.automatic?`The system automatically selected ${selected.length} eligible stock record${selected.length===1?'':'s'} for this percentage.`:context.individual?'This item will be prepared as an individual liquidation.':dates.length>1?'Items from different purchase dates will be combined into one liquidation batch.':'The checked records will be combined into one liquidation batch.'} Review the items below before confirming. This step does not sell the stock or deduct its weight.</p>
     <div class="move-confirmation-summary">
       <div><span>Purchase date${dates.length===1?'':'s'}</span><strong>${dateLabel}</strong></div>
       <div><span>Selection</span><strong>${selectionLabel}</strong></div>
@@ -2415,7 +2415,7 @@ function openInventoryMoveReview(selected,context){
     <div class="table-wrap move-confirmation-items"><table><thead><tr><th>Inventory item</th><th>Customer</th><th>Status</th><th class="num-head">Weight moving</th><th class="num-head">Cost</th></tr></thead><tbody>
       ${selected.map(item=>`<tr><td><strong>${esc(item.metal)} ${esc(item.karat)}</strong><br><span class="form-note">${esc(item.itemType)}${item.remarks?' · '+esc(item.remarks):''}</span></td><td>${esc(item.customerName||'—')}</td><td>${statusPill(item.status)}</td><td class="num"><strong>${fmtWeight(item.currentWeight)}</strong><br><span class="form-note">full available weight</span></td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}
     </tbody></table></div>
-    <div class="move-confirmation-note"><strong>What happens next?</strong><span>Assign a name and buyer to each metal batch. The records will then become For Liquidation and leave Current Inventory until sold or returned.</span></div>
+    <div class="move-confirmation-note"><strong>What happens next?</strong><span>Assign a name and buyer to the batch. Gold, Silver, and Platinum items may remain together. The records will then become For Liquidation and leave Current Inventory until sold or returned.</span></div>
     <div class="form-actions"><button class="btn secondary" onclick="closeInventoryMoveConfirmation()">Cancel</button><button class="btn" onclick="confirmInventoryMoveToLiquidation()">Continue to batch details</button></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeInventoryMoveConfirmation();});
@@ -2427,20 +2427,33 @@ function confirmInventoryMoveToLiquidation(){
   if(!pending){ closeInventoryMoveConfirmation(); return; }
   const selected=pending.ids.map(id=>db.stock.find(item=>item.id===id)).filter(item=>item&&selectableInventory(item));
   if(selected.length!==pending.ids.length){ closeInventoryMoveConfirmation(); toast('One or more selected records are no longer available. Review the inventory again.'); render(); return; }
-  const groups=[];
-  for(const item of selected){
-    let group=groups.find(entry=>entry.metal===item.metal);
-    if(!group){ group={metal:item.metal,ids:[]}; groups.push(group); }
-    group.ids.push(item.id);
-  }
+  const metals=Array.from(new Set(selected.map(item=>item.metal)));
+  const groups=[{metal:metals.length===1?metals[0]:'Mixed',ids:selected.map(item=>item.id)}];
   pendingLiquidationBatchSetup={groups};
   closeInventoryMoveConfirmation();
   openLiquidationBatchSetup();
 }
 function closeLiquidationBatchSetup(){ document.getElementById('liquidation_batch_setup')?.remove(); pendingLiquidationBatchSetup=null; }
 function suggestedLiquidationBatchName(items){
+  const metals=Array.from(new Set(items.map(item=>item.metal)));
   const grades=Array.from(new Set(items.map(item=>gradeLabel(item.metal,item.karat))));
-  return `${grades.length===1?grades[0]:items[0]?.metal||'Liquidation'} batch`;
+  return `${metals.length>1?'Mixed':grades.length===1?grades[0]:items[0]?.metal||'Liquidation'} batch`;
+}
+function liquidationLinesForItems(items){
+  return items.map(item=>({itemId:item.id,previousStatus:item.status,weight:roundWeight(item.currentWeight),cost:roundMoney(item.cost)}));
+}
+function appendItemsToLiquidationBatch(batch,items){
+  const existingIds=new Set((batch.lines||[]).map(line=>line.itemId));
+  const appendedItems=[];
+  items.forEach(item=>{
+    if(!item?.id||existingIds.has(item.id)) return;
+    existingIds.add(item.id); appendedItems.push(item);
+  });
+  batch.lines=[...(batch.lines||[]),...liquidationLinesForItems(appendedItems)];
+  appendedItems.forEach(item=>{item.status='For Liquidation';item.liquidationBatchId=batch.id;});
+  const batchMetals=Array.from(new Set((batch.lines||[]).map(line=>db.stock.find(stock=>stock.id===line.itemId)?.metal).filter(Boolean)));
+  if(batchMetals.length) batch.metal=batchMetals.length===1?batchMetals[0]:'Mixed';
+  return appendedItems;
 }
 function openLiquidationBatchSetup(){
   const pending=pendingLiquidationBatchSetup;
@@ -2449,11 +2462,12 @@ function openLiquidationBatchSetup(){
   if(groups.some(group=>group.items.length!==group.ids.length)){ closeLiquidationBatchSetup(); toast('One or more selected records are no longer available'); render(); return; }
   const modal=document.createElement('div'); modal.id='liquidation_batch_setup'; modal.className='modal-backdrop';
   modal.innerHTML=`<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="liquidation_batch_setup_title">
-    <div class="summary-modal-head"><div><div class="eyebrow">Create liquidation ${groups.length===1?'batch':'batches'}</div><h2 id="liquidation_batch_setup_title">Assign each metal batch</h2></div><button class="modal-close" onclick="closeLiquidationBatchSetup()" aria-label="Close">×</button></div>
-    <p class="move-confirmation-intro">${groups.length===1?'Complete the batch details below.':`Your selection was separated into ${groups.length} batches so every metal keeps its own buyer, cost, and final profit.`}</p>
+    <div class="summary-modal-head"><div><div class="eyebrow">Create liquidation batch</div><h2 id="liquidation_batch_setup_title">Assign batch details</h2></div><button class="modal-close" onclick="closeLiquidationBatchSetup()" aria-label="Close">×</button></div>
+    <p class="move-confirmation-intro">Complete the batch details below. Mixed Gold, Silver, and Platinum items are accepted.</p>
     ${groups.map((group,index)=>{
       const totalWeight=group.items.reduce((sum,item)=>sum+Number(item.currentWeight),0),totalCost=group.items.reduce((sum,item)=>sum+Number(item.cost),0);
-      return `<section class="move-confirmation-note"><strong>${esc(group.metal)} batch · ${group.items.length} item${group.items.length===1?'':'s'}</strong><div class="form-grid" style="margin-top:12px;"><div class="field"><label>Batch name</label><input id="new_liquidation_batch_name_${index}" value="${esc(suggestedLiquidationBatchName(group.items))}" required></div><div class="field"><label>Assigned buyer</label><input id="new_liquidation_batch_buyer_${index}" placeholder="Buyer name" required></div><div class="field span-2"><label>Notes</label><input id="new_liquidation_batch_notes_${index}" placeholder="Optional"></div></div><div class="move-confirmation-summary"><div><span>Metal</span><strong>${esc(group.metal)}</strong></div><div><span>Items</span><strong>${group.items.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(totalWeight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(totalCost)}</strong></div></div></section>`;
+      const metals=Array.from(new Set(group.items.map(item=>item.metal)));
+      return `<section class="move-confirmation-note"><strong>${esc(metals.join(' / '))} batch · ${group.items.length} item${group.items.length===1?'':'s'}</strong><div class="form-grid" style="margin-top:12px;"><div class="field"><label>Batch name</label><input id="new_liquidation_batch_name_${index}" value="${esc(suggestedLiquidationBatchName(group.items))}" required></div><div class="field"><label>Assigned buyer</label><input id="new_liquidation_batch_buyer_${index}" placeholder="Buyer name" required></div><div class="field span-2"><label>Notes</label><input id="new_liquidation_batch_notes_${index}" placeholder="Optional"></div></div><div class="move-confirmation-summary"><div><span>Metal${metals.length===1?'':'s'}</span><strong>${esc(metals.join(' / '))}</strong></div><div><span>Items</span><strong>${group.items.length}</strong></div><div><span>Total weight</span><strong>${fmtWeight(totalWeight)}</strong></div><div><span>Carrying cost</span><strong>${fmtMoney(totalCost)}</strong></div></div></section>`;
     }).join('')}
     <div class="form-actions"><button class="btn secondary" onclick="closeLiquidationBatchSetup()">Cancel</button><button class="btn" onclick="createLiquidationBatch()">Create ${groups.length===1?'batch':groups.length+' batches'}</button></div>
   </div>`;
@@ -2470,14 +2484,14 @@ async function createLiquidationBatch(){
     notes:val(`new_liquidation_batch_notes_${index}`).trim(),
     items:group.ids.map(id=>db.stock.find(item=>item.id===id)).filter(item=>item&&selectableInventory(item))
   }));
-  if(prepared.some(group=>!group.name||!group.buyer)){ toast('Enter a batch name and assigned buyer for every metal'); return; }
+  if(prepared.some(group=>!group.name||!group.buyer)){ toast('Enter a batch name and assigned buyer'); return; }
   if(prepared.some((group,index)=>group.items.length!==pending.groups[index].ids.length)){ closeLiquidationBatchSetup(); toast('One or more selected records are no longer available'); render(); return; }
   const beforeState=JSON.parse(JSON.stringify(db));
   prepared.forEach(group=>{
     const id=nextSequenceId('LB',db.liquidationBatches);
-    const lines=group.items.map(item=>({itemId:item.id,previousStatus:item.status,weight:roundWeight(item.currentWeight),cost:roundMoney(item.cost)}));
-    db.liquidationBatches.push({id,name:group.name,buyer:group.buyer,metal:group.metal,lines,notes:group.notes,createdAt:new Date().toISOString(),createdBy:currentUser?.displayName||''});
-    group.items.forEach(item=>{item.status='For Liquidation';item.liquidationBatchId=id;});
+    const batch={id,name:group.name,buyer:group.buyer,metal:group.metal,lines:[],notes:group.notes,createdAt:new Date().toISOString(),createdBy:currentUser?.displayName||''};
+    appendItemsToLiquidationBatch(batch,group.items);
+    db.liquidationBatches.push(batch);
   });
   const saved=await saveDB();
   if(!saved){db=beforeState;render();toast(`Liquidation ${prepared.length===1?'batch was':'batches were'} not created`);return;}
@@ -2683,13 +2697,102 @@ function liquidationAmountLabel(record){
   return amounts.size?Array.from(amounts.entries()).map(([assay,amount])=>`${esc(assay)}: ${esc(fmtMoney(amount))}`).join('<br>'):'—';
 }
 let editingOpenLiquidationBatchId=null;
-function closeOpenLiquidationBatchModal(){ document.getElementById('open_liquidation_batch_modal')?.remove(); editingOpenLiquidationBatchId=null; }
+const openLiquidationBatchAddSelection=new Set();
+let openLiquidationBatchItemFilter='All';
+function closeOpenLiquidationBatchModal(){ document.getElementById('open_liquidation_batch_modal')?.remove(); editingOpenLiquidationBatchId=null; openLiquidationBatchAddSelection.clear(); openLiquidationBatchItemFilter='All'; }
+function liquidationBatchItemMatchesFilter(item,filter){
+  return filter==='All'||item.karat===filter||item.itemType===filter;
+}
+function liquidationBatchItemFilterOptions(items){
+  const availableGrades=new Set(items.map(item=>item.karat).filter(Boolean));
+  const gradeOrder=(GRADE_META[items[0]?.metal]||[]).map(grade=>grade.key);
+  const grades=[...gradeOrder.filter(grade=>availableGrades.delete(grade)),...Array.from(availableGrades).sort()];
+  const itemTypes=Array.from(new Set(items.map(item=>item.itemType).filter(Boolean))).sort((a,b)=>a.localeCompare(b));
+  return ['All',...grades,...itemTypes.filter(type=>!grades.includes(type))];
+}
+function visibleOpenLiquidationBatchAddRows(){
+  return Array.from(document.querySelectorAll?.('[data-open-batch-add-row]')||[]).filter(row=>!row.hidden);
+}
+function syncOpenLiquidationBatchAddControls(){
+  const count=document.getElementById('edit_open_batch_add_count'),button=document.getElementById('edit_open_batch_add_submit');
+  if(count) count.textContent=String(openLiquidationBatchAddSelection.size);
+  if(button) button.disabled=!openLiquidationBatchAddSelection.size;
+  const visibleCheckboxes=visibleOpenLiquidationBatchAddRows().map(row=>row.querySelector('input[data-open-batch-add-id]')).filter(Boolean);
+  const selectedVisible=visibleCheckboxes.filter(checkbox=>checkbox.checked).length;
+  const selectAll=document.getElementById('edit_open_batch_select_all');
+  if(selectAll){
+    selectAll.disabled=!visibleCheckboxes.length;
+    selectAll.checked=visibleCheckboxes.length>0&&selectedVisible===visibleCheckboxes.length;
+    selectAll.indeterminate=selectedVisible>0&&selectedVisible<visibleCheckboxes.length;
+  }
+  const shown=document.getElementById('edit_open_batch_visible_count');
+  if(shown) shown.textContent=String(visibleCheckboxes.length);
+}
+function changeOpenLiquidationBatchItemFilter(filter){
+  openLiquidationBatchItemFilter=filter||'All';
+  Array.from(document.querySelectorAll?.('[data-open-batch-add-row]')||[]).forEach(row=>{
+    row.hidden=!liquidationBatchItemMatchesFilter({karat:row.dataset.itemKarat,itemType:row.dataset.itemType},openLiquidationBatchItemFilter);
+  });
+  syncOpenLiquidationBatchAddControls();
+}
+function toggleAllVisibleOpenLiquidationBatchItems(checked){
+  visibleOpenLiquidationBatchAddRows().forEach(row=>{
+    const checkbox=row.querySelector('input[data-open-batch-add-id]');
+    if(!checkbox) return;
+    checkbox.checked=checked;
+    if(checked) openLiquidationBatchAddSelection.add(checkbox.dataset.openBatchAddId); else openLiquidationBatchAddSelection.delete(checkbox.dataset.openBatchAddId);
+  });
+  syncOpenLiquidationBatchAddControls();
+}
+function toggleOpenLiquidationBatchItemPicker(){
+  const picker=document.getElementById('edit_open_batch_item_picker');
+  if(!picker) return;
+  picker.classList.toggle('is-hidden');
+  if(!picker.classList.contains('is-hidden')){
+    picker.querySelector('#edit_open_batch_item_filter')?.focus();
+    changeOpenLiquidationBatchItemFilter(openLiquidationBatchItemFilter);
+  }
+}
+function toggleOpenLiquidationBatchAddItem(id,checked){
+  if(checked) openLiquidationBatchAddSelection.add(id); else openLiquidationBatchAddSelection.delete(id);
+  syncOpenLiquidationBatchAddControls();
+}
 function openLiquidationBatchEdit(id){
   const batch=db.liquidationBatches.find(record=>record.id===id); if(!batch||!adminEditGuard()) return;
+  openLiquidationBatchAddSelection.clear();
+  openLiquidationBatchItemFilter='All';
   editingOpenLiquidationBatchId=id;
+  const lines=batch.lines||[];
+  const batchWeight=lines.reduce((sum,line)=>sum+Number(line.weight||0),0),batchCost=lines.reduce((sum,line)=>sum+Number(line.cost||0),0);
+  const eligible=db.stock.filter(item=>movableInventory(item)&&!item.liquidationBatchId);
   const modal=document.createElement('div'); modal.id='open_liquidation_batch_modal'; modal.className='modal-backdrop';
-  modal.innerHTML=`<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="open_liquidation_batch_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)}</div><h2 id="open_liquidation_batch_title">Edit liquidation batch</h2></div><button class="modal-close" onclick="closeOpenLiquidationBatchModal()" aria-label="Close">×</button></div><div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="edit_open_batch_name" value="${esc(batch.name)}"></div><div class="field"><label>Assigned buyer</label><input id="edit_open_batch_buyer" value="${esc(batch.buyer)}"></div><div class="field span-2"><label>Notes</label><input id="edit_open_batch_notes" value="${esc(batch.notes||'')}"></div></div><div class="form-actions"><button class="btn secondary" onclick="closeOpenLiquidationBatchModal()">Cancel</button><button class="btn" onclick="saveOpenLiquidationBatch()">Save batch</button></div></div>`;
+  modal.innerHTML=`<div class="inventory-move-modal liquidation-edit-modal" role="dialog" aria-modal="true" aria-labelledby="open_liquidation_batch_title">
+    <div class="summary-modal-head"><div><div class="eyebrow">${esc(batch.id)} · ${esc(batch.metal)}</div><h2 id="open_liquidation_batch_title">Edit liquidation batch</h2></div><button class="modal-close" onclick="closeOpenLiquidationBatchModal()" aria-label="Close">×</button></div>
+    <div class="form-grid" style="margin-top:16px;"><div class="field"><label>Batch name</label><input id="edit_open_batch_name" value="${esc(batch.name)}"></div><div class="field"><label>Assigned buyer</label><input id="edit_open_batch_buyer" value="${esc(batch.buyer)}"></div><div class="field span-2"><label>Notes</label><input id="edit_open_batch_notes" value="${esc(batch.notes||'')}"></div></div>
+    <div class="liquidation-edit-current-head"><div><h3>Current batch items</h3><p class="form-note">Existing items remain unchanged.</p></div><button class="btn secondary small" onclick="toggleOpenLiquidationBatchItemPicker()">+ Add New Item</button></div>
+    <div class="table-wrap liquidation-edit-current-items"><table><thead><tr><th>Item</th><th>Seller</th><th>Purchase date</th><th class="num-head">Weight</th><th class="num-head">Cost</th></tr></thead><tbody>${lines.map(line=>{const item=db.stock.find(stock=>stock.id===line.itemId)||{};return `<tr><td><strong>${esc(item.metal||batch.metal)} ${esc(gradeLabel(item.metal||batch.metal,item.karat||''))}</strong> · ${esc(item.itemType||'Inventory item')}</td><td>${esc(item.customerName||'—')}</td><td>${fmtDate(item.date)}</td><td class="num">${fmtWeight(line.weight)}</td><td class="num">${fmtMoney(line.cost)}</td></tr>`;}).join('')}</tbody><tfoot><tr><th colspan="3">${lines.length} item${lines.length===1?'':'s'}</th><th class="num">${fmtWeight(batchWeight)}</th><th class="num">${fmtMoney(batchCost)}</th></tr></tfoot></table></div>
+    <section id="edit_open_batch_item_picker" class="liquidation-edit-item-picker is-hidden"><div><h3>Add inventory to ${esc(batch.id)}</h3><p class="form-note">Available Gold, Silver, or Platinum inventory can be added to this batch.</p></div>${eligible.length?`<div class="liquidation-edit-filter"><label for="edit_open_batch_item_filter">Item filter</label><select id="edit_open_batch_item_filter" onchange="changeOpenLiquidationBatchItemFilter(this.value)">${liquidationBatchItemFilterOptions(eligible).map(option=>`<option value="${esc(option)}">${option==='All'?'All items':esc(option)}</option>`).join('')}</select><span class="form-note"><strong id="edit_open_batch_visible_count">${eligible.length}</strong> shown</span></div><div class="table-wrap"><table><thead><tr><th class="liquidation-select-all"><label><input id="edit_open_batch_select_all" type="checkbox" onchange="toggleAllVisibleOpenLiquidationBatchItems(this.checked)"> Select All</label></th><th>Item</th><th>Seller</th><th>Purchase date</th><th class="num-head">Weight</th><th class="num-head">Cost</th></tr></thead><tbody>${eligible.map(item=>`<tr data-open-batch-add-row data-item-karat="${esc(item.karat)}" data-item-type="${esc(item.itemType)}"><td><input type="checkbox" data-open-batch-add-id="${esc(item.id)}" onchange="toggleOpenLiquidationBatchAddItem(this.dataset.openBatchAddId,this.checked)" aria-label="Add ${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))} item"></td><td><strong>${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))}</strong> · ${esc(item.itemType)}</td><td>${esc(item.customerName||'—')}</td><td>${fmtDate(item.date)}</td><td class="num">${fmtWeight(item.currentWeight)}</td><td class="num">${fmtMoney(item.cost)}</td></tr>`).join('')}</tbody></table></div><div class="form-actions"><span class="form-note"><strong id="edit_open_batch_add_count">0</strong> selected</span><button id="edit_open_batch_add_submit" class="btn small" onclick="addItemsToOpenLiquidationBatch()" disabled>Add selected to batch</button></div>`:`<div class="empty-note">No available inventory can be added right now.</div>`}</section>
+    <div class="form-actions liquidation-edit-actions"><button class="btn secondary" onclick="closeOpenLiquidationBatchModal()">Cancel</button><button class="btn" onclick="saveOpenLiquidationBatch()">Save batch</button></div>
+  </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closeOpenLiquidationBatchModal();}); document.body.appendChild(modal);
+}
+async function addItemsToOpenLiquidationBatch(){
+  const batch=db.liquidationBatches.find(record=>record.id===editingOpenLiquidationBatchId); if(!batch) return;
+  const name=val('edit_open_batch_name').trim(),buyer=val('edit_open_batch_buyer').trim();
+  if(!name||!buyer){toast('Batch name and buyer are required');return;}
+  const chosenIds=Array.from(openLiquidationBatchAddSelection);
+  const items=chosenIds.map(id=>db.stock.find(item=>item.id===id)).filter(item=>item&&movableInventory(item)&&!item.liquidationBatchId);
+  if(!chosenIds.length){toast('Select at least one inventory item');return;}
+  if(items.length!==chosenIds.length){toast('One or more selected items are no longer available');return;}
+  const beforeState=JSON.parse(JSON.stringify(db));
+  Object.assign(batch,{name,buyer,notes:val('edit_open_batch_notes').trim()});
+  delete batch.buyerOffer;
+  const appendedItems=appendItemsToLiquidationBatch(batch,items);
+  if(appendedItems.length!==items.length){db=beforeState;toast('One or more selected items are already in this batch');return;}
+  if(!await saveDB()){db=beforeState;toast('Items were not added to the batch');return;}
+  const batchId=batch.id,itemCount=appendedItems.length;
+  closeOpenLiquidationBatchModal();render();openLiquidationBatchEdit(batchId);
+  toast(`${itemCount} ${itemCount===1?'item':'items'} added to ${batchId}`);
 }
 async function saveOpenLiquidationBatch(){
   const batch=db.liquidationBatches.find(record=>record.id===editingOpenLiquidationBatchId); if(!batch) return;
