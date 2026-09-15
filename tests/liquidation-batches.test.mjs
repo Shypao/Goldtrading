@@ -79,6 +79,14 @@ async function loadInventoryApi() {
       lines.forEach(restorePooledLiquidationLine);
       return JSON.parse(JSON.stringify(db.stock));
     },
+    syncPool(id) {
+      const pool = db.inventoryPools.find(item => item.id === id);
+      const snapshot = syncInventoryPool(pool);
+      return JSON.parse(JSON.stringify({ pool, snapshot }));
+    },
+    renderPools() {
+      return renderInventoryPools();
+    },
     openCashflowResetModal() {
       appended.length = 0;
       if (typeof openCashflowResetConfirmation === 'function') openCashflowResetConfirmation();
@@ -145,6 +153,7 @@ function stateFixture() {
       { id: 'LB-0001', name: '18K batch', buyer: 'Gold Buyer', metal: 'Gold', buyerOffer: 650, createdAt: '2026-09-11T08:00:00.000Z', lines: [{ itemId: 'stock-transit-a', previousStatus: 'Available', weight: 5, cost: 500 }] },
       { id: 'LB-0002', name: 'Silver batch', buyer: 'Silver Buyer', metal: 'Silver', buyerOffer: 900, createdAt: '2026-09-11T09:00:00.000Z', lines: [{ itemId: 'stock-transit-b', previousStatus: 'For Refining', weight: 20, cost: 800 }] }
     ],
+    inventoryPools: [],
     liquidations: [],
     refiningBatches: [],
     retailSales: [],
@@ -264,6 +273,63 @@ test('partial pooled Silver liquidation uses mean cost and keeps the running bal
   const restored = api.restorePool(result.prepared.allocations);
   assert.equal(restored.reduce((sum, item) => sum + item.currentWeight, 0), 2440);
   assert.equal(restored.reduce((sum, item) => sum + item.cost, 0), 244194);
+});
+
+test('a manually created On Hold pool stays On Hold after partial liquidation', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock = [
+    { id: 'pool-a', date: '2026-09-10', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0001', netWeight: 1000, currentWeight: 1000, payout: 100000, cost: 100000 },
+    { id: 'pool-b', date: '2026-09-11', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0001', netWeight: 2000, currentWeight: 2000, payout: 200000, cost: 200000 }
+  ];
+  state.inventoryPools = [{ id: 'POOL-0001', name: 'Silver reserve', metal: 'Silver', karat: '925', itemIds: ['pool-a', 'pool-b'], originalWeight: 3000, originalCost: 300000, onHold: true }];
+  state.liquidationBatches = [];
+  api.setState(state);
+
+  const allocation = api.allocatePool(['pool-a', 'pool-b'], 1000);
+  const result = api.syncPool('POOL-0001');
+
+  assert.equal(allocation.prepared.cost, 100000);
+  assert.equal(result.pool.status, 'ON HOLD');
+  assert.equal(result.pool.remainingWeight, 2000);
+  assert.equal(result.pool.remainingCost, 200000);
+  assert.match(api.renderPools(), /Silver reserve/);
+  assert.match(api.renderPools(), /ON HOLD/);
+});
+
+test('manual pools remain independent when one pool is partially liquidated', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock = [
+    { id: 'a-1', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0001', netWeight: 3000, currentWeight: 3000, payout: 300000, cost: 300000 },
+    { id: 'a-2', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0001', netWeight: 1, currentWeight: 1, payout: 100, cost: 100 },
+    { id: 'b-1', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0002', netWeight: 1000, currentWeight: 1000, payout: 100000, cost: 100000 },
+    { id: 'b-2', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0002', netWeight: 500, currentWeight: 500, payout: 50000, cost: 50000 }
+  ];
+  state.inventoryPools = [
+    { id: 'POOL-0001', name: 'Pool A', metal: 'Silver', karat: '925', itemIds: ['a-1', 'a-2'], originalWeight: 3001, originalCost: 300100, onHold: true },
+    { id: 'POOL-0002', name: 'Pool B', metal: 'Silver', karat: '925', itemIds: ['b-1', 'b-2'], originalWeight: 1500, originalCost: 150000, onHold: false }
+  ];
+  state.liquidationBatches = [];
+  api.setState(state);
+
+  api.allocatePool(['a-1', 'a-2'], 1000);
+  const poolA = api.syncPool('POOL-0001');
+  const poolB = api.syncPool('POOL-0002');
+
+  assert.equal(poolA.pool.remainingWeight, 2001);
+  assert.equal(poolB.pool.remainingWeight, 1500);
+  assert.equal(poolB.pool.remainingCost, 150000);
+  assert.equal(poolB.pool.status, 'ACTIVE');
+});
+
+test('inventory offers manual Pool selected and removes automatic pool/date grouping actions', async () => {
+  const api = await loadInventoryApi();
+  api.setState(stateFixture());
+  const html = api.renderInventory();
+  assert.match(html, /Pool selected/);
+  assert.doesNotMatch(html, /Pool Gold \/ Silver/);
+  assert.doesNotMatch(html, />Combine dates</);
 });
 
 test('record sale modal shows live profit margin fields without buyer offer', async () => {

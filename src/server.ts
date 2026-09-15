@@ -29,6 +29,7 @@ interface PricingSettings { [key: string]: unknown }
 interface LedgerState {
   customers: LedgerRecord[];
   stock: LedgerRecord[];
+  inventoryPools: LedgerRecord[];
   liquidationBatches: LedgerRecord[];
   liquidations: LedgerRecord[];
   refiningBatches: LedgerRecord[];
@@ -71,6 +72,7 @@ const tursoClient: Client | null = usesTurso ? createClient({ url: tursoDatabase
 const schemaStatements = [
   'CREATE TABLE IF NOT EXISTS customers (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS inventory (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
+  'CREATE TABLE IF NOT EXISTS inventory_pools (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS liquidation_batches (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS liquidations (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
   'CREATE TABLE IF NOT EXISTS refining_batches (id TEXT PRIMARY KEY, data TEXT NOT NULL)',
@@ -215,6 +217,7 @@ const databaseReady = initializeDatabase();
 const tableMap = {
   customers: 'customers',
   stock: 'inventory',
+  inventoryPools: 'inventory_pools',
   liquidationBatches: 'liquidation_batches',
   liquidations: 'liquidations',
   refiningBatches: 'refining_batches',
@@ -588,6 +591,31 @@ export function validateLedgerIntegrity(state: LedgerState): void {
   for (const item of state.stock) {
     if (!inventoryStatuses.has(String(item.status??''))) throw new Error(`Inventory item ${item.id} has an invalid status`);
   }
+  const poolIds=new Set<string>();
+  const pooledItemIds=new Set<string>();
+  for(const pool of state.inventoryPools){
+    if(!pool.id||poolIds.has(pool.id)) throw new Error('Inventory pools contain a missing or duplicate ID');
+    poolIds.add(pool.id);
+    const itemIds=Array.isArray(pool.itemIds)?pool.itemIds.map(String):[];
+    if(itemIds.length<2||new Set(itemIds).size!==itemIds.length) throw new Error(`Inventory pool ${pool.id} must contain at least two unique items`);
+    const items=itemIds.map(id=>stockById.get(id));
+    if(items.some(item=>!item)) throw new Error(`Inventory pool ${pool.id} references a missing inventory item`);
+    const metals=new Set(items.map(item=>String(item!.metal??''))),grades=new Set(items.map(item=>String(item!.karat??'')));
+    if(metals.size!==1||grades.size!==1||!metals.has(String(pool.metal??''))||!grades.has(String(pool.karat??''))) throw new Error(`Inventory pool ${pool.id} must contain one metal and purity`);
+    for(const item of items){
+      if(pooledItemIds.has(item!.id)||item!.inventoryPoolId!==pool.id) throw new Error(`Inventory item ${item!.id} has an invalid pool link`);
+      pooledItemIds.add(item!.id);
+    }
+    const remainingWeight=Math.round(items.reduce((sum,item)=>sum+Number(item!.currentWeight||0),0)*100)/100;
+    const remainingCost=Math.round(items.reduce((sum,item)=>sum+Number(item!.cost||0),0)*100)/100;
+    const originalWeight=Number(pool.originalWeight||0),originalCost=Number(pool.originalCost||0);
+    if(originalWeight<=0||originalCost<0||remainingWeight>originalWeight+0.005||remainingCost>originalCost+0.01) throw new Error(`Inventory pool ${pool.id} has invalid totals`);
+    const expectedStatus=remainingWeight<=0?'FULLY LIQUIDATED':pool.onHold===true?'ON HOLD':remainingWeight<originalWeight-0.005?'PARTIALLY LIQUIDATED':'ACTIVE';
+    if(String(pool.status??'')!==expectedStatus||Math.abs(Number(pool.remainingWeight)-remainingWeight)>.005||Math.abs(Number(pool.remainingCost)-remainingCost)>.01) throw new Error(`Inventory pool ${pool.id} has an invalid status or remaining balance`);
+  }
+  for(const item of state.stock){
+    if(item.inventoryPoolId&&!poolIds.has(String(item.inventoryPoolId))) throw new Error(`Inventory item ${item.id} references a missing pool`);
+  }
   const consumedBy = new Map<string, string>();
   const claimInventory = (itemId: string, owner: string) => {
     if (!stockIds.has(itemId)) throw new Error(`${owner} references a missing inventory item`);
@@ -600,8 +628,13 @@ export function validateLedgerIntegrity(state: LedgerState): void {
     for (const line of lines) {
       if (line.pooledAllocation === true) {
         if (!stockIds.has(String(line.itemId ?? ''))) throw new Error(`liquidation ${liquidation.id} references a missing inventory item`);
+        if (liquidation.poolId) {
+          const pool=state.inventoryPools.find(item=>item.id===liquidation.poolId);
+          if(!pool||(pool.itemIds as unknown[]||[]).map(String).includes(String(line.itemId??''))===false) throw new Error(`liquidation ${liquidation.id} has an invalid pool item reference`);
+        }
       } else claimInventory(String(line.itemId ?? ''), `liquidation ${liquidation.id}`);
     }
+    if(liquidation.poolId&&!poolIds.has(String(liquidation.poolId))) throw new Error(`liquidation ${liquidation.id} references a missing inventory pool`);
   }
   for (const batch of state.refiningBatches) {
     const itemIds = Array.isArray(batch.itemIds) ? batch.itemIds : [];

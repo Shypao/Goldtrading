@@ -21,7 +21,7 @@ function validate(state) {
 }
 
 function emptyState() {
-  return { customers: [], stock: [], liquidationBatches: [], liquidations: [], refiningBatches: [], retailSales: [], pricingHistory: [], pricing: null };
+  return { customers: [], stock: [], inventoryPools: [], liquidationBatches: [], liquidations: [], refiningBatches: [], retailSales: [], pricingHistory: [], pricing: null };
 }
 
 test('server accepts a partial pooled liquidation while the source keeps its remaining balance', () => {
@@ -53,6 +53,20 @@ test('server accepts a correctly labelled mixed-metal liquidation batch', () => 
       { itemId: 'silver', previousStatus: 'Available', weight: 10, cost: 800 }
     ]
   });
+
+  const result = validate(state);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ok');
+});
+
+test('server validates an independent manual pool and its remaining balance', () => {
+  const state = emptyState();
+  state.stock.push(
+    { id: 'a', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0001', netWeight: 1000, currentWeight: 0, payout: 100000, cost: 0 },
+    { id: 'b', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0001', netWeight: 2000, currentWeight: 2000, payout: 200000, cost: 200000 }
+  );
+  state.inventoryPools.push({ id: 'POOL-0001', name: 'Silver reserve', metal: 'Silver', karat: '925', itemIds: ['a', 'b'], originalWeight: 3000, originalCost: 300000, remainingWeight: 2000, remainingCost: 200000, onHold: true, status: 'ON HOLD' });
+  state.liquidations.push({ id: 'L-0001', poolId: 'POOL-0001', poolName: 'Silver reserve', metal: 'Silver', releasedWeight: 1000, cost: 100000, proceeds: 110000, lines: [{ itemId: 'a', weight: 1000, costPortion: 100000, pooledAllocation: true }] });
 
   const result = validate(state);
   assert.equal(result.status, 0, result.stderr);
