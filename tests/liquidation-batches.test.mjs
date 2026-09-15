@@ -68,6 +68,17 @@ async function loadInventoryApi() {
       appendItemsToLiquidationBatch(batch, items);
       return JSON.parse(JSON.stringify({ batch, items, batchCount: db.liquidationBatches.length }));
     },
+    allocatePool(itemIds, weight) {
+      const items = itemIds.map(id => db.stock.find(item => item.id === id)).filter(Boolean);
+      const prepared = preparePooledInventoryAllocation(items, weight);
+      if (prepared) prepared.poolItems = items;
+      const applied = applyPooledInventoryAllocation(prepared);
+      return JSON.parse(JSON.stringify({ prepared, applied, items }));
+    },
+    restorePool(lines) {
+      lines.forEach(restorePooledLiquidationLine);
+      return JSON.parse(JSON.stringify(db.stock));
+    },
     openCashflowResetModal() {
       appended.length = 0;
       if (typeof openCashflowResetConfirmation === 'function') openCashflowResetConfirmation();
@@ -224,6 +235,35 @@ test('adding Silver to a Gold batch converts it to Mixed and preserves both line
   assert.deepEqual(JSON.parse(JSON.stringify(result.batch.lines.map(line => line.itemId))), ['stock-transit-a', 'stock-silver-new']);
   assert.equal(result.items[0].status, 'For Liquidation');
   assert.equal(result.items[0].liquidationBatchId, 'LB-0001');
+});
+
+test('partial pooled Silver liquidation uses mean cost and keeps the running balance', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock = [
+    { id: 'silver-a', date: '2026-09-10', customerName: 'Seller A', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', netWeight: 1000, currentWeight: 1000, payout: 95000, cost: 95000 },
+    { id: 'silver-b', date: '2026-09-11', customerName: 'Seller B', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', netWeight: 1440, currentWeight: 1440, payout: 149194, cost: 149194 }
+  ];
+  state.liquidationBatches = [];
+  api.setState(state);
+
+  const result = api.allocatePool(['silver-a', 'silver-b'], 1000);
+
+  assert.equal(result.applied, true);
+  assert.equal(result.prepared.totalWeight, 2440);
+  assert.equal(result.prepared.totalCost, 244194);
+  assert.equal(result.prepared.weight, 1000);
+  assert.equal(result.prepared.cost, 100079.51);
+  assert.equal(result.prepared.remainingWeight, 1440);
+  assert.equal(result.prepared.remainingCost, 144114.49);
+  assert.equal(result.items.reduce((sum, item) => sum + item.currentWeight, 0), 1440);
+  assert.equal(result.items.reduce((sum, item) => sum + item.cost, 0), 144114.49);
+  assert.equal(result.items.reduce((sum, item) => sum + item.netWeight, 0), 2440);
+  assert.equal(result.items.reduce((sum, item) => sum + item.payout, 0), 244194);
+
+  const restored = api.restorePool(result.prepared.allocations);
+  assert.equal(restored.reduce((sum, item) => sum + item.currentWeight, 0), 2440);
+  assert.equal(restored.reduce((sum, item) => sum + item.cost, 0), 244194);
 });
 
 test('record sale modal shows live profit margin fields without buyer offer', async () => {

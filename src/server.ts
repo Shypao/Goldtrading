@@ -580,7 +580,7 @@ async function currentLedgerRevision(): Promise<number> {
   return Number(row?.value ?? 0);
 }
 
-function validateLedgerIntegrity(state: LedgerState): void {
+export function validateLedgerIntegrity(state: LedgerState): void {
   const stockIds = new Set(state.stock.map(record => record.id));
   const stockById = new Map(state.stock.map(record => [record.id, record]));
   if (stockIds.size !== state.stock.length) throw new Error('Inventory contains duplicate record IDs');
@@ -597,7 +597,11 @@ function validateLedgerIntegrity(state: LedgerState): void {
   };
   for (const liquidation of state.liquidations) {
     const lines = Array.isArray(liquidation.lines) ? liquidation.lines as LedgerRecord[] : [];
-    for (const line of lines) claimInventory(String(line.itemId ?? ''), `liquidation ${liquidation.id}`);
+    for (const line of lines) {
+      if (line.pooledAllocation === true) {
+        if (!stockIds.has(String(line.itemId ?? ''))) throw new Error(`liquidation ${liquidation.id} references a missing inventory item`);
+      } else claimInventory(String(line.itemId ?? ''), `liquidation ${liquidation.id}`);
+    }
   }
   for (const batch of state.refiningBatches) {
     const itemIds = Array.isArray(batch.itemIds) ? batch.itemIds : [];
@@ -619,18 +623,25 @@ function validateLedgerIntegrity(state: LedgerState): void {
       const itemId=String(line.itemId??'');
       const item=stockById.get(itemId);
       if (!item) throw new Error(`Liquidation batch ${batch.id} references a missing inventory item`);
-      if (pendingItemIds.has(itemId)) throw new Error(`Inventory item ${itemId} belongs to more than one open liquidation batch`);
-      if (consumedBy.has(itemId)) throw new Error(`Inventory item ${itemId} is already used by a completed transaction`);
-      if (item.status!=='For Liquidation' || item.liquidationBatchId!==batch.id) throw new Error(`Inventory item ${itemId} is not linked to liquidation batch ${batch.id}`);
       if (!['Available','For Refining','On Hold'].includes(String(line.previousStatus??''))) throw new Error(`Liquidation batch ${batch.id} has an invalid previous status`);
-      if (Number(item.currentWeight)<=0 || Number(line.weight)<=0 || Number(line.cost)<0 ||
-          Math.abs(Number(item.currentWeight)-Number(line.weight))>.005 || Math.abs(Number(item.cost)-Number(line.cost))>.01) {
-        throw new Error(`Liquidation batch ${batch.id} has invalid item totals`);
+      if (line.pooledAllocation === true) {
+        if (Number(line.weight)<=0 || Number(line.cost)<0 || Number(item.currentWeight)+Number(line.weight)>Number(item.netWeight)+0.005) {
+          throw new Error(`Liquidation batch ${batch.id} has invalid pooled allocation totals`);
+        }
+      } else {
+        if (pendingItemIds.has(itemId)) throw new Error(`Inventory item ${itemId} belongs to more than one open liquidation batch`);
+        if (consumedBy.has(itemId)) throw new Error(`Inventory item ${itemId} is already used by a completed transaction`);
+        if (item.status!=='For Liquidation' || item.liquidationBatchId!==batch.id) throw new Error(`Inventory item ${itemId} is not linked to liquidation batch ${batch.id}`);
+        if (Number(item.currentWeight)<=0 || Number(line.weight)<=0 || Number(line.cost)<0 ||
+            Math.abs(Number(item.currentWeight)-Number(line.weight))>.005 || Math.abs(Number(item.cost)-Number(line.cost))>.01) {
+          throw new Error(`Liquidation batch ${batch.id} has invalid item totals`);
+        }
+        pendingItemIds.add(itemId);
       }
       metals.add(String(item.metal??''));
-      pendingItemIds.add(itemId);
     }
-    if (metals.size!==1 || !metals.has(String(batch.metal??''))) throw new Error(`Liquidation batch ${batch.id} must contain one metal`);
+    const expectedMetal=metals.size===1?Array.from(metals)[0]:'Mixed';
+    if (!metals.size || String(batch.metal??'')!==expectedMetal) throw new Error(`Liquidation batch ${batch.id} has an invalid metal label`);
   }
   for (const item of state.stock) {
     const pending=pendingItemIds.has(item.id);
