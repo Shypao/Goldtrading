@@ -861,7 +861,11 @@
     body.printing-thermal-receipt .receipt-preview-controls{display:none!important;}
     body.printing-thermal-receipt .receipt-preview-stage{display:block;margin:0;padding:0;border:0;background:#fff;overflow:visible;}
     body.printing-thermal-receipt .thermal-receipt,
-    body.printing-thermal-receipt .thermal-receipt.paper-80{width:100%;max-width:none;padding:1mm;box-shadow:none;font-size:10px;transition:none;}
+    body.printing-thermal-receipt .thermal-receipt.paper-80{width:100%;max-width:none;padding:1mm;box-shadow:none;color:#000;font-family:"Courier New",Courier,monospace;font-size:10px;font-weight:700;-webkit-print-color-adjust:exact;print-color-adjust:exact;transition:none;}
+    body.printing-thermal-receipt .receipt-shop,
+    body.printing-thermal-receipt .receipt-item-name,
+    body.printing-thermal-receipt .receipt-total,
+    body.printing-thermal-receipt .receipt-meta strong{font-weight:900;}
   }
   .summary-modal-head{display:flex;align-items:flex-start;justify-content:space-between;gap:18px;border-bottom:1.5px solid var(--ink);padding-bottom:14px;}
   .summary-modal-head .eyebrow{font-size:11px;color:var(--ink-soft);text-transform:uppercase;letter-spacing:.08em;margin-bottom:4px;}

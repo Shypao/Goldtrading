@@ -38,3 +38,16 @@ test('58 mm receipts keep all text inside the VOZY P50 print-head boundary', asy
   assert.match(source, /\.receipt-calc\{font-size:\$\{paperWidth === 80 \? 10 : 9\}px;white-space:nowrap\}/);
   assert.match(source, /\.receipt-total\{font-size:\$\{paperWidth === 80 \? 14 : 12\}px;gap:6px\}/);
 });
+
+test('thermal receipt print text uses strong black strokes', async () => {
+  const source = await readFile(indexPath, 'utf8');
+
+  assert.match(
+    source,
+    /body\.printing-thermal-receipt \.thermal-receipt\.paper-80\{[^}]*color:#000;[^}]*font-family:"Courier New",Courier,monospace;[^}]*font-weight:700;[^}]*print-color-adjust:exact;/,
+  );
+  assert.match(
+    source,
+    /body\.printing-thermal-receipt \.receipt-shop,[\s\S]*?\.receipt-meta strong\{font-weight:900;\}/,
+  );
+});
