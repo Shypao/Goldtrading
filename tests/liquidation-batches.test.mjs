@@ -323,6 +323,25 @@ test('manual pools remain independent when one pool is partially liquidated', as
   assert.equal(poolB.pool.status, 'ACTIVE');
 });
 
+test('a manual pool may combine mixed metals and purities', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock = [
+    { id: 'mixed-gold', metal: 'Gold', karat: '18K', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0003', netWeight: 100, currentWeight: 100, payout: 500000, cost: 500000 },
+    { id: 'mixed-silver', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', inventoryPoolId: 'POOL-0003', netWeight: 900, currentWeight: 900, payout: 90000, cost: 90000 }
+  ];
+  state.inventoryPools = [{ id: 'POOL-0003', name: 'Mixed reserve', metal: 'Mixed', karat: 'Mixed', itemIds: ['mixed-gold', 'mixed-silver'], originalWeight: 1000, originalCost: 590000, onHold: true }];
+  api.setState(state);
+
+  const allocation = api.allocatePool(['mixed-gold', 'mixed-silver'], 500);
+  const result = api.syncPool('POOL-0003');
+
+  assert.equal(allocation.prepared.cost, 295000);
+  assert.equal(result.pool.remainingWeight, 500);
+  assert.equal(result.pool.remainingCost, 295000);
+  assert.match(api.renderPools(), /Mixed metals \/ purities/);
+});
+
 test('inventory offers manual Pool selected and removes automatic pool/date grouping actions', async () => {
   const api = await loadInventoryApi();
   api.setState(stateFixture());

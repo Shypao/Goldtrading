@@ -601,7 +601,9 @@ export function validateLedgerIntegrity(state: LedgerState): void {
     const items=itemIds.map(id=>stockById.get(id));
     if(items.some(item=>!item)) throw new Error(`Inventory pool ${pool.id} references a missing inventory item`);
     const metals=new Set(items.map(item=>String(item!.metal??''))),grades=new Set(items.map(item=>String(item!.karat??'')));
-    if(metals.size!==1||grades.size!==1||!metals.has(String(pool.metal??''))||!grades.has(String(pool.karat??''))) throw new Error(`Inventory pool ${pool.id} must contain one metal and purity`);
+    const expectedMetal=metals.size===1?Array.from(metals)[0]:'Mixed';
+    const expectedKarat=metals.size===1&&grades.size===1?Array.from(grades)[0]:'Mixed';
+    if(String(pool.metal??'')!==expectedMetal||String(pool.karat??'')!==expectedKarat) throw new Error(`Inventory pool ${pool.id} has an invalid composition label`);
     for(const item of items){
       if(pooledItemIds.has(item!.id)||item!.inventoryPoolId!==pool.id) throw new Error(`Inventory item ${item!.id} has an invalid pool link`);
       pooledItemIds.add(item!.id);

@@ -3103,6 +3103,15 @@ function poolableInventoryItem(item) {
     return activeInventoryRecord(item) && !item.inventoryPoolId && !item.liquidationBatchId;
 }
 function selectedInventoryForPool() { return db.stock.filter(item => inventoryMoveSelection.has(item.id) && poolableInventoryItem(item)); }
+function inventoryPoolComposition(items) {
+    const metals = Array.from(new Set(items.map(item => String(item.metal || ''))));
+    const grades = Array.from(new Set(items.map(item => String(item.karat || ''))));
+    const mixedMetals = metals.length !== 1, mixedPurities = grades.length !== 1;
+    const metal = mixedMetals ? 'Mixed' : metals[0] || 'Mixed';
+    const karat = mixedMetals || mixedPurities ? 'Mixed' : grades[0] || 'Mixed';
+    const label = mixedMetals ? 'Mixed metals / purities' : mixedPurities ? `${metal} · Mixed purities` : `${metal} ${gradeLabel(metal, karat)}`;
+    return { metal, karat, label };
+}
 function preparePooledInventoryAllocation(items, requestedWeight) {
     const weight = roundWeight(Number(requestedWeight));
     const totalWeight = roundWeight(items.reduce((sum, item) => sum + Number(item.currentWeight || 0), 0));
@@ -3169,17 +3178,12 @@ function openManualInventoryPoolModal() {
         toast('Select at least two unpooled inventory items');
         return;
     }
-    const metals = new Set(items.map(item => item.metal)), grades = new Set(items.map(item => item.karat));
-    if (metals.size !== 1 || grades.size !== 1) {
-        toast('A pool must contain one metal and one karat / purity');
-        return;
-    }
     const weight = items.reduce((sum, item) => sum + Number(item.currentWeight || 0), 0), cost = items.reduce((sum, item) => sum + Number(item.cost || 0), 0);
-    const nextId = nextSequenceId('POOL', db.inventoryPools), metal = items[0].metal, karat = items[0].karat;
+    const nextId = nextSequenceId('POOL', db.inventoryPools), composition = inventoryPoolComposition(items);
     const modal = document.createElement('div');
     modal.id = 'inventory_pool_modal';
     modal.className = 'modal-backdrop';
-    modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="inventory_pool_title"><div class="summary-modal-head"><div><div class="eyebrow">Manual inventory grouping</div><h2 id="inventory_pool_title">Create ${esc(nextId)}</h2></div><button class="modal-close" onclick="closeInventoryPoolModal()" aria-label="Close">×</button></div><p class="move-confirmation-intro">Only the inventory records you selected will belong to this pool. Purchase dates do not affect the grouping.</p><div class="form-grid"><div class="field"><label>Pool name (optional)</label><input id="inventory_pool_name" placeholder="${esc(metal)} ${esc(gradeLabel(metal, karat))} pool"></div><div class="field"><label>Starting status</label><select id="inventory_pool_status"><option value="ACTIVE">Active</option><option value="ON HOLD" selected>On Hold</option></select></div><div class="field span-2"><label>Notes</label><input id="inventory_pool_notes" placeholder="Optional"></div></div><div class="move-confirmation-summary"><div><span>Selected records</span><strong>${items.length}</strong></div><div><span>Metal / purity</span><strong>${esc(metal)} ${esc(gradeLabel(metal, karat))}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Total cost</span><strong>${fmtMoneyExact(cost)}</strong></div></div><div class="table-wrap move-confirmation-items"><table><thead><tr><th>Item</th><th>Seller</th><th>Date</th><th class="num-head">Weight</th><th class="num-head">Cost</th></tr></thead><tbody>${items.map(item => `<tr><td>${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))}</td><td>${esc(item.customerName || '—')}</td><td>${fmtDate(item.date)}</td><td class="num">${fmtWeight(item.currentWeight)}</td><td class="num">${fmtMoneyExact(item.cost)}</td></tr>`).join('')}</tbody></table></div><div class="form-actions"><button class="btn secondary" onclick="closeInventoryPoolModal()">Cancel</button><button class="btn" onclick="createManualInventoryPool()">Create Pool</button></div></div>`;
+    modal.innerHTML = `<div class="inventory-move-modal" role="dialog" aria-modal="true" aria-labelledby="inventory_pool_title"><div class="summary-modal-head"><div><div class="eyebrow">Manual inventory grouping</div><h2 id="inventory_pool_title">Create ${esc(nextId)}</h2></div><button class="modal-close" onclick="closeInventoryPoolModal()" aria-label="Close">×</button></div><p class="move-confirmation-intro">Only the inventory records you selected will belong to this pool. Metals, purities, and purchase dates do not restrict the grouping.</p><div class="form-grid"><div class="field"><label>Pool name (optional)</label><input id="inventory_pool_name" placeholder="${esc(composition.label)} pool"></div><div class="field"><label>Starting status</label><select id="inventory_pool_status"><option value="ACTIVE">Active</option><option value="ON HOLD" selected>On Hold</option></select></div><div class="field span-2"><label>Notes</label><input id="inventory_pool_notes" placeholder="Optional"></div></div><div class="move-confirmation-summary"><div><span>Selected records</span><strong>${items.length}</strong></div><div><span>Pool contents</span><strong>${esc(composition.label)}</strong></div><div><span>Total weight</span><strong>${fmtWeight(weight)}</strong></div><div><span>Total cost</span><strong>${fmtMoneyExact(cost)}</strong></div></div><div class="table-wrap move-confirmation-items"><table><thead><tr><th>Item</th><th>Seller</th><th>Date</th><th class="num-head">Weight</th><th class="num-head">Cost</th></tr></thead><tbody>${items.map(item => `<tr><td>${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))}</td><td>${esc(item.customerName || '—')}</td><td>${fmtDate(item.date)}</td><td class="num">${fmtWeight(item.currentWeight)}</td><td class="num">${fmtMoneyExact(item.cost)}</td></tr>`).join('')}</tbody></table></div><div class="form-actions"><button class="btn secondary" onclick="closeInventoryPoolModal()">Cancel</button><button class="btn" onclick="createManualInventoryPool()">Create Pool</button></div></div>`;
     modal.addEventListener('click', event => { if (event.target === modal)
         closeInventoryPoolModal(); });
     document.body.appendChild(modal);
@@ -3191,15 +3195,11 @@ async function createManualInventoryPool() {
         toast('The selected inventory changed. Select at least two items again.');
         return;
     }
-    const metals = new Set(items.map(item => item.metal)), grades = new Set(items.map(item => item.karat));
-    if (metals.size !== 1 || grades.size !== 1) {
-        toast('A pool must contain one metal and one karat / purity');
-        return;
-    }
     const beforeState = JSON.parse(JSON.stringify(db)), id = nextSequenceId('POOL', db.inventoryPools);
+    const composition = inventoryPoolComposition(items);
     const originalItems = items.map(item => ({ itemId: item.id, originalWeight: roundWeight(item.currentWeight), originalCost: roundMoney(item.cost), statusAtPooling: item.status }));
     const originalWeight = roundWeight(originalItems.reduce((sum, item) => sum + item.originalWeight, 0)), originalCost = roundMoney(originalItems.reduce((sum, item) => sum + item.originalCost, 0));
-    const pool = { id, name: val('inventory_pool_name').trim() || `${items[0].metal} ${gradeLabel(items[0].metal, items[0].karat)} pool`, metal: items[0].metal, karat: items[0].karat, itemIds: items.map(item => item.id), originalItems, originalWeight, originalCost, onHold: val('inventory_pool_status') === 'ON HOLD', notes: val('inventory_pool_notes').trim(), createdAt: new Date().toISOString(), createdBy: currentUser?.displayName || '' };
+    const pool = { id, name: val('inventory_pool_name').trim() || `${composition.label} pool`, metal: composition.metal, karat: composition.karat, itemIds: items.map(item => item.id), originalItems, originalWeight, originalCost, onHold: val('inventory_pool_status') === 'ON HOLD', notes: val('inventory_pool_notes').trim(), createdAt: new Date().toISOString(), createdBy: currentUser?.displayName || '' };
     items.forEach(item => { item.inventoryPoolId = id; });
     db.inventoryPools.push(pool);
     syncInventoryPool(pool);
@@ -3301,7 +3301,7 @@ async function confirmPoolLiquidation() {
         return;
     }
     let assignedProceeds = 0;
-    const lines = prepared.allocations.map((line, index) => { const amount = index === prepared.allocations.length - 1 ? roundMoney(proceeds - assignedProceeds) : roundMoney(proceeds * (line.weight / prepared.weight)); assignedProceeds = roundMoney(assignedProceeds + amount); return { ...line, assay: pool.karat, costPortion: line.cost, sellingAmount: amount, proceeds: amount, sellingRate: roundMoney(amount / line.weight) }; });
+    const lines = prepared.allocations.map((line, index) => { const source = db.stock.find(item => item.id === line.itemId); const amount = index === prepared.allocations.length - 1 ? roundMoney(proceeds - assignedProceeds) : roundMoney(proceeds * (line.weight / prepared.weight)); assignedProceeds = roundMoney(assignedProceeds + amount); return { ...line, metal: source?.metal || pool.metal, assay: source?.karat || pool.karat, costPortion: line.cost, sellingAmount: amount, proceeds: amount, sellingRate: roundMoney(amount / line.weight) }; });
     const remaining = syncInventoryPool(pool), id = nextSequenceId('L', db.liquidations), recordedAt = new Date().toISOString();
     pool.updatedAt = recordedAt;
     db.liquidations.push({ id, poolId: pool.id, poolName: pool.name, date: todayStr(), recordedAt, metal: pool.metal, buyer, itemCount: lines.length, releasedWeight: prepared.weight, cost: prepared.cost, proceeds: roundMoney(proceeds), margin: roundMoney(proceeds - prepared.cost), profitMargin: prepared.cost ? roundMoney((proceeds - prepared.cost) / prepared.cost * 100) : 0, paymentStatus: 'Paid', lines, originalPoolWeight: pool.originalWeight, originalPoolCost: pool.originalCost, remainingPoolWeight: remaining.weight, remainingPoolCost: remaining.cost, remarks: val('pool_liquidation_notes').trim(), createdBy: currentUser?.displayName || '' });
@@ -3317,7 +3317,7 @@ async function confirmPoolLiquidation() {
 }
 function renderInventoryPools() {
     const pools = (db.inventoryPools || []).slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
-    return `<section class="block inventory-pools"><div class="batch-head"><div><p class="eyebrow">Manual groups only</p><h2 class="block-title">Inventory Pools</h2><p class="form-note">Pools contain only the records you manually select. No dates or purchase periods are used.</p></div></div>${pools.length ? `<div class="inventory-pool-grid">${pools.map(pool => { const snapshot = inventoryPoolSnapshot(pool), status = inventoryPoolStatus(pool, snapshot), liquidated = roundWeight(Number(pool.originalWeight || 0) - snapshot.weight); return `<article class="inventory-pool-card"><div class="inventory-pool-head"><div><span class="pool-status ${status.toLowerCase().replaceAll(' ', '-')}">${esc(status)}</span><h3>${esc(pool.name)}</h3><p>${esc(pool.id)} · ${esc(pool.metal)} ${esc(gradeLabel(pool.metal, pool.karat))}</p></div><div class="form-actions">${status !== 'FULLY LIQUIDATED' ? `<button class="btn secondary small" onclick="toggleInventoryPoolHold('${pool.id}')">${pool.onHold ? 'Set Active' : 'Put On Hold'}</button><button class="btn small" onclick="openPoolLiquidationModal('${pool.id}')">Liquidate</button>` : ''}</div></div><div class="liquidation-batch-compact-summary"><span><small>Original weight</small><strong>${fmtWeight(pool.originalWeight)}</strong></span><span><small>Liquidated</small><strong>${fmtWeight(liquidated)}</strong></span><span><small>Remaining weight</small><strong>${fmtWeight(snapshot.weight)}</strong></span><span><small>Remaining cost</small><strong>${fmtMoneyExact(snapshot.cost)}</strong></span></div><p class="form-note">${(pool.itemIds || []).length} original inventory record${(pool.itemIds || []).length === 1 ? '' : 's'} remain traceable${pool.notes ? ` · ${esc(pool.notes)}` : ''}.</p></article>`; }).join('')}</div>` : '<div class="empty-note">No manual inventory pools yet. Select at least two matching inventory records below and click <strong>Pool selected</strong>.</div>'}</section>`;
+    return `<section class="block inventory-pools"><div class="batch-head"><div><p class="eyebrow">Manual groups only</p><h2 class="block-title">Inventory Pools</h2><p class="form-note">Pools contain only the records you manually select. Metals, purities, dates, and purchase periods do not restrict grouping.</p></div></div>${pools.length ? `<div class="inventory-pool-grid">${pools.map(pool => { const snapshot = inventoryPoolSnapshot(pool), status = inventoryPoolStatus(pool, snapshot), liquidated = roundWeight(Number(pool.originalWeight || 0) - snapshot.weight), composition = inventoryPoolComposition(snapshot.items); return `<article class="inventory-pool-card"><div class="inventory-pool-head"><div><span class="pool-status ${status.toLowerCase().replaceAll(' ', '-')}">${esc(status)}</span><h3>${esc(pool.name)}</h3><p>${esc(pool.id)} · ${esc(composition.label)}</p></div><div class="form-actions">${status !== 'FULLY LIQUIDATED' ? `<button class="btn secondary small" onclick="toggleInventoryPoolHold('${pool.id}')">${pool.onHold ? 'Set Active' : 'Put On Hold'}</button><button class="btn small" onclick="openPoolLiquidationModal('${pool.id}')">Liquidate</button>` : ''}</div></div><div class="liquidation-batch-compact-summary"><span><small>Original weight</small><strong>${fmtWeight(pool.originalWeight)}</strong></span><span><small>Liquidated</small><strong>${fmtWeight(liquidated)}</strong></span><span><small>Remaining weight</small><strong>${fmtWeight(snapshot.weight)}</strong></span><span><small>Remaining cost</small><strong>${fmtMoneyExact(snapshot.cost)}</strong></span></div><p class="form-note">${(pool.itemIds || []).length} original inventory record${(pool.itemIds || []).length === 1 ? '' : 's'} remain traceable${pool.notes ? ` · ${esc(pool.notes)}` : ''}.</p></article>`; }).join('')}</div>` : '<div class="empty-note">No manual inventory pools yet. Select at least two inventory records below and click <strong>Pool selected</strong>.</div>'}</section>`;
 }
 function liquidateInventoryItem(id) {
     const item = db.stock.find(stock => stock.id === id);
@@ -3495,7 +3495,7 @@ function renderInventory() {
     const selectedMovableCount = selectedInventoryForMove().length;
     const canMoveSelected = selectedMoveCount > 0 && selectedMovableCount === selectedMoveCount;
     const selectedPoolItems = selectedInventoryForPool();
-    const canPoolSelected = selectedPoolItems.length >= 2 && new Set(selectedPoolItems.map(item => item.metal)).size === 1 && new Set(selectedPoolItems.map(item => item.karat)).size === 1;
+    const canPoolSelected = selectedPoolItems.length >= 2;
     const activeFilterLabels = [invFilter.metal, invFilter.karat, invFilter.type, invFilter.status].filter(value => value !== 'All');
     const rows = selectedDay.stock.filter(s => (invFilter.metal === 'All' || s.metal === invFilter.metal) &&
         (invFilter.karat === 'All' || s.karat === invFilter.karat) &&
