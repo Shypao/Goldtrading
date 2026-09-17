@@ -2789,8 +2789,6 @@ function renderInventory(){
     <p class="form-note inventory-history-note">For Liquidation items are shown only in the Liquidation view. Liquidated, refined, and sold items remain in reports and transaction history.</p>
   </section>
 
-  ${renderInventoryPools()}
-
   <section class="block">
     <div class="page-head" style="margin-bottom:14px;"><div><p class="eyebrow">Complete stock or daily view</p><h2 class="block-title" style="margin:0;">Inventory records</h2><p class="form-note">Use All dates to see everything together, or choose a day for a focused view.</p></div><div class="form-actions" style="margin:0;"><button class="btn secondary small" onclick="changeInventoryWeek(-1)">Previous Monday–Sunday</button><button class="btn secondary small" onclick="changeInventoryWeek(1)">Next Monday–Sunday</button></div></div>
     <div class="inventory-today-totals"><div>${['All','Gold','Silver'].map(metal=>`<button class="btn secondary small" onclick="showTodayInventoryTotals('${metal}')">Today's ${metal}</button>`).join('')}</div></div>

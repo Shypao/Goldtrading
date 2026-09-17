@@ -445,6 +445,23 @@ test('inventory offers manual Pool selected and removes automatic pool/date grou
   assert.doesNotMatch(html, />Combine dates</);
 });
 
+test('Inventory hides the separate pool cards while keeping pooled records traceable', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.stock[0].inventoryPoolId = 'POOL-0001';
+  state.inventoryPools = [
+    { id: 'POOL-0001', name: 'Gold reserve', metal: 'Gold', karat: '18K', itemIds: ['stock-on-hand'], originalWeight: 10, originalCost: 1000, onHold: true, status: 'ON HOLD' }
+  ];
+  api.setState(state);
+
+  const html = api.renderInventory();
+
+  assert.doesNotMatch(html, /<h2 class="block-title">Inventory Pools<\/h2>/);
+  assert.doesNotMatch(html, /Gold reserve/);
+  assert.match(html, /POOL-0001/);
+  assert.match(html, /ON HOLD/);
+});
+
 test('record sale modal shows live profit margin fields without buyer offer', async () => {
   const api = await loadInventoryApi();
   api.setState(stateFixture());
