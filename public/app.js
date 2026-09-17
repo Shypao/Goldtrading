@@ -3377,15 +3377,85 @@ function renderInventoryPools() {
     const pools = (db.inventoryPools || []).slice().sort((a, b) => String(b.createdAt || '').localeCompare(String(a.createdAt || '')));
     return `<section class="block inventory-pools"><div class="batch-head"><div><p class="eyebrow">Manual groups only</p><h2 class="block-title">Inventory Pools</h2><p class="form-note">Pools contain only the records you manually select. Metals, purities, dates, and purchase periods do not restrict grouping.</p></div></div>${pools.length ? `<div class="inventory-pool-grid">${pools.map(pool => { const snapshot = inventoryPoolSnapshot(pool), status = inventoryPoolStatus(pool, snapshot), liquidated = roundWeight(Number(pool.originalWeight || 0) - snapshot.weight), partiallyLiquidated = liquidated > 0 && snapshot.weight > 0, composition = inventoryPoolComposition(snapshot.items); return `<article class="inventory-pool-card"><div class="inventory-pool-head"><div><div class="pool-status-row"><span class="pool-status ${status.toLowerCase().replaceAll(' ', '-')}">${esc(status)}</span>${partiallyLiquidated && status !== 'PARTIALLY LIQUIDATED' ? '<span class="pool-status partially-liquidated">PARTIALLY LIQUIDATED</span>' : ''}</div><h3>${esc(pool.name)}</h3><p>${esc(pool.id)} · ${esc(composition.label)}</p></div><div class="form-actions">${status !== 'FULLY LIQUIDATED' ? `<button class="btn secondary small" onclick="toggleInventoryPoolHold('${pool.id}')">${pool.onHold ? 'Set Active' : 'Put On Hold'}</button><button class="btn small" onclick="openPoolLiquidationModal('${pool.id}','partial')">Partial liquidation</button><button class="btn secondary small" onclick="openPoolLiquidationModal('${pool.id}','entire')">Entire pool</button>` : ''}</div></div><div class="liquidation-batch-compact-summary"><span><small>Original weight</small><strong>${fmtWeight(pool.originalWeight)}</strong></span><span><small>Liquidated</small><strong>${fmtWeight(liquidated)}</strong></span><span><small>Remaining weight</small><strong>${fmtWeight(snapshot.weight)}</strong></span><span><small>Remaining cost</small><strong>${fmtMoneyExact(snapshot.cost)}</strong></span></div><p class="form-note">${(pool.itemIds || []).length} original inventory record${(pool.itemIds || []).length === 1 ? '' : 's'} remain traceable${pool.notes ? ` · ${esc(pool.notes)}` : ''}.</p></article>`; }).join('')}</div>` : '<div class="empty-note">No manual inventory pools yet. Select at least two inventory records below and click <strong>Pool selected</strong>.</div>'}</section>`;
 }
+function closeInventoryItemLiquidationModal() { document.getElementById('inventory_item_liquidation_modal')?.remove(); }
+function inventoryItemLiquidationRequestedWeight(item) {
+    return val('inventory_item_liquidation_type') === 'entire' ? roundWeight(item.currentWeight) : roundWeight(Number(val('inventory_item_liquidation_weight')) || 0);
+}
+function updateInventoryItemLiquidationPreview() {
+    const item = db.stock.find(stock => stock.id === val('inventory_item_liquidation_id'));
+    if (!item)
+        return;
+    const entire = val('inventory_item_liquidation_type') === 'entire', input = document.getElementById('inventory_item_liquidation_weight');
+    if (input) {
+        input.disabled = entire;
+        if (entire)
+            input.value = String(item.currentWeight);
+    }
+    const prepared = preparePooledInventoryAllocation([item], inventoryItemLiquidationRequestedWeight(item));
+    const values = {
+        inventory_item_liquidation_cost: prepared ? fmtMoneyExact(prepared.cost) : '—',
+        inventory_item_liquidation_remaining_weight: prepared ? fmtWeight(prepared.remainingWeight) : fmtWeight(item.currentWeight),
+        inventory_item_liquidation_remaining_cost: prepared ? fmtMoneyExact(prepared.remainingCost) : fmtMoneyExact(item.cost)
+    };
+    Object.entries(values).forEach(([id, value]) => { const element = document.getElementById(id); if (element)
+        element.textContent = value; });
+    const button = document.getElementById('create_inventory_item_liquidation');
+    if (button)
+        button.disabled = !prepared;
+}
 function liquidateInventoryItem(id) {
     const item = db.stock.find(stock => stock.id === id);
     if (!item || !movableInventory(item)) {
         toast('This inventory item is no longer available');
         return;
     }
+    closeInventoryItemLiquidationModal();
+    const modal = document.createElement('div');
+    modal.id = 'inventory_item_liquidation_modal';
+    modal.className = 'modal-backdrop';
+    modal.innerHTML = `<div class="summary-modal" role="dialog" aria-modal="true" aria-labelledby="inventory_item_liquidation_title"><div class="summary-modal-head"><div><div class="eyebrow">${esc(item.metal)} ${esc(gradeLabel(item.metal, item.karat))} · ${esc(item.id)}</div><h2 id="inventory_item_liquidation_title">Move item to Liquidation</h2></div><button class="modal-close" onclick="closeInventoryItemLiquidationModal()" aria-label="Close">×</button></div><p class="move-confirmation-intro">Choose only the weight you want to move. This creates an open liquidation batch; it does not record the item as sold.</p><input id="inventory_item_liquidation_id" type="hidden" value="${esc(item.id)}"><div class="form-grid"><div class="field"><label>Liquidation type</label><select id="inventory_item_liquidation_type" onchange="updateInventoryItemLiquidationPreview()"><option value="partial" selected>Partial liquidation</option><option value="entire">Entire item</option></select></div><div class="field"><label>Weight for liquidation (g)</label><input id="inventory_item_liquidation_weight" type="number" min="0.01" max="${item.currentWeight}" step="0.01" oninput="updateInventoryItemLiquidationPreview()" placeholder="Maximum ${item.currentWeight}"></div><div class="field"><label>Assigned buyer</label><input id="inventory_item_liquidation_buyer" placeholder="Buyer name"></div><div class="field"><label>Batch name</label><input id="inventory_item_liquidation_name" value="${esc(gradeLabel(item.metal, item.karat))} partial batch"></div><div class="field span-2"><label>Notes</label><input id="inventory_item_liquidation_notes" placeholder="Optional"></div></div><div class="move-confirmation-summary"><div><span>Available weight</span><strong>${fmtWeight(item.currentWeight)}</strong></div><div><span>Available cost</span><strong>${fmtMoneyExact(item.cost)}</strong></div><div><span>Cost for liquidation</span><strong id="inventory_item_liquidation_cost">—</strong></div><div><span>Weight remaining</span><strong id="inventory_item_liquidation_remaining_weight">${fmtWeight(item.currentWeight)}</strong></div><div><span>Cost remaining</span><strong id="inventory_item_liquidation_remaining_cost">${fmtMoneyExact(item.cost)}</strong></div></div><div class="form-actions"><button class="btn secondary" onclick="closeInventoryItemLiquidationModal()">Cancel</button><button class="btn" id="create_inventory_item_liquidation" onclick="createInventoryItemLiquidationBatch()" disabled>Create liquidation batch</button></div></div>`;
+    modal.addEventListener('click', event => { if (event.target === modal)
+        closeInventoryItemLiquidationModal(); });
+    document.body.appendChild(modal);
+    updateInventoryItemLiquidationPreview();
+    document.getElementById('inventory_item_liquidation_weight')?.focus();
+}
+async function createInventoryItemLiquidationBatch() {
+    const item = db.stock.find(stock => stock.id === val('inventory_item_liquidation_id'));
+    if (!item || !movableInventory(item)) {
+        closeInventoryItemLiquidationModal();
+        toast('This inventory item is no longer available');
+        render();
+        return;
+    }
+    const prepared = preparePooledInventoryAllocation([item], inventoryItemLiquidationRequestedWeight(item));
+    const buyer = val('inventory_item_liquidation_buyer').trim(), name = val('inventory_item_liquidation_name').trim();
+    if (!prepared) {
+        toast(`Enter a weight between 0.01 g and ${Number(item.currentWeight).toFixed(2)} g`);
+        return;
+    }
+    if (!buyer || !name) {
+        toast('Enter a batch name and assigned buyer');
+        return;
+    }
+    prepared.poolItems = [item];
+    const beforeState = JSON.parse(JSON.stringify(db));
+    if (!applyPooledInventoryAllocation(prepared)) {
+        toast('The inventory balance changed. Review it and try again.');
+        return;
+    }
+    const id = nextSequenceId('LB', db.liquidationBatches);
+    db.liquidationBatches.push({ id, name, buyer, metal: item.metal, lines: prepared.allocations, notes: val('inventory_item_liquidation_notes').trim(), pooledAverageCost: roundMoney(prepared.averageCost), createdAt: new Date().toISOString(), createdBy: currentUser?.displayName || '' });
+    if (!await saveDB()) {
+        db = beforeState;
+        render();
+        toast('The liquidation batch was not created');
+        return;
+    }
     inventoryMoveSelection.clear();
-    inventoryMoveSelection.add(id);
-    openInventoryMoveReview([item], { total: 1, automatic: false, individual: true });
+    closeInventoryItemLiquidationModal();
+    goTab('liquidation');
+    toast(`${fmtWeight(prepared.weight)} moved to ${id} at ${fmtMoneyExact(prepared.cost)} cost`);
 }
 function openInventoryMoveReview(selected, context) {
     const metals = Array.from(new Set(selected.map(item => item.metal)));

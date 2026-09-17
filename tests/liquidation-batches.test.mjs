@@ -87,6 +87,42 @@ async function loadInventoryApi() {
     renderPools() {
       return renderInventoryPools();
     },
+    openItemLiquidation(id) {
+      appended.length = 0;
+      liquidateInventoryItem(id);
+      return appended.at(-1)?.innerHTML || '';
+    },
+    prepareItemLiquidation(id, weight) {
+      const item = db.stock.find(record => record.id === id);
+      return JSON.parse(JSON.stringify(preparePooledInventoryAllocation(item ? [item] : [], weight)));
+    },
+    async createItemLiquidation({ id, weight, buyer, name, type = 'partial' }) {
+      const values = {
+        inventory_item_liquidation_id: id,
+        inventory_item_liquidation_type: type,
+        inventory_item_liquidation_weight: String(weight),
+        inventory_item_liquidation_buyer: buyer,
+        inventory_item_liquidation_name: name,
+        inventory_item_liquidation_notes: ''
+      };
+      const originalGetElementById = document.getElementById;
+      const originalSaveDB = saveDB;
+      const originalGoTab = goTab;
+      const originalRender = render;
+      const originalToast = toast;
+      document.getElementById = key => key in values ? { value: values[key] } : null;
+      saveDB = async () => true;
+      goTab = () => {};
+      render = () => {};
+      toast = () => {};
+      await createInventoryItemLiquidationBatch();
+      document.getElementById = originalGetElementById;
+      saveDB = originalSaveDB;
+      goTab = originalGoTab;
+      render = originalRender;
+      toast = originalToast;
+      return JSON.parse(JSON.stringify(db));
+    },
     openCashflowResetModal() {
       appended.length = 0;
       if (typeof openCashflowResetConfirmation === 'function') openCashflowResetConfirmation();
@@ -273,6 +309,60 @@ test('partial pooled Silver liquidation uses mean cost and keeps the running bal
   const restored = api.restorePool(result.prepared.allocations);
   assert.equal(restored.reduce((sum, item) => sum + item.currentWeight, 0), 2440);
   assert.equal(restored.reduce((sum, item) => sum + item.cost, 0), 244194);
+});
+
+test('Liquidate item opens a partial-or-entire modal before moving inventory', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  api.setState(state);
+
+  const html = api.openItemLiquidation('stock-on-hand');
+
+  assert.match(html, /Partial liquidation/);
+  assert.match(html, /Entire item/);
+  assert.match(html, /Weight for liquidation \(g\)/);
+  assert.match(html, /Cost for liquidation/);
+  assert.match(html, /Weight remaining/);
+  assert.match(html, /Assigned buyer/);
+  assert.match(html, /Create liquidation batch/);
+});
+
+test('partial item liquidation assigns proportional cost and preserves the remainder', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  api.setState(state);
+
+  const prepared = api.prepareItemLiquidation('stock-on-hand', 4);
+
+  assert.equal(prepared.weight, 4);
+  assert.equal(prepared.cost, 400);
+  assert.equal(prepared.remainingWeight, 6);
+  assert.equal(prepared.remainingCost, 600);
+  assert.deepEqual(JSON.parse(JSON.stringify(prepared.allocations)), [
+    { itemId: 'stock-on-hand', previousStatus: 'Available', weight: 4, cost: 400, pooledAllocation: true }
+  ]);
+});
+
+test('confirming partial item liquidation creates an open batch and keeps the balance in inventory', async () => {
+  const api = await loadInventoryApi();
+  const state = stateFixture();
+  state.liquidationBatches = [];
+  api.setState(state);
+
+  const result = await api.createItemLiquidation({
+    id: 'stock-on-hand', weight: 4, buyer: 'Test Buyer', name: '18K partial batch'
+  });
+
+  assert.equal(result.liquidationBatches.length, 1);
+  assert.equal(result.liquidationBatches[0].buyer, 'Test Buyer');
+  assert.deepEqual(JSON.parse(JSON.stringify(result.liquidationBatches[0].lines)), [
+    { itemId: 'stock-on-hand', previousStatus: 'Available', weight: 4, cost: 400, pooledAllocation: true }
+  ]);
+  const remaining = result.stock.find(item => item.id === 'stock-on-hand');
+  assert.equal(remaining.currentWeight, 6);
+  assert.equal(remaining.cost, 600);
+  assert.equal(remaining.status, 'Available');
+  assert.equal(result.liquidations.length, 0);
 });
 
 test('a manually created On Hold pool stays On Hold after partial liquidation', async () => {
