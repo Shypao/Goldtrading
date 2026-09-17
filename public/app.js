@@ -2704,7 +2704,31 @@ function measureThermalReceiptHeight(receipt, paperWidth, receiptWidth, paperPad
     document.body.appendChild(probe);
     const contentHeight = Math.ceil(probe.getBoundingClientRect().height * 25.4 / 96 + 2);
     probe.remove();
-    return Math.max(paperWidth + 1, contentHeight);
+    return Math.max(35, contentHeight);
+}
+function thermalReceiptPrintDocument(markup, paperWidth, receiptHeight) {
+    const receiptWidth = paperWidth === 80 ? 72 : 48, paperPadding = paperWidth === 80 ? 2 : 1;
+    return `<!doctype html><html><head><meta charset="UTF-8"><title>ZP Gold &amp; Silver receipt</title><style>
+    @page{size:${paperWidth}mm ${receiptHeight}mm;margin:0}
+    *{box-sizing:border-box}
+    html,body{width:${paperWidth}mm;height:auto;min-height:0;margin:0!important;padding:0!important;background:#fff;color:#000}
+    body{font-family:"Courier New",Courier,monospace;font-size:${paperWidth === 80 ? 10 : 9}px;font-weight:700;line-height:1.18;-webkit-print-color-adjust:exact;print-color-adjust:exact}
+    .thermal-receipt{width:${receiptWidth}mm;height:auto;min-height:0;margin:0!important;padding:${paperPadding}mm!important;background:#fff;color:#000;transform:none!important;rotate:none!important;writing-mode:horizontal-tb!important;direction:ltr!important}
+    .receipt-header,.receipt-meta,.receipt-total,.receipt-payment,.receipt-thanks,.receipt-quote,.receipt-item{break-inside:avoid;page-break-inside:avoid}
+    .receipt-shop{text-align:center;font-size:${paperWidth === 80 ? 16 : 14}px;font-weight:900;letter-spacing:.1px;line-height:1.05}
+    .receipt-address{text-align:center;font-size:${paperWidth === 80 ? 10 : 8}px;line-height:1.15;margin-top:1px}
+    .receipt-rule{border-top:1px dashed #000;margin:3px 0}.receipt-rule-strong{border-top-style:solid}
+    .receipt-meta,.receipt-payment{display:grid;grid-template-columns:max-content minmax(0,1fr);column-gap:4px;row-gap:1px;align-items:start}
+    .receipt-meta span,.receipt-payment span{white-space:nowrap}.receipt-meta strong{min-width:0;overflow-wrap:anywhere}.receipt-payment strong{text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+    .receipt-items{width:100%;border-collapse:collapse;table-layout:fixed;font-size:${paperWidth === 80 ? 9 : 7.5}px;line-height:1.12;font-variant-numeric:tabular-nums}
+    .receipt-col-description{width:34%}.receipt-col-qty{width:8%}.receipt-col-weight{width:24%}.receipt-col-amount{width:34%}
+    .receipt-items th{padding:0 1px 2px;text-align:right;vertical-align:bottom;font-size:${paperWidth === 80 ? 8 : 6.5}px;line-height:1;white-space:normal}.receipt-items th:first-child{text-align:left}
+    .receipt-items td{padding:3px 1px;vertical-align:top;border-bottom:1px dotted #555}.receipt-description{text-align:left;font-weight:900;overflow-wrap:anywhere;word-break:normal}
+    .receipt-item-rate{display:block;margin-top:1px;font-size:${paperWidth === 80 ? 8 : 6.5}px;font-weight:700;line-height:1.05;white-space:nowrap}
+    .receipt-qty,.receipt-weight,.receipt-amount{text-align:right;white-space:nowrap}
+    .receipt-total{display:flex;justify-content:space-between;align-items:baseline;gap:3px;font-size:${paperWidth === 80 ? 13 : 11}px;font-weight:900}.receipt-total span:last-child{margin-left:auto;text-align:right;white-space:nowrap;font-variant-numeric:tabular-nums}
+    .receipt-thanks{text-align:center;font-weight:900;margin-top:5px}.receipt-quote{margin-top:4px;padding-top:3px;border-top:1px dashed #000;text-align:center;font-size:${paperWidth === 80 ? 8 : 7}px;font-style:italic;line-height:1.15}
+  </style></head><body><main class="thermal-receipt">${markup}</main></body></html>`;
 }
 function printPurchaseReceipt(batchId) {
     const items = db.stock.filter(item => (item.batchId || item.id) === batchId);
@@ -2713,22 +2737,24 @@ function printPurchaseReceipt(batchId) {
         return;
     }
     const paperWidth = Number(val('receipt_paper_size')) === 80 ? 80 : 58;
-    const receiptWidth = paperWidth === 80 ? 80 : 46;
-    const paperPadding = paperWidth === 80 ? 4 : 2;
+    const receiptWidth = paperWidth === 80 ? 72 : 48;
+    const paperPadding = paperWidth === 80 ? 2 : 1;
     const receipt = document.getElementById('receipt_preview_paper');
     if (!receipt) {
         toast('Receipt preview is not available');
         return;
     }
     const receiptHeight = measureThermalReceiptHeight(receipt, paperWidth, receiptWidth, paperPadding);
-    document.getElementById('thermal_print_page_style')?.remove();
-    const pageStyle = document.createElement('style');
-    pageStyle.id = 'thermal_print_page_style';
-    pageStyle.textContent = `@page{size:${paperWidth}mm ${receiptHeight}mm;margin:0}@media print{html,body.printing-thermal-receipt{width:${paperWidth}mm!important;height:${receiptHeight}mm!important;min-height:0!important;margin:0!important;padding:0!important}body.printing-thermal-receipt,body.printing-thermal-receipt #purchase_receipt_modal,body.printing-thermal-receipt .receipt-preview-modal,body.printing-thermal-receipt .receipt-preview-stage,body.printing-thermal-receipt .thermal-receipt{transform:none!important;rotate:none!important;writing-mode:horizontal-tb!important;direction:ltr!important}body.printing-thermal-receipt #purchase_receipt_modal{display:block!important;position:static!important;inset:auto!important;width:${paperWidth}mm!important;height:auto!important;min-height:0!important;margin:0!important}body.printing-thermal-receipt .thermal-receipt,body.printing-thermal-receipt .thermal-receipt.paper-80{box-sizing:border-box!important;width:${receiptWidth}mm!important;height:auto!important;min-height:0!important;margin:0 auto!important;padding:${paperPadding}mm!important}body.printing-thermal-receipt .receipt-items{font-size:${paperWidth === 80 ? 9.5 : 8}px}body.printing-thermal-receipt .receipt-total{font-size:${paperWidth === 80 ? 13 : 11}px;gap:4px}body.printing-thermal-receipt .receipt-total span{white-space:nowrap}}`;
-    document.head.appendChild(pageStyle);
-    document.body.classList.add('printing-thermal-receipt');
-    window.addEventListener('afterprint', cleanupThermalPrintState, { once: true });
-    window.print();
+    const printWindow = window.open('', 'zpp_thermal_receipt', 'popup,width=480,height=720');
+    if (!printWindow) {
+        toast('Allow the receipt print window, then try again');
+        return;
+    }
+    printWindow.document.open();
+    printWindow.document.write(thermalReceiptPrintDocument(purchaseReceiptMarkup(items), paperWidth, receiptHeight));
+    printWindow.document.close();
+    printWindow.focus();
+    window.setTimeout(() => { printWindow.print(); printWindow.close(); }, 150);
 }
 /* ============================= INVENTORY ============================= */
 let invFilter = { metal: 'All', karat: 'All', type: 'All', status: 'All' };

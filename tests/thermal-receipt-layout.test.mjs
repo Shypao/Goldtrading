@@ -29,10 +29,20 @@ test('thermal receipt measures a compact upright page instead of using an invali
   assert.doesNotMatch(appSource, /@page\{size:\$\{paperWidth\}mm auto/);
   assert.match(appSource, /writing-mode:horizontal-tb!important;direction:ltr!important/);
   assert.match(appSource, /transform:none!important;rotate:none!important/);
-  assert.match(appSource, /height:auto!important;min-height:0!important/);
-  assert.match(appSource, /margin:0 auto!important/);
+  assert.match(appSource, /height:auto;min-height:0;margin:0!important;padding:0!important/);
+  assert.match(appSource, /height:auto;min-height:0;margin:0!important/);
   assert.doesNotMatch(appSource, /rotate\((?:90|-90)deg\)/);
   assert.match(indexSource, /body\.printing-thermal-receipt #purchase_receipt_modal\{[^}]*display:block;[^}]*height:auto;[^}]*min-height:0/);
+});
+
+test('print button uses a top-aligned receipt-only document instead of the centered application modal', async () => {
+  const appSource = await readFile(appPath, 'utf8');
+  assert.match(appSource, /function thermalReceiptPrintDocument/);
+  assert.match(appSource, /window\.open\(['"]['"]\s*,\s*['"]zpp_thermal_receipt['"]/);
+  assert.match(appSource, /html,body\{width:\$\{paperWidth\}mm;height:auto;min-height:0;margin:0!important;padding:0!important/);
+  assert.match(appSource, /\.thermal-receipt\{width:\$\{receiptWidth\}mm;height:auto;min-height:0;margin:0!important/);
+  assert.match(appSource, /const receiptWidth\s*=\s*paperWidth\s*===\s*80\s*\?\s*72\s*:\s*48/);
+  assert.doesNotMatch(appSource.slice(appSource.indexOf('function printPurchaseReceipt'), appSource.indexOf('/* ============================= INVENTORY')), /document\.body\.classList\.add\(['"]printing-thermal-receipt/);
 });
 
 test('receipt paper selector remembers the configured 58 mm or 80 mm printer width', async () => {
