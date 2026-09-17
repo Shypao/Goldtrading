@@ -2032,17 +2032,18 @@ async function commitPurchaseBatch(printAfter=false){
   toast(`${count} items recorded · ${fmtMoney(total)}`);
 }
 
-function receiptWeightNumber(value){ return Number(value||0).toLocaleString('en-PH',{minimumFractionDigits:2,maximumFractionDigits:2}); }
+function receiptWeightNumber(value){ return Number(value||0).toLocaleString('en-PH',{minimumFractionDigits:0,maximumFractionDigits:2}); }
 function receiptMoneyNumber(value){ return Math.round(Number(value)||0).toLocaleString('en-PH',{maximumFractionDigits:0}); }
 function purchaseReceiptMarkup(items){
   const first=items[0],total=roundMoney(items.reduce((sum,item)=>sum+Number(item.payout),0));
-  const itemLines=items.map(item=>`<div class="receipt-item"><div class="receipt-item-name">${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</div><div class="receipt-calc">${receiptWeightNumber(item.netWeight)}g × ${receiptMoneyNumber(item.rate)} = ${receiptMoneyNumber(item.payout)}</div></div>`).join('');
-  return `<header><div class="receipt-shop">ZP GOLD &amp; SILVER</div><div class="receipt-address">Barcelona St, Zone II<br>Zamboanga City</div></header><div class="receipt-rule"></div>
-    <div class="receipt-meta"><span>Date:</span><strong>${esc(fmtDate(first.date))}</strong><span>Client:</span><strong>${esc(first.customerName||'Walk-in')}</strong></div><div class="receipt-rule"></div>
-    ${itemLines}<div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptMoneyNumber(total)}</span></div><div class="receipt-rule"></div>
-    <div class="receipt-meta"><span>Paid:</span><strong>${esc(first.paymentMethod||'—')}</strong>${first.staff?`<span>Staff:</span><strong>${esc(first.staff)}</strong>`:''}</div>
-    <div class="receipt-reference">Ref: ${esc(first.batchId||first.id)}</div><div class="receipt-thanks">Thank you.</div>
-    <footer class="receipt-quote">“Because gold is honest money it is disliked by dishonest men.”</footer>`;
+  const transactionNumber=first.batchId||first.id;
+  const itemLines=items.map(item=>`<tr class="receipt-item"><td class="receipt-description">${esc(item.metal)} ${esc(gradeLabel(item.metal,item.karat))} · ${esc(item.itemType)}</td><td class="receipt-qty">1</td><td class="receipt-weight">${receiptWeightNumber(item.netWeight)}g</td><td class="receipt-amount">${receiptMoneyNumber(item.payout)}</td></tr>`).join('');
+  return `<header class="receipt-header"><div class="receipt-shop">ZP GOLD &amp; SILVER</div><div class="receipt-address">Barcelona St, Zone II<br>Zamboanga City</div></header><div class="receipt-rule"></div>
+    <div class="receipt-meta"><span>Date:</span><strong>${esc(fmtDate(first.date))}</strong><span>Customer:</span><strong>${esc(first.customerName||'Walk-in')}</strong><span>Transaction No.:</span><strong>${esc(transactionNumber)}</strong>${first.staff?`<span>Staff:</span><strong>${esc(first.staff)}</strong>`:''}</div><div class="receipt-rule"></div>
+    <table class="receipt-items"><colgroup><col class="receipt-col-description"><col class="receipt-col-qty"><col class="receipt-col-weight"><col class="receipt-col-amount"></colgroup><thead><tr><th>ITEM / DESCRIPTION</th><th>QTY</th><th>WEIGHT</th><th>AMOUNT</th></tr></thead><tbody>${itemLines}</tbody></table>
+    <div class="receipt-rule receipt-rule-strong"></div><div class="receipt-total"><span>TOTAL</span><span>PHP ${receiptMoneyNumber(total)}</span></div><div class="receipt-rule"></div>
+    <div class="receipt-payment"><span>PAID:</span><strong>PHP ${receiptMoneyNumber(total)}</strong><span>CHANGE:</span><strong>PHP 0</strong><span>METHOD:</span><strong>${esc(first.paymentMethod||'—')}</strong></div>
+    <div class="receipt-thanks">Thank you!</div><div class="receipt-quote">“Because gold is honest money it is disliked by dishonest men.”</div>`;
 }
 function cleanupThermalPrintState(){
   document.body.classList.remove('printing-thermal-receipt');
@@ -2052,20 +2053,33 @@ function closePurchaseReceipt(){ cleanupThermalPrintState(); document.getElement
 function setReceiptPaperSize(value){
   const receipt=document.getElementById('receipt_preview_paper');
   receipt?.classList.toggle('paper-80',String(value)==='80');
+  try{localStorage.setItem('thermalReceiptPaperWidth',String(value)==='80'?'80':'58');}catch{}
 }
 function openPurchaseReceipt(batchId){
   const items=db.stock.filter(item=>(item.batchId||item.id)===batchId);
   if(!items.length){ toast('Receipt record not found'); return; }
   closePurchaseReceipt();
+  let savedPaperWidth='58';try{savedPaperWidth=localStorage.getItem('thermalReceiptPaperWidth')==='80'?'80':'58';}catch{}
   const modal=document.createElement('div'); modal.id='purchase_receipt_modal'; modal.className='modal-backdrop';
   modal.innerHTML=`<div class="receipt-preview-modal" role="dialog" aria-modal="true" aria-labelledby="receipt_preview_title">
     <div class="summary-modal-head"><div><div class="eyebrow">Thermal receipt preview</div><h2 id="receipt_preview_title">Buying receipt</h2></div><button class="modal-close" onclick="closePurchaseReceipt()" aria-label="Close">×</button></div>
-    <div class="receipt-preview-stage"><div class="thermal-receipt" id="receipt_preview_paper">${purchaseReceiptMarkup(items)}</div></div>
-    <div class="receipt-preview-controls"><div class="field"><label for="receipt_paper_size">Thermal paper width</label><select id="receipt_paper_size" onchange="setReceiptPaperSize(this.value)"><option value="58">58 mm</option><option value="80">80 mm</option></select></div>
+    <div class="receipt-preview-stage"><div class="thermal-receipt ${savedPaperWidth==='80'?'paper-80':''}" id="receipt_preview_paper">${purchaseReceiptMarkup(items)}</div></div>
+    <div class="receipt-preview-controls"><div class="field"><label for="receipt_paper_size">Thermal paper width</label><select id="receipt_paper_size" onchange="setReceiptPaperSize(this.value)"><option value="58" ${savedPaperWidth==='58'?'selected':''}>58 mm (VOZY P50)</option><option value="80" ${savedPaperWidth==='80'?'selected':''}>80 mm</option></select></div>
     <div class="form-actions"><button class="btn secondary" onclick="closePurchaseReceipt()">Close</button><button class="btn" onclick="printPurchaseReceipt('${batchId}')">Print receipt</button></div></div>
   </div>`;
   modal.addEventListener('click',event=>{if(event.target===modal)closePurchaseReceipt();});
   document.body.appendChild(modal);
+}
+function measureThermalReceiptHeight(receipt,paperWidth,receiptWidth,paperPadding){
+  const probe=receipt.cloneNode(true);
+  probe.removeAttribute('id');probe.setAttribute('aria-hidden','true');probe.classList.toggle('paper-80',paperWidth===80);
+  Object.assign(probe.style,{position:'fixed',left:'-10000px',top:'0',visibility:'hidden',boxSizing:'border-box',width:`${receiptWidth}mm`,maxWidth:'none',height:'auto',minHeight:'0',margin:'0',padding:`${paperPadding}mm`,boxShadow:'none',fontFamily:'"Courier New", Courier, monospace',fontSize:'9px',fontWeight:'700',lineHeight:'1.2',transform:'none',writingMode:'horizontal-tb'});
+  const table=probe.querySelector('.receipt-items');if(table)table.style.fontSize=paperWidth===80?'9.5px':'8px';
+  const total=probe.querySelector('.receipt-total');if(total)total.style.fontSize=paperWidth===80?'13px':'11px';
+  document.body.appendChild(probe);
+  const contentHeight=Math.ceil(probe.getBoundingClientRect().height*25.4/96+2);
+  probe.remove();
+  return Math.max(paperWidth+1,contentHeight);
 }
 function printPurchaseReceipt(batchId){
   const items=db.stock.filter(item=>(item.batchId||item.id)===batchId);
@@ -2073,9 +2087,12 @@ function printPurchaseReceipt(batchId){
   const paperWidth=Number(val('receipt_paper_size'))===80?80:58;
   const receiptWidth=paperWidth===80?80:46;
   const paperPadding=paperWidth===80?4:2;
+  const receipt=document.getElementById('receipt_preview_paper');
+  if(!receipt){toast('Receipt preview is not available');return;}
+  const receiptHeight=measureThermalReceiptHeight(receipt,paperWidth,receiptWidth,paperPadding);
   document.getElementById('thermal_print_page_style')?.remove();
   const pageStyle=document.createElement('style'); pageStyle.id='thermal_print_page_style';
-  pageStyle.textContent=`@page{size:${paperWidth}mm auto;margin:0}body.printing-thermal-receipt .thermal-receipt,body.printing-thermal-receipt .thermal-receipt.paper-80{width:${receiptWidth}mm;padding:${paperPadding}mm}body.printing-thermal-receipt .receipt-calc{font-size:${paperWidth===80?10:9}px;white-space:nowrap}body.printing-thermal-receipt .receipt-total{font-size:${paperWidth===80?14:12}px;gap:6px}body.printing-thermal-receipt .receipt-total span{white-space:nowrap}`;
+  pageStyle.textContent=`@page{size:${paperWidth}mm ${receiptHeight}mm;margin:0}@media print{html,body.printing-thermal-receipt{width:${paperWidth}mm!important;height:${receiptHeight}mm!important;min-height:0!important;margin:0!important;padding:0!important}body.printing-thermal-receipt,body.printing-thermal-receipt #purchase_receipt_modal,body.printing-thermal-receipt .receipt-preview-modal,body.printing-thermal-receipt .receipt-preview-stage,body.printing-thermal-receipt .thermal-receipt{transform:none!important;rotate:none!important;writing-mode:horizontal-tb!important;direction:ltr!important}body.printing-thermal-receipt #purchase_receipt_modal{display:block!important;position:static!important;inset:auto!important;width:${paperWidth}mm!important;height:auto!important;min-height:0!important;margin:0!important}body.printing-thermal-receipt .thermal-receipt,body.printing-thermal-receipt .thermal-receipt.paper-80{box-sizing:border-box!important;width:${receiptWidth}mm!important;height:auto!important;min-height:0!important;margin:0 auto!important;padding:${paperPadding}mm!important}body.printing-thermal-receipt .receipt-items{font-size:${paperWidth===80?9.5:8}px}body.printing-thermal-receipt .receipt-total{font-size:${paperWidth===80?13:11}px;gap:4px}body.printing-thermal-receipt .receipt-total span{white-space:nowrap}}`;
   document.head.appendChild(pageStyle);
   document.body.classList.add('printing-thermal-receipt');
   window.addEventListener('afterprint',cleanupThermalPrintState,{once:true});
