@@ -2588,17 +2588,19 @@ async function commitPurchaseBatch(printAfter = false) {
     captureBuyingDraftForm();
     const customer = purchaseCustomer();
     const previousCustomerCount = db.customers.length, previousStockCount = db.stock.length;
-    let customerId = customer.id;
+    let customerId = customer.id, newCustomer = null;
     if (customer.isNew) {
         customerId = uid('cust');
-        db.customers.push({ id: customerId, name: customer.name, contact: '', notes: '' });
+        newCustomer = { id: customerId, name: customer.name, contact: '', notes: '' };
+        db.customers.push(newCustomer);
     }
     const batchId = uid('buy');
     const shared = { date: val('b_date') || todayStr(), recordedAt: new Date().toISOString(), customerId, customerName: customer.name, paymentMethod: val('b_pay'), staff: val('b_staff').trim(),
         status: val('b_status'), remarks: val('b_remarks').trim(), batchId };
-    purchaseBatch.forEach(item => db.stock.push({ ...item, ...shared, id: uid('stk'), cost: item.payout }));
+    const newItems = purchaseBatch.map(item => ({ ...item, ...shared, id: uid('stk'), cost: item.payout }));
+    db.stock.push(...newItems);
     const count = purchaseBatch.length, total = roundMoney(purchaseBatch.reduce((sum, item) => sum + Number(item.payout), 0));
-    const saved = await saveDB();
+    const saved = await savePurchaseRecords(newCustomer, newItems);
     if (!saved) {
         db.customers.splice(previousCustomerCount);
         db.stock.splice(previousStockCount);
@@ -2613,6 +2615,28 @@ async function commitPurchaseBatch(printAfter = false) {
     if (printAfter)
         openPurchaseReceipt(batchId);
     toast(`${count} items recorded · ${fmtMoney(total)}`);
+}
+async function savePurchaseRecords(customer, items) {
+    if (!(location.protocol === 'http:' || location.protocol === 'https:'))
+        return saveDB();
+    try {
+        const response = await fetch('/api/purchases', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ customer, items }) });
+        if (response.status === 401) {
+            showLogin();
+            throw new Error('Session expired');
+        }
+        const result = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(result?.error || `Database server returned HTTP ${response.status}`);
+        if (Number.isInteger(result?.revision))
+            db._revision = result.revision;
+        return true;
+    }
+    catch (error) {
+        console.error('Purchase save failed', error);
+        toast(error instanceof Error ? error.message : 'Could not record the purchase');
+        return false;
+    }
 }
 function receiptWeightNumber(value) { return Number(value || 0).toLocaleString('en-PH', { minimumFractionDigits: 0, maximumFractionDigits: 2 }); }
 function receiptMoneyNumber(value) { return Math.round(Number(value) || 0).toLocaleString('en-PH', { maximumFractionDigits: 0 }); }

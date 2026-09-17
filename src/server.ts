@@ -362,6 +362,42 @@ async function saveStaffAdditions(candidate: LedgerState): Promise<void> {
   ]);
 }
 
+export function validatePurchaseRecords(current: Pick<LedgerState,'customers'|'stock'>, customer: LedgerRecord | null, items: LedgerRecord[]): void {
+  if (!Array.isArray(items) || !items.length) throw new Error('At least one purchase item is required');
+  const customerIds=new Set(current.customers.map(record=>String(record.id)));
+  if(customer){
+    if(!customer.id||!String(customer.name??'').trim()||customerIds.has(String(customer.id))) throw new Error('Invalid new customer record');
+    customerIds.add(String(customer.id));
+  }
+  const stockIds=new Set(current.stock.map(record=>String(record.id)));
+  const batchIds=new Set<string>();
+  for(const item of items){
+    const status=String(item.status??''),id=String(item.id??''),batchId=String(item.batchId??'');
+    if(!id||stockIds.has(id)||!batchId||
+      (item.customerId&&!customerIds.has(String(item.customerId)))||
+      !['Gold','Silver','Platinum'].includes(String(item.metal??''))||
+      !['Jewelry','Scrap'].includes(String(item.itemType??''))||
+      !['Available','For Refining','On Hold'].includes(status)||
+      Number(item.netWeight)<=0||Number(item.currentWeight)!==Number(item.netWeight)||
+      Number(item.rate)<0||Number(item.payout)<0||Number(item.cost)!==Number(item.payout)){
+      throw new Error('Invalid purchase record');
+    }
+    stockIds.add(id);batchIds.add(batchId);
+  }
+  if(batchIds.size!==1) throw new Error('Purchase items must belong to one transaction');
+}
+
+async function appendPurchaseRecords(customer: LedgerRecord | null, items: LedgerRecord[]): Promise<number> {
+  const current=await loadState();
+  validatePurchaseRecords(current,customer,items);
+  await dbBatch([
+    ...(customer?[{sql:'INSERT INTO customers (id, data) VALUES (?, ?)',args:[customer.id,JSON.stringify(customer)]}]:[]),
+    ...items.map(record=>({sql:'INSERT INTO inventory (id, data) VALUES (?, ?)',args:[record.id,JSON.stringify(record)]})),
+    {sql:"INSERT INTO settings (key, value) VALUES ('ledger_revision', '1') ON CONFLICT(key) DO UPDATE SET value=CAST(value AS INTEGER)+1"}
+  ]);
+  return currentLedgerRevision();
+}
+
 function buyingDraftKey(user: AuthUser): string {
   return `buying_draft:${user.id}`;
 }
@@ -1026,6 +1062,15 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
         timingSafeEqual(Buffer.from(suppliedHash, 'hex'), Buffer.from(row.password_hash, 'hex')));
       if (!valid || !row) return sendJson(response, 401, { error: 'Invalid administrator username or password' });
       return sendJson(response, 200, { verified: true, admin: { id: row.id, username: row.username, displayName: row.display_name } });
+    }
+    if(request.method==='POST'&&url.pathname==='/api/purchases'){
+      const body=await readJsonBody(request) as {customer?:LedgerRecord|null;items?:LedgerRecord[]};
+      try{
+        const revision=await appendPurchaseRecords(body.customer??null,Array.isArray(body.items)?body.items:[]);
+        return sendJson(response,200,{ok:true,revision});
+      }catch(error){
+        return sendJson(response,400,{error:error instanceof Error?error.message:'Purchase could not be recorded'});
+      }
     }
     if (request.method === 'PUT' && url.pathname === '/api/state') {
       const body = await readJsonBody(request);
