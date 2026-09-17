@@ -731,7 +731,9 @@ export function validateLedgerIntegrity(state: LedgerState): void {
   const stockIds = new Set(state.stock.map(record => record.id));
   const stockById = new Map(state.stock.map(record => [record.id, record]));
   if (stockIds.size !== state.stock.length) throw new Error('Inventory contains duplicate record IDs');
-  const inventoryStatuses=new Set(['Available','For Liquidation','For Refining','On Hold','Liquidated','Refined','Sold']);
+  // `Pooled` was used by the original pooling implementation. Keep accepting those
+  // historical zero-balance rows so they cannot block an unrelated modern write.
+  const inventoryStatuses=new Set(['Available','For Liquidation','For Refining','On Hold','Liquidated','Refined','Sold','Pooled']);
   for (const item of state.stock) {
     if (!inventoryStatuses.has(String(item.status??''))) throw new Error(`Inventory item ${item.id} has an invalid status`);
   }
@@ -748,6 +750,8 @@ export function validateLedgerIntegrity(state: LedgerState): void {
     const expectedMetal=metals.size===1?Array.from(metals)[0]:'Mixed';
     const expectedKarat=metals.size===1&&grades.size===1?Array.from(grades)[0]:'Mixed';
     if(String(pool.metal??'')!==expectedMetal||String(pool.karat??'')!==expectedKarat) throw new Error(`Inventory pool ${pool.id} has an invalid composition label`);
+    const legacyPool=items.every(item=>item!.status==='Pooled'&&!item!.inventoryPoolId&&Number(item!.currentWeight||0)<=0);
+    if(legacyPool) continue;
     for(const item of items){
       if(pooledItemIds.has(item!.id)||item!.inventoryPoolId!==pool.id) throw new Error(`Inventory item ${item!.id} has an invalid pool link`);
       pooledItemIds.add(item!.id);

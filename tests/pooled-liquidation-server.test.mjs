@@ -74,6 +74,22 @@ test('server accepts a partial pooled liquidation while the source keeps its rem
   assert.equal(result.stdout, 'ok');
 });
 
+test('legacy zero-balance Pooled records do not block unrelated saves', () => {
+  const state = emptyState();
+  state.stock.push(
+    { id: 'legacy-a', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Pooled', netWeight: 100, currentWeight: 0, payout: 10000, cost: 0 },
+    { id: 'legacy-b', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Pooled', netWeight: 200, currentWeight: 0, payout: 20000, cost: 0 }
+  );
+  state.inventoryPools.push({
+    id: 'POOL-0001', name: 'Legacy pool', metal: 'Silver', karat: '925', itemIds: ['legacy-a', 'legacy-b'],
+    originalWeight: 300, originalCost: 30000, remainingWeight: 300, remainingCost: 30000, status: 'ACTIVE'
+  });
+
+  const result = validate(state);
+  assert.equal(result.status, 0, result.stderr);
+  assert.equal(result.stdout, 'ok');
+});
+
 test('atomic partial item batch preparation ignores unrelated legacy records', () => {
   const state = emptyState();
   state.stock.push(
