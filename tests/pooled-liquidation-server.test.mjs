@@ -24,6 +24,23 @@ function emptyState() {
   return { customers: [], stock: [], inventoryPools: [], liquidationBatches: [], liquidations: [], refiningBatches: [], retailSales: [], pricingHistory: [], pricing: null };
 }
 
+function preparePartialItem(state, request) {
+  const script = `
+    import { preparePartialItemLiquidationBatch } from './src/server.ts';
+    try {
+      const result = preparePartialItemLiquidationBatch(${JSON.stringify(state)}, ${JSON.stringify(request)}, 'Admin');
+      process.stdout.write(JSON.stringify(result));
+    } catch (error) {
+      process.stderr.write(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  `;
+  return spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8',
+    env: { ...process.env, ZPP_UPSTREAM_URL: 'http://unused.invalid' }
+  });
+}
+
 test('server accepts a partial pooled liquidation while the source keeps its remaining balance', () => {
   const state = emptyState();
   state.stock.push({
@@ -38,6 +55,40 @@ test('server accepts a partial pooled liquidation while the source keeps its rem
   const result = validate(state);
   assert.equal(result.status, 0, result.stderr);
   assert.equal(result.stdout, 'ok');
+});
+
+test('atomic partial item batch preparation ignores unrelated legacy records', () => {
+  const state = emptyState();
+  state.stock.push(
+    { id: 'target', metal: 'Gold', karat: '18K', itemType: 'Scrap', status: 'Available', netWeight: 10, currentWeight: 10, payout: 1000, cost: 1000 },
+    { id: 'legacy-unrelated', status: 'old invalid status' }
+  );
+
+  const result = preparePartialItem(state, {
+    itemId: 'target', weight: 4, buyer: 'Gold Buyer', name: '18K partial batch', notes: 'Test'
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const prepared = JSON.parse(result.stdout);
+  assert.equal(prepared.item.currentWeight, 6);
+  assert.equal(prepared.item.cost, 600);
+  assert.equal(prepared.batch.buyer, 'Gold Buyer');
+  assert.equal(prepared.batch.metal, 'Gold');
+  assert.deepEqual(prepared.batch.lines, [
+    { itemId: 'target', previousStatus: 'Available', weight: 4, cost: 400, pooledAllocation: true }
+  ]);
+});
+
+test('atomic partial item batch preparation rejects excessive weight', () => {
+  const state = emptyState();
+  state.stock.push({ id: 'target', metal: 'Silver', karat: '925', itemType: 'Scrap', status: 'Available', netWeight: 10, currentWeight: 10, payout: 1000, cost: 1000 });
+
+  const result = preparePartialItem(state, {
+    itemId: 'target', weight: 11, buyer: 'Silver Buyer', name: '925 partial batch'
+  });
+
+  assert.notEqual(result.status, 0);
+  assert.match(result.stderr, /between 0\.01 g and 10\.00 g/);
 });
 
 test('server accepts a correctly labelled mixed-metal liquidation batch', () => {

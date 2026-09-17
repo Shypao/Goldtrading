@@ -365,6 +365,18 @@ test('confirming partial item liquidation creates an open batch and keeps the ba
   assert.equal(result.liquidations.length, 0);
 });
 
+test('browser partial item liquidation uses the atomic batch endpoint', async () => {
+  const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function saveInventoryItemLiquidationBatch');
+  const end = source.indexOf('function openInventoryMoveReview');
+  const flow = source.slice(start, end);
+
+  assert.notEqual(start, -1);
+  assert.match(flow, /fetch\(['"]\/api\/liquidation-batches\/partial-item['"]/);
+  assert.match(flow, /result\.batch/);
+  assert.match(flow, /result\.item/);
+});
+
 test('a manually created On Hold pool stays On Hold after partial liquidation', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();

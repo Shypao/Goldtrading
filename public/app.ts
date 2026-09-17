@@ -2608,15 +2608,37 @@ function liquidateInventoryItem(id){
 async function createInventoryItemLiquidationBatch(){
   const item=db.stock.find(stock=>stock.id===val('inventory_item_liquidation_id'));if(!item||!movableInventory(item)){closeInventoryItemLiquidationModal();toast('This inventory item is no longer available');render();return;}
   const prepared=preparePooledInventoryAllocation([item],inventoryItemLiquidationRequestedWeight(item));
-  const buyer=val('inventory_item_liquidation_buyer').trim(),name=val('inventory_item_liquidation_name').trim();
+  const buyer=val('inventory_item_liquidation_buyer').trim(),name=val('inventory_item_liquidation_name').trim(),notes=val('inventory_item_liquidation_notes').trim();
   if(!prepared){toast(`Enter a weight between 0.01 g and ${Number(item.currentWeight).toFixed(2)} g`);return;}
   if(!buyer||!name){toast('Enter a batch name and assigned buyer');return;}
+  const result=await saveInventoryItemLiquidationBatch(item,prepared,{buyer,name,notes});
+  if(!result)return;
+  inventoryMoveSelection.clear();closeInventoryItemLiquidationModal();goTab('liquidation');toast(`${fmtWeight(prepared.weight)} moved to ${result.batch.id} at ${fmtMoneyExact(prepared.cost)} cost`);
+}
+async function saveInventoryItemLiquidationBatch(item,prepared,details){
+  if(typeof location!=='undefined'&&(location.protocol==='http:'||location.protocol==='https:')){
+    try{
+      const response=await fetch('/api/liquidation-batches/partial-item',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({itemId:item.id,weight:prepared.weight,buyer:details.buyer,name:details.name,notes:details.notes})});
+      if(response.status===401){showLogin();throw new Error('Session expired');}
+      const result=await response.json().catch(()=>null);
+      if(!response.ok)throw new Error(result?.error||`Database server returned HTTP ${response.status}`);
+      Object.assign(item,result.item);
+      db.liquidationBatches=db.liquidationBatches.filter(batch=>batch.id!==result.batch.id);
+      db.liquidationBatches.push(result.batch);
+      if(Number.isInteger(result.revision))db._revision=result.revision;
+      return {item:result.item,batch:result.batch};
+    }catch(error){
+      console.error('Partial liquidation batch save failed',error);
+      toast(error instanceof Error?error.message:'Liquidation batch could not be created');
+      return null;
+    }
+  }
   prepared.poolItems=[item];const beforeState=JSON.parse(JSON.stringify(db));
-  if(!applyPooledInventoryAllocation(prepared)){toast('The inventory balance changed. Review it and try again.');return;}
-  const id=nextSequenceId('LB',db.liquidationBatches);
-  db.liquidationBatches.push({id,name,buyer,metal:item.metal,lines:prepared.allocations,notes:val('inventory_item_liquidation_notes').trim(),pooledAverageCost:roundMoney(prepared.averageCost),createdAt:new Date().toISOString(),createdBy:currentUser?.displayName||''});
-  if(!await saveDB()){db=beforeState;render();toast('The liquidation batch was not created');return;}
-  inventoryMoveSelection.clear();closeInventoryItemLiquidationModal();goTab('liquidation');toast(`${fmtWeight(prepared.weight)} moved to ${id} at ${fmtMoneyExact(prepared.cost)} cost`);
+  if(!applyPooledInventoryAllocation(prepared)){toast('The inventory balance changed. Review it and try again.');return null;}
+  const batch={id:nextSequenceId('LB',db.liquidationBatches),name:details.name,buyer:details.buyer,metal:item.metal,lines:prepared.allocations,notes:details.notes,pooledAverageCost:roundMoney(prepared.averageCost),createdAt:new Date().toISOString(),createdBy:currentUser?.displayName||''};
+  db.liquidationBatches.push(batch);
+  if(!await saveDB()){db=beforeState;render();toast('The liquidation batch was not created');return null;}
+  return {item,batch};
 }
 function openInventoryMoveReview(selected,context){
   const metals=Array.from(new Set(selected.map(item=>item.metal)));

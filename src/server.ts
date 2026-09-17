@@ -398,6 +398,52 @@ async function appendPurchaseRecords(customer: LedgerRecord | null, items: Ledge
   return currentLedgerRevision();
 }
 
+export function preparePartialItemLiquidationBatch(
+  current: Pick<LedgerState,'stock'|'liquidationBatches'>,
+  request: Record<string,unknown>,
+  createdBy=''
+): {item:LedgerRecord;batch:LedgerRecord} {
+  const round=(value:number)=>Math.round((value+Number.EPSILON)*100)/100;
+  const itemId=String(request.itemId??''),item=current.stock.find(record=>record.id===itemId);
+  if(!item||item.inventoryPoolId||item.liquidationBatchId||!['Available','For Refining'].includes(String(item.status??''))) {
+    throw new Error('This inventory item is no longer available');
+  }
+  const availableWeight=round(Number(item.currentWeight||0)),availableCost=round(Number(item.cost||0));
+  const weight=round(Number(request.weight));
+  if(!Number.isFinite(weight)||weight<0.01||weight>availableWeight) {
+    throw new Error(`Enter a weight between 0.01 g and ${availableWeight.toFixed(2)} g`);
+  }
+  const buyer=String(request.buyer??'').trim(),name=String(request.name??'').trim();
+  if(!buyer||!name) throw new Error('Enter a batch name and assigned buyer');
+  const cost=round(availableCost*(weight/availableWeight));
+  const remainingWeight=round(availableWeight-weight),remainingCost=round(availableCost-cost);
+  const maximum=current.liquidationBatches.reduce((max,record)=>{
+    const match=String(record.id||'').match(/^LB-(\d+)$/);
+    return match?Math.max(max,Number(match[1])):max;
+  },0);
+  const id=`LB-${String(maximum+1).padStart(4,'0')}`;
+  const updatedItem={...item,currentWeight:remainingWeight,cost:remainingCost};
+  const batch:LedgerRecord={
+    id,name,buyer,metal:String(item.metal??''),
+    lines:[{itemId:item.id,previousStatus:item.status,weight,cost,pooledAllocation:true}],
+    notes:String(request.notes??'').trim(),pooledAverageCost:round(availableCost/availableWeight),
+    createdAt:new Date().toISOString(),createdBy
+  };
+  return {item:updatedItem,batch};
+}
+
+async function appendPartialItemLiquidationBatch(request: Record<string,unknown>, createdBy:string): Promise<{item:LedgerRecord;batch:LedgerRecord;revision:number}> {
+  const current=await loadState();
+  const prepared=preparePartialItemLiquidationBatch(current,request,createdBy);
+  const revision=(await currentLedgerRevision())+1;
+  await dbBatch([
+    {sql:'UPDATE inventory SET data = ? WHERE id = ?',args:[JSON.stringify(prepared.item),prepared.item.id]},
+    {sql:'INSERT INTO liquidation_batches (id, data) VALUES (?, ?)',args:[prepared.batch.id,JSON.stringify(prepared.batch)]},
+    {sql:"INSERT INTO settings (key, value) VALUES ('ledger_revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",args:[String(revision)]}
+  ]);
+  return {...prepared,revision};
+}
+
 function buyingDraftKey(user: AuthUser): string {
   return `buying_draft:${user.id}`;
 }
@@ -1070,6 +1116,16 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
         return sendJson(response,200,{ok:true,revision});
       }catch(error){
         return sendJson(response,400,{error:error instanceof Error?error.message:'Purchase could not be recorded'});
+      }
+    }
+    if(request.method==='POST'&&url.pathname==='/api/liquidation-batches/partial-item'){
+      if(user!.role!=='admin') return sendJson(response,403,{error:'Administrator access required'});
+      const body=await readJsonBody(request) as Record<string,unknown>;
+      try{
+        const result=await appendPartialItemLiquidationBatch(body,user!.displayName);
+        return sendJson(response,200,{ok:true,...result});
+      }catch(error){
+        return sendJson(response,400,{error:error instanceof Error?error.message:'Liquidation batch could not be created'});
       }
     }
     if (request.method === 'PUT' && url.pathname === '/api/state') {
