@@ -41,6 +41,23 @@ function preparePartialItem(state, request) {
   });
 }
 
+function prepareCompletion(state, request) {
+  const script = `
+    import { prepareCompletedLiquidation } from './src/server.ts';
+    try {
+      const result = prepareCompletedLiquidation(${JSON.stringify(state)}, ${JSON.stringify(request)}, 'Admin');
+      process.stdout.write(JSON.stringify(result));
+    } catch (error) {
+      process.stderr.write(error instanceof Error ? error.message : String(error));
+      process.exit(1);
+    }
+  `;
+  return spawnSync(process.execPath, ['--experimental-strip-types', '--input-type=module', '--eval', script], {
+    cwd: new URL('..', import.meta.url), encoding: 'utf8',
+    env: { ...process.env, ZPP_UPSTREAM_URL: 'http://unused.invalid' }
+  });
+}
+
 test('server accepts a partial pooled liquidation while the source keeps its remaining balance', () => {
   const state = emptyState();
   state.stock.push({
@@ -89,6 +106,32 @@ test('atomic partial item batch preparation rejects excessive weight', () => {
 
   assert.notEqual(result.status, 0);
   assert.match(result.stderr, /between 0\.01 g and 10\.00 g/);
+});
+
+test('atomic liquidation completion records a sale without validating unrelated legacy records', () => {
+  const state = emptyState();
+  state.stock.push(
+    { id: 'target', metal: 'Gold', karat: '0.01%', itemType: 'Scrap', status: 'For Liquidation', liquidationBatchId: 'LB-0001', netWeight: 1, currentWeight: 1, payout: 1, cost: 1 },
+    { id: 'legacy-unrelated', status: 'old invalid status' }
+  );
+  state.liquidationBatches.push({
+    id: 'LB-0001', name: '0.01% purity partial batch', buyer: 'test', metal: 'Gold',
+    lines: [{ itemId: 'target', previousStatus: 'Available', weight: 1, cost: 1 }]
+  });
+
+  const result = prepareCompletion(state, {
+    batchId: 'LB-0001', date: '2026-09-17', totalSold: 2, paymentStatus: 'Pending', notes: 'test'
+  });
+
+  assert.equal(result.status, 0, result.stderr);
+  const prepared = JSON.parse(result.stdout);
+  assert.equal(prepared.deletedBatchId, 'LB-0001');
+  assert.equal(prepared.liquidation.id, 'L-0001');
+  assert.equal(prepared.liquidation.proceeds, 2);
+  assert.equal(prepared.liquidation.margin, 1);
+  assert.equal(prepared.updatedItems[0].status, 'Liquidated');
+  assert.equal(prepared.updatedItems[0].currentWeight, 0);
+  assert.equal('liquidationBatchId' in prepared.updatedItems[0], false);
 });
 
 test('server accepts a correctly labelled mixed-metal liquidation batch', () => {

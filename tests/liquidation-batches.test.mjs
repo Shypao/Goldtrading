@@ -377,6 +377,18 @@ test('browser partial item liquidation uses the atomic batch endpoint', async ()
   assert.match(flow, /result\.item/);
 });
 
+test('browser records a completed liquidation through the atomic endpoint', async () => {
+  const source = await readFile(new URL('../public/app.js', import.meta.url), 'utf8');
+  const start = source.indexOf('async function saveCompletedLiquidationBatch');
+  const end = source.indexOf('let editingLiquidationId');
+  const flow = source.slice(start, end);
+
+  assert.notEqual(start, -1);
+  assert.match(flow, /fetch\(['"]\/api\/complete-liquidation['"]/);
+  assert.match(flow, /result\.liquidation/);
+  assert.match(flow, /result\.updatedItems/);
+});
+
 test('a manually created On Hold pool stays On Hold after partial liquidation', async () => {
   const api = await loadInventoryApi();
   const state = stateFixture();

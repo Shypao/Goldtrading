@@ -444,6 +444,68 @@ async function appendPartialItemLiquidationBatch(request: Record<string,unknown>
   return {...prepared,revision};
 }
 
+export function prepareCompletedLiquidation(
+  current: Pick<LedgerState,'stock'|'liquidationBatches'|'liquidations'>,
+  request: Record<string,unknown>,
+  createdBy=''
+): {updatedItems:LedgerRecord[];liquidation:LedgerRecord;deletedBatchId:string} {
+  const round=(value:number)=>Math.round((value+Number.EPSILON)*100)/100;
+  const batchId=String(request.batchId??''),batch=current.liquidationBatches.find(record=>record.id===batchId);
+  if(!batch) throw new Error('This liquidation batch is no longer available');
+  const date=String(request.date??'').trim(),totalSold=round(Number(request.totalSold));
+  if(!date) throw new Error('Enter the sale date');
+  if(!Number.isFinite(totalSold)||totalSold<=0) throw new Error('Enter the total PHP sold amount for this batch');
+  const sourceLines=Array.isArray(batch.lines)?batch.lines as LedgerRecord[]:[];
+  const prepared=sourceLines.map(line=>({line,item:current.stock.find(stock=>stock.id===String(line.itemId??''))}));
+  if(!prepared.length||prepared.some(({line,item})=>!item||(line.pooledAllocation===true
+    ? Number(line.weight)<=0||Number(line.cost)<0||Number(item.currentWeight)+Number(line.weight)>Number(item.netWeight)+0.005
+    : item.status!=='For Liquidation'||item.liquidationBatchId!==batch.id||Math.abs(Number(item.currentWeight)-Number(line.weight))>.005||Math.abs(Number(item.cost)-Number(line.cost))>.01))) {
+    throw new Error('One or more batch items changed. Refresh and try again.');
+  }
+  const totalWeight=prepared.reduce((sum,{line})=>sum+Number(line.weight||0),0);
+  const totalCost=prepared.reduce((sum,{line})=>sum+Number(line.cost||0),0);
+  if(!Number.isFinite(totalWeight)||totalWeight<=0||!Number.isFinite(totalCost)||totalCost<0) throw new Error('The liquidation batch has invalid totals');
+  let allocatedSold=0;
+  const updatedItems:LedgerRecord[]=[];
+  const lines=prepared.map(({line,item},index)=>{
+    const source=item!;
+    const weight=Number(line.weight),costPortion=Number(line.cost),ratio=totalCost>0?costPortion/totalCost:weight/totalWeight;
+    const sellingAmount=index===prepared.length-1?round(totalSold-allocatedSold):round(totalSold*ratio);
+    allocatedSold=round(allocatedSold+sellingAmount);
+    if(line.pooledAllocation!==true){
+      const updated:LedgerRecord={...source,currentWeight:0,cost:0,status:'Liquidated'};
+      delete updated.liquidationBatchId;
+      updatedItems.push(updated);
+    }
+    return {itemId:source.id,assay:source.karat,weight:round(weight),sellingAmount,sellingRate:round(sellingAmount/weight),proceeds:sellingAmount,costPortion:round(costPortion),previousStatus:line.previousStatus||'Available',pooledAllocation:line.pooledAllocation===true};
+  });
+  const maximum=current.liquidations.reduce((max,record)=>{
+    const match=String(record.id||'').match(/^L-(\d+)$/);
+    return match?Math.max(max,Number(match[1])):max;
+  },0);
+  const id=`L-${String(maximum+1).padStart(4,'0')}`;
+  const uniqueRates=Array.from(new Set(lines.map(line=>line.sellingRate)));
+  const liquidation:LedgerRecord={
+    id,batchId:batch.id,batchName:batch.name,date,metal:batch.metal,buyer:batch.buyer,itemCount:lines.length,
+    sellingRate:uniqueRates.length===1?uniqueRates[0]:null,releasedWeight:round(totalWeight),proceeds:totalSold,
+    paymentStatus:String(request.paymentStatus??'Pending'),cost:round(totalCost),margin:round(totalSold-totalCost),
+    profitMargin:totalCost?round((totalSold-totalCost)/totalCost*100):0,lines,remarks:String(request.notes??'').trim(),createdBy
+  };
+  return {updatedItems,liquidation,deletedBatchId:batch.id};
+}
+
+async function appendCompletedLiquidation(request:Record<string,unknown>,createdBy:string):Promise<{updatedItems:LedgerRecord[];liquidation:LedgerRecord;deletedBatchId:string;revision:number}>{
+  const current=await loadState(),prepared=prepareCompletedLiquidation(current,request,createdBy);
+  const revision=(await currentLedgerRevision())+1;
+  await dbBatch([
+    ...prepared.updatedItems.map(item=>({sql:'UPDATE inventory SET data = ? WHERE id = ?',args:[JSON.stringify(item),item.id]})),
+    {sql:'INSERT INTO liquidations (id, data) VALUES (?, ?)',args:[prepared.liquidation.id,JSON.stringify(prepared.liquidation)]},
+    {sql:'DELETE FROM liquidation_batches WHERE id = ?',args:[prepared.deletedBatchId]},
+    {sql:"INSERT INTO settings (key, value) VALUES ('ledger_revision', ?) ON CONFLICT(key) DO UPDATE SET value=excluded.value",args:[String(revision)]}
+  ]);
+  return {...prepared,revision};
+}
+
 function buyingDraftKey(user: AuthUser): string {
   return `buying_draft:${user.id}`;
 }
@@ -1126,6 +1188,16 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
         return sendJson(response,200,{ok:true,...result});
       }catch(error){
         return sendJson(response,400,{error:error instanceof Error?error.message:'Liquidation batch could not be created'});
+      }
+    }
+    if(request.method==='POST'&&url.pathname==='/api/complete-liquidation'){
+      if(user!.role!=='admin') return sendJson(response,403,{error:'Administrator access required'});
+      const body=await readJsonBody(request) as Record<string,unknown>;
+      try{
+        const result=await appendCompletedLiquidation(body,user!.displayName);
+        return sendJson(response,200,{ok:true,...result});
+      }catch(error){
+        return sendJson(response,400,{error:error instanceof Error?error.message:'Liquidation could not be recorded'});
       }
     }
     if (request.method === 'PUT' && url.pathname === '/api/state') {

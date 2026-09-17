@@ -4151,6 +4151,15 @@ async function submitLiquidationBatch(batchId) {
         toast('One or more batch items changed. Refresh and try again.');
         return;
     }
+    if (typeof location !== 'undefined' && (location.protocol === 'http:' || location.protocol === 'https:')) {
+        const result = await saveCompletedLiquidationBatch(batch, { date, totalSold, paymentStatus: val('complete_batch_payment'), notes: val('complete_batch_notes').trim() });
+        if (!result)
+            return;
+        closeCompleteLiquidationBatch();
+        render();
+        toast(`Liquidation ${result.liquidation.id} recorded`);
+        return;
+    }
     const beforeState = JSON.parse(JSON.stringify(db));
     const totalWeight = prepared.reduce((sum, { line }) => sum + Number(line.weight || 0), 0), totalCost = prepared.reduce((sum, { line }) => sum + Number(line.cost || 0), 0);
     let allocatedSold = 0;
@@ -4178,6 +4187,34 @@ async function submitLiquidationBatch(batchId) {
     closeCompleteLiquidationBatch();
     render();
     toast(`Liquidation ${liquidationId} recorded`);
+}
+async function saveCompletedLiquidationBatch(batch, details) {
+    try {
+        const response = await fetch('/api/complete-liquidation', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ batchId: batch.id, date: details.date, totalSold: details.totalSold, paymentStatus: details.paymentStatus, notes: details.notes }) });
+        if (response.status === 401) {
+            showLogin();
+            throw new Error('Session expired');
+        }
+        const result = await response.json().catch(() => null);
+        if (!response.ok)
+            throw new Error(result?.error || `Database server returned HTTP ${response.status}`);
+        for (const updated of result.updatedItems || []) {
+            const item = db.stock.find(stock => stock.id === updated.id);
+            if (item)
+                Object.assign(item, updated);
+        }
+        db.liquidationBatches = db.liquidationBatches.filter(record => record.id !== result.deletedBatchId);
+        db.liquidations = db.liquidations.filter(record => record.id !== result.liquidation.id);
+        db.liquidations.push(result.liquidation);
+        if (Number.isInteger(result.revision))
+            db._revision = result.revision;
+        return result;
+    }
+    catch (error) {
+        console.error('Liquidation completion save failed', error);
+        toast(error instanceof Error ? error.message : 'Liquidation could not be recorded');
+        return null;
+    }
 }
 let editingLiquidationId = null;
 function openLiquidationEdit(id) {
