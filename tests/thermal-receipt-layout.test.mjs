@@ -47,6 +47,7 @@ test('receipt has fixed description, quantity, weight, and amount columns', asyn
   assert.match(markup, /ITEM \/ DESCRIPTION/);
   assert.match(markup, /<th>QTY<\/th><th>WEIGHT<\/th><th>AMOUNT<\/th>/);
   assert.match(markup, /class="receipt-description">Gold 18K · Scrap/);
+  assert.match(markup, /class="receipt-item-rate">Rate: PHP 6,571\/g/);
   assert.match(markup, /class="receipt-qty">1<\/td>/);
   assert.match(markup, /class="receipt-weight">1g<\/td>/);
   assert.match(markup, /class="receipt-amount">6,571<\/td>/);
@@ -77,7 +78,7 @@ test('six items, long descriptions, decimal weights, and large totals keep separ
   }));
   const markup = await receiptMarkup(items);
   assert.equal((markup.match(/<tr class="receipt-item">/g) || []).length, 6);
-  assert.match(markup, /Very long assorted jewelry description that must wrap safely<\/td><td class="receipt-qty">1/);
+  assert.match(markup, /Very long assorted jewelry description that must wrap safely<small class="receipt-item-rate">Rate: PHP 6,571\/g<\/small><\/td><td class="receipt-qty">1/);
   assert.match(markup, /class="receipt-weight">0\.13g<\/td>/);
   assert.match(markup, /class="receipt-weight">1,235\.5g<\/td>/);
   assert.match(markup, /class="receipt-amount">1,234,567<\/td>/);
