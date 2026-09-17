@@ -1118,7 +1118,7 @@ export async function requestHandler(request: IncomingMessage, response: ServerR
         return sendJson(response,400,{error:error instanceof Error?error.message:'Purchase could not be recorded'});
       }
     }
-    if(request.method==='POST'&&url.pathname==='/api/liquidation-batches/partial-item'){
+    if(request.method==='POST'&&url.pathname==='/api/partial-liquidation-batch'){
       if(user!.role!=='admin') return sendJson(response,403,{error:'Administrator access required'});
       const body=await readJsonBody(request) as Record<string,unknown>;
       try{

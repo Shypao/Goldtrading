@@ -2618,7 +2618,7 @@ async function createInventoryItemLiquidationBatch(){
 async function saveInventoryItemLiquidationBatch(item,prepared,details){
   if(typeof location!=='undefined'&&(location.protocol==='http:'||location.protocol==='https:')){
     try{
-      const response=await fetch('/api/liquidation-batches/partial-item',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({itemId:item.id,weight:prepared.weight,buyer:details.buyer,name:details.name,notes:details.notes})});
+      const response=await fetch('/api/partial-liquidation-batch',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({itemId:item.id,weight:prepared.weight,buyer:details.buyer,name:details.name,notes:details.notes})});
       if(response.status===401){showLogin();throw new Error('Session expired');}
       const result=await response.json().catch(()=>null);
       if(!response.ok)throw new Error(result?.error||`Database server returned HTTP ${response.status}`);

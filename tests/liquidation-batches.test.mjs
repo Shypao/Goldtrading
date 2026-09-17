@@ -372,7 +372,7 @@ test('browser partial item liquidation uses the atomic batch endpoint', async ()
   const flow = source.slice(start, end);
 
   assert.notEqual(start, -1);
-  assert.match(flow, /fetch\(['"]\/api\/liquidation-batches\/partial-item['"]/);
+  assert.match(flow, /fetch\(['"]\/api\/partial-liquidation-batch['"]/);
   assert.match(flow, /result\.batch/);
   assert.match(flow, /result\.item/);
 });
