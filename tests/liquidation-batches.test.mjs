@@ -293,8 +293,12 @@ test('a manually created On Hold pool stays On Hold after partial liquidation', 
   assert.equal(result.pool.status, 'ON HOLD');
   assert.equal(result.pool.remainingWeight, 2000);
   assert.equal(result.pool.remainingCost, 200000);
-  assert.match(api.renderPools(), /Silver reserve/);
-  assert.match(api.renderPools(), /ON HOLD/);
+  const html = api.renderPools();
+  assert.match(html, /Silver reserve/);
+  assert.match(html, /ON HOLD/);
+  assert.match(html, /PARTIALLY LIQUIDATED/);
+  assert.match(html, />Partial liquidation</);
+  assert.match(html, />Entire pool</);
 });
 
 test('manual pools remain independent when one pool is partially liquidated', async () => {
